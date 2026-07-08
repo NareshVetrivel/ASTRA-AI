@@ -12,6 +12,7 @@ from voice.speech_recognition import SpeechRecognizer
 from planner.intent_detector import IntentDetector
 from planner.entity_extractor import EntityExtractor
 from automation.app_launcher import AppLauncher
+from automation.app_closer import AppCloser
 
 
 class MainWindow(QMainWindow):
@@ -22,26 +23,21 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
-        # -----------------------------
         # Core Modules
-        # -----------------------------
         self.recognizer = SpeechRecognizer()
         self.intent_detector = IntentDetector()
         self.entity_extractor = EntityExtractor()
         self.app_launcher = AppLauncher()
+        self.app_closer = AppCloser()
 
-        # -----------------------------
         # Window Settings
-        # -----------------------------
         self.setWindowTitle(settings.WINDOW_TITLE)
         self.setMinimumSize(
             settings.WINDOW_WIDTH,
             settings.WINDOW_HEIGHT
         )
 
-        # -----------------------------
         # Build UI
-        # -----------------------------
         self.setup_ui()
 
     def setup_ui(self):
@@ -49,34 +45,26 @@ class MainWindow(QMainWindow):
         Create the user interface.
         """
 
-        # Central Widget
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
 
-        # Layout
         layout = QVBoxLayout()
         layout.setAlignment(Qt.AlignCenter)
 
-        # -----------------------------
         # Status Label
-        # -----------------------------
         self.status_label = QLabel(
             f"Status : {settings.DEFAULT_STATUS}"
         )
         self.status_label.setAlignment(Qt.AlignCenter)
 
-        # -----------------------------
         # Conversation Label
-        # -----------------------------
         self.conversation_label = QLabel(
             settings.WELCOME_MESSAGE
         )
         self.conversation_label.setAlignment(Qt.AlignCenter)
         self.conversation_label.setWordWrap(True)
 
-        # -----------------------------
         # Microphone Button
-        # -----------------------------
         self.microphone_button = QPushButton(
             settings.MIC_BUTTON_TEXT
         )
@@ -87,9 +75,7 @@ class MainWindow(QMainWindow):
             self.start_listening
         )
 
-        # -----------------------------
         # Add Widgets
-        # -----------------------------
         layout.addWidget(self.status_label)
 
         layout.addSpacing(20)
@@ -140,11 +126,24 @@ class MainWindow(QMainWindow):
                     "Status : Launch Failed"
                 )
 
-        elif intent == "close_application":
+        # Close Application
+        elif intent == "close_application" and entity:
 
-            self.status_label.setText(
-                "Status : Close feature coming soon..."
+            success = self.app_closer.close_application(
+                entity
             )
+
+            if success:
+
+                self.status_label.setText(
+                    "Status : Application Closed"
+                )
+
+            else:
+
+                self.status_label.setText(
+                    "Status : Application Not Running"
+                )
 
         else:
 

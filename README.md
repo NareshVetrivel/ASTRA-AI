@@ -6,6 +6,14 @@
 
 🚧 Under Development
 
+## Current Features
+
+- Voice Recognition
+- Intent Detection
+- Entity Extraction
+- GUI Interface
+- Application Launch Automation
+
 ## Tech Stack
 
 - Python
