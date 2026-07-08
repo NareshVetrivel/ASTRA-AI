@@ -9,6 +9,9 @@ from PySide6.QtCore import Qt
 
 from config import settings
 from voice.speech_recognition import SpeechRecognizer
+from planner.intent_detector import IntentDetector
+from planner.entity_extractor import EntityExtractor
+from automation.app_launcher import AppLauncher
 
 
 class MainWindow(QMainWindow):
@@ -19,17 +22,26 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
-        # Speech Recognizer
+        # -----------------------------
+        # Core Modules
+        # -----------------------------
         self.recognizer = SpeechRecognizer()
+        self.intent_detector = IntentDetector()
+        self.entity_extractor = EntityExtractor()
+        self.app_launcher = AppLauncher()
 
+        # -----------------------------
         # Window Settings
+        # -----------------------------
         self.setWindowTitle(settings.WINDOW_TITLE)
         self.setMinimumSize(
             settings.WINDOW_WIDTH,
             settings.WINDOW_HEIGHT
         )
 
+        # -----------------------------
         # Build UI
+        # -----------------------------
         self.setup_ui()
 
     def setup_ui(self):
@@ -41,7 +53,7 @@ class MainWindow(QMainWindow):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
 
-        # Main Layout
+        # Layout
         layout = QVBoxLayout()
         layout.setAlignment(Qt.AlignCenter)
 
@@ -68,9 +80,9 @@ class MainWindow(QMainWindow):
         self.microphone_button = QPushButton(
             settings.MIC_BUTTON_TEXT
         )
+
         self.microphone_button.setFixedSize(100, 100)
 
-        # Button Click Event
         self.microphone_button.clicked.connect(
             self.start_listening
         )
@@ -93,32 +105,72 @@ class MainWindow(QMainWindow):
 
         central_widget.setLayout(layout)
 
-    def start_listening(self):
+    def process_command(self, text):
         """
-        Start listening when the microphone
-        button is clicked.
+        Process the recognized command.
         """
 
-        # Update Status
+        intent = self.intent_detector.detect_intent(text)
+
+        entity = self.entity_extractor.extract_application(text)
+
+        # Show Analysis
+        self.conversation_label.setText(
+            f"You Said:\n\n{text}\n\n"
+            f"Intent : {intent}\n"
+            f"Entity : {entity}"
+        )
+
+        # Launch Application
+        if intent == "launch_application" and entity:
+
+            success = self.app_launcher.launch_application(
+                entity
+            )
+
+            if success:
+
+                self.status_label.setText(
+                    "Status : Application Opened"
+                )
+
+            else:
+
+                self.status_label.setText(
+                    "Status : Launch Failed"
+                )
+
+        elif intent == "close_application":
+
+            self.status_label.setText(
+                "Status : Close feature coming soon..."
+            )
+
+        else:
+
+            self.status_label.setText(
+                "Status : No Action"
+            )
+
+    def start_listening(self):
+        """
+        Start listening when microphone button is clicked.
+        """
+
         self.status_label.setText(
             "Status : Listening..."
         )
 
-        # Listen
         text = self.recognizer.listen()
 
-        # If speech recognized
         if text:
 
-            self.conversation_label.setText(
-                f"You:\n\n{text}"
-            )
-
             self.status_label.setText(
-                "Status : Completed"
+                "Status : Processing..."
             )
 
-        # If recognition failed
+            self.process_command(text)
+
         else:
 
             self.conversation_label.setText(
