@@ -13,7 +13,7 @@ from planner.intent_detector import IntentDetector
 from planner.entity_extractor import EntityExtractor
 from automation.app_launcher import AppLauncher
 from automation.app_closer import AppCloser
-
+from voice.text_to_speech import TextToSpeech
 
 class MainWindow(QMainWindow):
     """
@@ -25,8 +25,11 @@ class MainWindow(QMainWindow):
 
         # Core Modules
         self.recognizer = SpeechRecognizer()
+        self.tts = TextToSpeech()
+
         self.intent_detector = IntentDetector()
         self.entity_extractor = EntityExtractor()
+
         self.app_launcher = AppLauncher()
         self.app_closer = AppCloser()
 
@@ -109,6 +112,12 @@ class MainWindow(QMainWindow):
 
         # Launch Application
         if intent == "launch_application" and entity:
+            
+            app_name = entity.replace(".exe", "")
+
+            self.tts.speak(
+                f"Opening {app_name}"
+            )
 
             success = self.app_launcher.launch_application(
                 entity
@@ -129,6 +138,12 @@ class MainWindow(QMainWindow):
         # Close Application
         elif intent == "close_application" and entity:
 
+            app_name = entity.replace(".exe", "")
+
+            self.tts.speak(
+                f"Closing {app_name}"
+            )
+
             success = self.app_closer.close_application(
                 entity
             )
@@ -147,6 +162,9 @@ class MainWindow(QMainWindow):
 
         else:
 
+            self.tts.speak(
+                "Sorry. I could not understand your command."
+            )
             self.status_label.setText(
                 "Status : No Action"
             )
@@ -174,6 +192,10 @@ class MainWindow(QMainWindow):
 
             self.conversation_label.setText(
                 "Sorry!\n\nI couldn't understand."
+            )
+
+            self.tts.speak(
+                "Sorry. I could not hear you."
             )
 
             self.status_label.setText(
