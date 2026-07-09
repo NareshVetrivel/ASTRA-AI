@@ -25,7 +25,7 @@ def main():
     while True:
 
         print("\n====================================")
-        print("NOVA-AI Automation Pipeline Test")
+        print("ASTRA-AI Automation Pipeline Test")
         print("====================================")
 
         command = input("Enter Command : ")

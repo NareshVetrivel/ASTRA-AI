@@ -18,7 +18,7 @@ def main():
     while True:
 
         print("\n====================================")
-        print("NOVA-AI Planner Test")
+        print("ASTRA-AI Planner Test")
         print("====================================")
 
         command = input("Enter Command : ")

@@ -12,7 +12,7 @@ def main():
     while True:
 
         print("\n===================================")
-        print("NOVA-AI App Launcher Test")
+        print("ASTRA-AI App Launcher Test")
         print("===================================")
 
         application = input(

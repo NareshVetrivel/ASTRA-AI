@@ -1,6 +1,6 @@
-# NOVA-AI
+# ASTRA-AI
 
-**NOVA-AI** is an Adaptive Context-Aware Natural Language Voice Assistant for Personalized Desktop Automation.
+**ASTRA-AI** is an Adaptive Context-Aware Natural Language Voice Assistant for Personalized Desktop Automation.
 
 ## Project Status
 

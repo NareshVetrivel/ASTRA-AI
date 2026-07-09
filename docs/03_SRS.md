@@ -3,13 +3,13 @@
 Idhu project introduction.
 
 Example idea:
-NOVA-AI is an adaptive context-aware natural language voice assistant designed for Windows desktop automation. The system enables users to interact with their computer using voice commands and perform intelligent desktop operations through offline technologies.
+ASTRA-AI is an adaptive context-aware natural language voice assistant designed for Windows desktop automation. The system enables users to interact with their computer using voice commands and perform intelligent desktop operations through offline technologies.
 
 
 2️⃣ Purpose
 Question:
 
-"Why are we building NOVA-AI?"
+"Why are we building ASTRA-AI?"
 
 Answer:
 Improve desktop automation
@@ -42,7 +42,7 @@ Not Included
 Idhu romba important.
 
 4️⃣ Intended Users
-Who will use NOVA-AI?
+Who will use ASTRA-AI?
 
 Example
 Students
@@ -128,4 +128,4 @@ Version Control: Git
 One paragraph.
 
 Example:
-This Software Requirements Specification defines the overall requirements, scope, objectives, and system overview for NOVA-AI. It serves as the foundation for the architecture, implementation, testing, and future enhancements of the project.
+This Software Requirements Specification defines the overall requirements, scope, objectives, and system overview for ASTRA-AI. It serves as the foundation for the architecture, implementation, testing, and future enhancements of the project.

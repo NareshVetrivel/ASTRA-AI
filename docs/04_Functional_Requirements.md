@@ -1,4 +1,4 @@
-Functional Requirements for NOVA-AI V1
+Functional Requirements for ASTRA-AI V1
 
 FR-001 – Voice Input
 The system shall accept voice commands through the user's microphone.

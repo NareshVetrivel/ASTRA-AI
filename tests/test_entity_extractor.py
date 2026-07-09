@@ -12,7 +12,7 @@ def main():
     while True:
 
         print("\n==============================")
-        print("NOVA-AI Entity Extractor Test")
+        print("ASTRA-AI Entity Extractor Test")
         print("==============================")
 
         text = input("Enter Command : ")

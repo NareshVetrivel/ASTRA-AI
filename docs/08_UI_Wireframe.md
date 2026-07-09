@@ -1,5 +1,5 @@
 +-------------------------------------------------------+
-|               NOVA-AI Voice Assistant                 |
+|               ASTRA-AI Voice Assistant                 |
 +-------------------------------------------------------+
 | Status : 🟢 Ready                                    |
 +-------------------------------------------------------+
@@ -20,7 +20,7 @@
 UI Components
 1️⃣ Title Bar
 
-Shows: NOVA-AI
+Shows: ASTRA-AI
 
 2️⃣ Status Label
 

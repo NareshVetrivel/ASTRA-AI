@@ -12,7 +12,7 @@ def main():
     while True:
 
         print("\n==============================")
-        print("NOVA-AI Intent Detector Test")
+        print("ASTRA-AI Intent Detector Test")
         print("==============================")
 
         text = input("Enter Command : ")

@@ -12,4 +12,4 @@ There is a need for an intelligent desktop assistant that can understand user in
 
 4️⃣ Proposed Solution
 
-NOVA-AI proposes an adaptive context-aware natural language voice assistant that combines speech recognition, natural language understanding, intent detection, entity extraction, task planning, and desktop automation to provide an intelligent and modular desktop assistant for Windows users.
+ASTRA-AI proposes an adaptive context-aware natural language voice assistant that combines speech recognition, natural language understanding, intent detection, entity extraction, task planning, and desktop automation to provide an intelligent and modular desktop assistant for Windows users.

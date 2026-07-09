@@ -4,7 +4,7 @@ import speech_recognition as sr
 class SpeechRecognizer:
     """
     Handles speech-to-text conversion
-    for the NOVA-AI application.
+    for the ASTRA-AI application.
     """
 
     def __init__(self):

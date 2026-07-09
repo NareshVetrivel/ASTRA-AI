@@ -25,7 +25,7 @@ speech_recognition.py
 text_to_speech.py
 
 3️⃣ planner Module ⭐
-This is the Heart of NOVA-AI
+This is the Heart of ASTRA-AI
 
 Responsibilities
 Intent Detection
@@ -167,7 +167,7 @@ Related functionality should remain within the same module.
 Each module should be independently testable and maintainable.
 
 📁 Final Folder Mapping
-NOVA-AI/
+ASTRA-AI/
 
 app/
 │── main.py

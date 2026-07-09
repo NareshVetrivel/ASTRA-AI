@@ -47,7 +47,7 @@ Future versions may support Linux or macOS.
 
 NFR-008 Offline Availability
 The system shall perform its core functionalities without requiring an active internet connection.
-This is one of NOVA-AI's strengths.
+This is one of ASTRA-AI's strengths.
 
 NFR-009 Portability
 

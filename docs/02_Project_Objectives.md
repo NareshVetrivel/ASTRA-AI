@@ -27,4 +27,4 @@ Example:
 
 Example:
 
-After successful implementation, NOVA-AI should be able to understand natural language voice commands, identify user intent, execute desktop automation tasks, and provide an efficient offline voice assistant experience for Windows users.
+After successful implementation, ASTRA-AI should be able to understand natural language voice commands, identify user intent, execute desktop automation tasks, and provide an efficient offline voice assistant experience for Windows users.

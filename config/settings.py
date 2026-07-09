@@ -1,12 +1,12 @@
 """
-Application settings for NOVA-AI.
+Application settings for ASTRA-AI.
 """
 
 # ==========================
 # Application Information
 # ==========================
 
-APP_NAME = "NOVA-AI"
+APP_NAME = "ASTRA-AI"
 APP_VERSION = "0.1.0"
 APP_AUTHOR = "Naresh"
 
@@ -23,6 +23,6 @@ WINDOW_TITLE = APP_NAME
 # ==========================
 
 DEFAULT_STATUS = "Ready"
-WELCOME_MESSAGE = "Welcome to NOVA-AI"
+WELCOME_MESSAGE = "Welcome to ASTRA-AI"
 
 MIC_BUTTON_TEXT = "🎤"

@@ -17,7 +17,7 @@ from automation.app_closer import AppCloser
 
 class MainWindow(QMainWindow):
     """
-    Main window for the NOVA-AI desktop application.
+    Main window for the ASTRA-AI desktop application.
     """
 
     def __init__(self):
