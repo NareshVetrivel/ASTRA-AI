@@ -11,6 +11,8 @@ from config import settings
 from voice.speech_recognition import SpeechRecognizer
 from planner.intent_detector import IntentDetector
 from planner.entity_extractor import EntityExtractor
+from planner.text_extractor import TextExtractor
+from automation.keyboard_controller import KeyboardController
 from automation.app_launcher import AppLauncher
 from automation.app_closer import AppCloser
 from voice.text_to_speech import TextToSpeech
@@ -29,9 +31,11 @@ class MainWindow(QMainWindow):
 
         self.intent_detector = IntentDetector()
         self.entity_extractor = EntityExtractor()
+        self.text_extractor = TextExtractor()
 
         self.app_launcher = AppLauncher()
         self.app_closer = AppCloser()
+        self.keyboard_controller = KeyboardController()
 
         # Window Settings
         self.setWindowTitle(settings.WINDOW_TITLE)
@@ -103,11 +107,14 @@ class MainWindow(QMainWindow):
 
         entity = self.entity_extractor.extract_application(text)
 
+        typed_text = self.text_extractor.extract_text(text)
+
         # Show Analysis
         self.conversation_label.setText(
             f"You Said:\n\n{text}\n\n"
             f"Intent : {intent}\n"
-            f"Entity : {entity}"
+            f"Entity : {entity}\n"
+            f"Text   : {typed_text}"
         )
 
         # Launch Application
@@ -160,6 +167,28 @@ class MainWindow(QMainWindow):
                     "Status : Application Not Running"
                 )
 
+        elif intent == "type_text" and typed_text:
+
+            self.tts.speak(
+                "Typing your text."
+            )
+
+            success = self.keyboard_controller.type_text(
+                typed_text
+            )
+
+            if success:
+
+                self.status_label.setText(
+                    "Status : Typing Completed"
+                )
+
+            else:
+
+                self.status_label.setText(
+                    "Status : Typing Failed"
+                )
+
         else:
 
             self.tts.speak(
@@ -179,7 +208,7 @@ class MainWindow(QMainWindow):
         )
 
         text = self.recognizer.listen()
-
+        
         if text:
 
             self.status_label.setText(

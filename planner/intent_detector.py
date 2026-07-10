@@ -23,7 +23,12 @@ class IntentDetector:
             # Close Application
             "close": "close_application",
             "exit": "close_application",
-            "stop": "close_application"
+            "stop": "close_application",
+
+            # Type Text
+            "type": "type_text",
+            "write": "type_text",
+            "enter": "type_text"
         }
 
     def detect_intent(self, text):
