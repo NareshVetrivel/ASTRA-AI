@@ -17,7 +17,7 @@ class EdgeTTSEngine:
 
     def __init__(self):
 
-        self.voice = "en-US-JennyNeural"
+        self.voice = "en-IN-NeerjaNeural"
 
         pygame.mixer.init()
 

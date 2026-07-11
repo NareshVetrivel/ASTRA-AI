@@ -127,3 +127,38 @@ class KeyboardController:
             return True
 
         return False
+
+    def copy(self):
+        """
+        Copy selected text.
+        """
+
+        return self.hotkey("ctrl", "c")
+
+    def paste(self):
+        """
+        Paste copied text.
+        """
+
+        return self.hotkey("ctrl", "v")
+
+    def cut(self):
+        """
+        Cut selected text.
+        """
+
+        return self.hotkey("ctrl", "x")
+
+    def undo(self):
+        """
+        Undo previous action.
+        """
+
+        return self.hotkey("ctrl", "z")
+
+    def redo(self):
+        """
+        Redo previous action.
+        """
+
+        return self.hotkey("ctrl", "y")

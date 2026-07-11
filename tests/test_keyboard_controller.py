@@ -22,6 +22,11 @@ def main():
     print("4. Ctrl + A")
     print("5. Ctrl + S")
     print("0. Exit")
+    print("6. Ctrl + C (Copy)")
+    print("7. Ctrl + V (Paste)")
+    print("8. Ctrl + X (Cut)")
+    print("9. Ctrl + Z (Undo)")
+    print("10. Ctrl + Y (Redo)")
 
     choice = input("\nEnter Choice : ")
 
@@ -94,6 +99,76 @@ def main():
 
         if success:
             print("\nCtrl + S Executed.")
+        else:
+            print("\nFailed.")
+
+    elif choice == "6":
+
+        print("\nYou have 5 seconds...")
+        print("Select some text in Notepad.")
+
+        time.sleep(5)
+
+        success = controller.copy()
+
+        if success:
+            print("\nCopy Executed.")
+        else:
+            print("\nFailed.")
+
+    elif choice == "7":
+
+        print("\nYou have 5 seconds...")
+        print("Click where you want to paste.")
+
+        time.sleep(5)
+
+        success = controller.paste()
+
+        if success:
+            print("\nPaste Executed.")
+        else:
+            print("\nFailed.")
+
+    elif choice == "8":
+
+        print("\nYou have 5 seconds...")
+        print("Select some text in Notepad.")
+
+        time.sleep(5)
+
+        success = controller.cut()
+
+        if success:
+            print("\nCut Executed.")
+        else:
+            print("\nFailed.")
+
+    elif choice == "9":
+    
+        print("\nYou have 5 seconds...")
+        print("Prepare Notepad.")
+
+        time.sleep(5)
+
+        success = controller.undo()
+
+        if success:
+            print("\nUndo Executed.")
+        else:
+            print("\nFailed.")
+
+    elif choice == "10":
+
+        print("\nYou have 5 seconds...")
+        print("Prepare Notepad.")
+
+        time.sleep(5)
+
+        success = controller.redo()
+
+        if success:
+            print("\nRedo Executed.")
         else:
             print("\nFailed.")
 

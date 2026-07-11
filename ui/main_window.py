@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt
 
 from config import settings
-from voice.speech_recognition import SpeechRecognizer
+from voice.whisper_recognizer import WhisperRecognizer
 from planner.intent_detector import IntentDetector
 from planner.entity_extractor import EntityExtractor
 from planner.text_extractor import TextExtractor
@@ -26,7 +26,7 @@ class MainWindow(QMainWindow):
         super().__init__()
 
         # Core Modules
-        self.recognizer = SpeechRecognizer()
+        self.recognizer = WhisperRecognizer()
         self.tts = TextToSpeech()
 
         self.intent_detector = IntentDetector()
@@ -187,6 +187,106 @@ class MainWindow(QMainWindow):
 
                 self.status_label.setText(
                     "Status : Typing Failed"
+                )
+
+        elif intent == "copy":
+
+            self.tts.speak(
+                "Copying."
+            )
+
+            success = self.keyboard_controller.copy()
+
+            if success:
+
+                self.status_label.setText(
+                    "Status : Copy Completed"
+                )
+
+            else:
+
+                self.status_label.setText(
+                "Status : Copy Failed"
+                )
+
+        elif intent == "paste":
+
+            self.tts.speak(
+                "Pasting."
+            )
+
+            success = self.keyboard_controller.paste()
+
+            if success:
+
+                self.status_label.setText(
+                    "Status : Paste Completed"
+                )
+
+            else:
+
+                self.status_label.setText(
+                    "Status : Paste Failed"
+                )
+
+        elif intent == "cut":
+
+            self.tts.speak(
+                "Cutting."
+            )
+
+            success = self.keyboard_controller.cut()
+
+            if success:
+
+                self.status_label.setText(
+                    "Status : Cut Completed"
+                )
+
+            else:
+
+                self.status_label.setText(
+                    "Status : Cut Failed"
+                )
+
+        elif intent == "undo":
+
+            self.tts.speak(
+                "Undoing."
+            )
+
+            success = self.keyboard_controller.undo()
+
+            if success:
+
+                self.status_label.setText(
+                    "Status : Undo Completed"
+                )
+
+            else:
+
+                self.status_label.setText(
+                    "Status : Undo Failed"
+                )
+
+        elif intent == "redo":
+
+            self.tts.speak(
+                "Redoing."
+            )
+
+            success = self.keyboard_controller.redo()
+
+            if success:
+
+                self.status_label.setText(
+                    "Status : Redo Completed"
+                )
+
+            else:
+
+                self.status_label.setText(
+                    "Status : Redo Failed"
                 )
 
         else:

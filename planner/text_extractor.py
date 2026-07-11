@@ -19,8 +19,7 @@ class TextExtractor:
 
         self.type_commands = [
             "type",
-            "write",
-            "enter"
+            "write"
         ]
         
     def extract_text(self, command):
