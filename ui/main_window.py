@@ -13,6 +13,7 @@ from planner.intent_detector import IntentDetector
 from planner.entity_extractor import EntityExtractor
 from planner.text_extractor import TextExtractor
 from automation.keyboard_controller import KeyboardController
+from automation.mouse_controller import MouseController
 from automation.app_launcher import AppLauncher
 from automation.app_closer import AppCloser
 from voice.text_to_speech import TextToSpeech
@@ -36,7 +37,7 @@ class MainWindow(QMainWindow):
         self.app_launcher = AppLauncher()
         self.app_closer = AppCloser()
         self.keyboard_controller = KeyboardController()
-
+        self.mouse_controller = MouseController()
         # Window Settings
         self.setWindowTitle(settings.WINDOW_TITLE)
         self.setMinimumSize(
@@ -288,6 +289,215 @@ class MainWindow(QMainWindow):
                 self.status_label.setText(
                     "Status : Redo Failed"
                 )
+
+        elif intent == "press_enter":
+
+            self.tts.speak(
+                "Pressing Enter."
+            )
+
+            success = self.keyboard_controller.press_key("enter")
+
+            if success:
+
+                self.status_label.setText(
+                    "Status : Enter Pressed"
+                )
+
+            else:
+
+                self.status_label.setText(
+                    "Status : Enter Failed"
+                )
+
+        elif intent == "press_tab":
+
+            self.tts.speak(
+                "Pressing Tab."
+            )
+
+            success = self.keyboard_controller.press_key("tab")
+
+            if success:
+
+                self.status_label.setText(
+                    "Status : Tab Pressed"
+                )
+
+            else:
+
+                self.status_label.setText(
+                    "Status : Tab Failed"
+                )
+
+        elif intent == "select_all":
+
+            self.tts.speak(
+                "Selecting all."
+            )
+
+            success = self.keyboard_controller.hotkey(
+                "ctrl",
+                "a"
+            )
+
+            if success:
+            
+                self.status_label.setText(
+                    "Status : Select All Completed"
+                )
+
+            else:
+        
+                self.status_label.setText(
+                    "Status : Select All Failed"
+                )
+
+        elif intent == "save_file":
+
+            self.tts.speak(
+                "Saving file."
+            )
+
+            success = self.keyboard_controller.hotkey(
+                "ctrl",
+                "s"
+            )
+
+            if success:
+
+                self.status_label.setText(
+                    "Status : File Saved"
+                )
+
+            else:
+
+                self.status_label.setText(
+                    "Status : Save Failed"
+                )
+
+        elif intent == "print_file":
+
+            self.tts.speak(
+                "Opening print dialog."
+            )
+
+            success = self.keyboard_controller.hotkey(
+                "ctrl",
+                "p"
+            )
+
+            if success:
+
+                self.status_label.setText(
+                    "Status : Print Dialog Opened"
+                )
+
+            else:
+
+                self.status_label.setText(
+                    "Status : Print Failed"
+                )
+
+        elif intent == "left_click":
+
+            self.tts.speak(
+                "Left clicking."
+            )
+
+            success = self.mouse_controller.left_click()
+
+            if success:
+
+                self.status_label.setText(
+                    "Status : Left Click Completed"
+                )
+
+            else:
+
+                self.status_label.setText(
+                    "Status : Left Click Failed"
+                )
+
+        elif intent == "right_click":
+
+            self.tts.speak(
+                "Right clicking."
+            )
+
+            success = self.mouse_controller.right_click()
+
+            if success:
+
+                self.status_label.setText(
+                    "Status : Right Click Completed"
+                )
+
+            else:
+
+                self.status_label.setText(
+                    "Status : Right Click Failed"
+                )
+
+        elif intent == "double_click":
+
+            self.tts.speak(
+                "Double clicking."
+            )
+
+            success = self.mouse_controller.double_click()
+
+            if success:
+
+                self.status_label.setText(
+                    "Status : Double Click Completed"
+                )
+
+            else:
+
+                self.status_label.setText(
+                    "Status : Double Click Failed"
+                )
+
+        elif intent == "scroll_up":
+
+            self.tts.speak(
+                "Scrolling up."
+            )
+
+            success = self.mouse_controller.scroll_up()
+
+            if success:
+
+                self.status_label.setText(
+                    "Status : Scroll Up Completed"
+                )
+
+            else:
+
+                self.status_label.setText(
+                    "Status : Scroll Up Failed"
+                )
+
+        elif intent == "scroll_down":
+
+            self.tts.speak(
+                "Scrolling down."
+            )
+
+            success = self.mouse_controller.scroll_down()
+
+            if success:
+
+                self.status_label.setText(
+                    "Status : Scroll Down Completed"
+                )
+
+            else:
+
+                self.status_label.setText(
+                    "Status : Scroll Down Failed"
+            )
 
         else:
 
