@@ -14,6 +14,8 @@ from planner.entity_extractor import EntityExtractor
 from planner.text_extractor import TextExtractor
 from automation.keyboard_controller import KeyboardController
 from automation.mouse_controller import MouseController
+from automation.window_controller import WindowController
+from automation.system_controller import SystemController
 from automation.app_launcher import AppLauncher
 from automation.app_closer import AppCloser
 from voice.text_to_speech import TextToSpeech
@@ -36,8 +38,11 @@ class MainWindow(QMainWindow):
 
         self.app_launcher = AppLauncher()
         self.app_closer = AppCloser()
+
         self.keyboard_controller = KeyboardController()
         self.mouse_controller = MouseController()
+        self.window_controller = WindowController()
+        self.system_controller = SystemController()
         # Window Settings
         self.setWindowTitle(settings.WINDOW_TITLE)
         self.setMinimumSize(
@@ -498,6 +503,235 @@ class MainWindow(QMainWindow):
                 self.status_label.setText(
                     "Status : Scroll Down Failed"
             )
+
+        elif intent == "minimize_window":
+
+            self.tts.speak(
+                "Minimizing window."
+            )
+
+            success = self.window_controller.minimize_window()
+
+            if success:
+
+                self.status_label.setText(
+                    "Status : Window Minimized"
+                )
+
+            else:
+
+                self.status_label.setText(
+                    "Status : Minimize Failed"
+                )
+
+        elif intent == "maximize_window":
+
+            self.tts.speak(
+                "Maximizing window."
+            )
+
+            success = self.window_controller.maximize_window()
+
+            if success:
+
+                self.status_label.setText(
+                    "Status : Window Maximized"
+                )
+
+            else:
+
+                self.status_label.setText(
+                    "Status : Maximize Failed"
+                )
+
+        elif intent == "restore_window":
+
+            self.tts.speak(
+                "Restoring window."
+            )
+
+            success = self.window_controller.restore_window()
+
+            if success:
+
+                self.status_label.setText(
+                    "Status : Window Restored"
+                )
+
+            else:
+
+                self.status_label.setText(
+                    "Status : Restore Failed"
+                )
+
+        elif intent == "close_window":
+
+            self.tts.speak(
+                "Closing window."
+            )
+
+            success = self.window_controller.close_window()
+
+            if success:
+
+                self.status_label.setText(
+                    "Status : Window Closed"
+                )
+
+            else:
+
+                self.status_label.setText(
+                    "Status : Close Failed"
+                )
+
+        # -----------------------------
+        # System Automation
+        # -----------------------------
+
+        elif intent == "volume_up":
+
+            self.tts.speak(
+            "Increasing volume."
+            )
+
+            success = self.system_controller.volume_up()
+
+            if success:
+
+                self.status_label.setText(
+                    "Status : Volume Increased"
+                )
+
+            else:
+
+                self.status_label.setText(
+                    "Status : Volume Up Failed"
+                )
+
+
+        elif intent == "volume_down":
+
+            self.tts.speak(
+                "Decreasing volume."
+            )
+
+            success = self.system_controller.volume_down()
+
+            if success:
+
+                self.status_label.setText(
+                    "Status : Volume Decreased"
+                )
+
+            else:
+
+                self.status_label.setText(
+                    "Status : Volume Down Failed"
+                )
+
+
+        elif intent == "mute":
+
+            self.tts.speak(
+                "Muting audio."
+            )
+
+            success = self.system_controller.mute()
+
+            if success:
+
+                self.status_label.setText(
+                    "Status : Audio Toggled"
+                )
+
+            else:
+
+                self.status_label.setText(
+                    "Status : Mute Failed"
+                )
+
+
+        elif intent == "lock_screen":
+
+            self.tts.speak(
+                "Locking computer."
+            )
+
+            success = self.system_controller.lock_screen()
+
+            if success:
+
+                self.status_label.setText(
+                    "Status : System Locked"
+                )
+
+            else:
+
+                self.status_label.setText(
+                    "Status : Lock Failed"
+                )
+
+        elif intent == "take_screenshot":
+
+            self.tts.speak(
+                "Taking screenshot."
+            )
+
+            success = self.system_controller.take_screenshot()
+
+            if success:
+
+                self.status_label.setText(
+                    "Status : Screenshot Saved"
+                )
+
+            else:
+
+                self.status_label.setText(
+                    "Status : Screenshot Failed"
+                )
+
+
+        elif intent == "open_task_manager":
+
+            self.tts.speak(
+                "Opening Task Manager."
+            )
+
+            success = self.system_controller.open_task_manager()
+
+            if success:
+            
+                self.status_label.setText(
+                    "Status : Task Manager Opened"
+                )
+
+            else:
+
+                self.status_label.setText(
+                    "Status : Task Manager Failed"
+                )
+
+
+        elif intent == "open_file_explorer":
+
+            self.tts.speak(
+                "Opening File Explorer."
+            )
+
+            success = self.system_controller.open_file_explorer()
+
+            if success:
+
+                self.status_label.setText(
+                    "Status : File Explorer Opened"
+            )
+
+            else:
+
+                self.status_label.setText(
+                    "Status : File Explorer Failed"
+                )
 
         else:
 

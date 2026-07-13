@@ -62,6 +62,22 @@ class IntentDetector:
             "double": "double_click",
 
             # ---------------------------------
+            # Window Commands
+            # ---------------------------------
+            "minimize": "minimize_window",
+            "maximize": "maximize_window",
+            "restore": "restore_window",
+
+            # ---------------------------------
+            # System Commands
+            # ---------------------------------
+            "mute": "mute",
+            "screenshot": "take_screenshot",
+            "task": "open_task_manager",
+            "explorer": "open_file_explorer",
+            "lock": "lock_screen",
+
+            # ---------------------------------
             # Shortcut Commands
             # ---------------------------------
             "select": "select_all",
@@ -120,6 +136,43 @@ class IntentDetector:
 
         if "scroll down" in text:
             return "scroll_down"
+
+        if "window" in text and "minimize" in text:
+            return "minimize_window"
+
+        if "window" in text and "maximize" in text:
+            return "maximize_window"
+
+        if "window" in text and "restore" in text:
+            return "restore_window"
+
+        if "window" in text and "close" in text:
+            return "close_window"
+
+        if "current window" in text:
+            return "close_window"
+
+        # ---------------------------------
+        # System Commands
+        # ---------------------------------
+
+        if "volume up" in text:
+            return "volume_up"
+
+        if "volume down" in text:
+            return "volume_down"
+
+        if "lock screen" in text:
+            return "lock_screen"
+
+        if "take screenshot" in text:
+            return "take_screenshot"
+
+        if "task manager" in text:
+            return "open_task_manager"
+
+        if "file explorer" in text:
+            return "open_file_explorer"
 
         # ---------------------------------
         # Exact Match
