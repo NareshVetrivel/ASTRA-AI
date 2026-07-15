@@ -52,6 +52,8 @@ class IntentDetector:
             # ---------------------------------
             "enter": "press_enter",
             "tab": "press_tab",
+            "backspace": "backspace",
+            "delete": "delete",
 
             # ---------------------------------
             # Mouse Commands
@@ -115,6 +117,12 @@ class IntentDetector:
 
         if "press tab" in text:
             return "press_tab"
+
+        if "backspace" in text:
+            return "backspace"
+
+        if "delete" in text:
+            return "delete"
 
         if "save file" in text:
             return "save_file"

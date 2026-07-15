@@ -162,3 +162,18 @@ class KeyboardController:
         """
 
         return self.hotkey("ctrl", "y")
+    
+    def backspace(self):
+        """
+        Press Backspace key.
+        """
+
+        return self.press_key("backspace")
+
+
+    def delete(self):
+        """
+        Press Delete key.
+        """
+
+        return self.press_key("delete")
