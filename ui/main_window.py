@@ -120,7 +120,21 @@ class MainWindow(QMainWindow):
         Process the recognized command.
         """
 
+        text = text.strip()
+
         intent = self.intent_detector.detect_intent(text)
+
+        if intent is None:
+
+            self.tts.speak(
+                "I could not understand the command."
+            )
+
+            self.status_label.setText(
+                "Status : Unknown Command"
+            )
+
+            return
 
         entity = self.entity_extractor.extract_application(text)
 
@@ -134,16 +148,23 @@ class MainWindow(QMainWindow):
             f"Text   : {typed_text}"
         )
 
-        dispatcher_result = self.dispatcher.dispatch(
+        print("\n========== ASTRA ==========")
+        print(f"Text    : {text}")
+        print(f"Intent  : {intent}")
+        print(f"Entity  : {entity}")
+        print(f"Typing  : {typed_text}")
+        print("===========================\n")
+
+        result = self.dispatcher.dispatch(
             intent=intent,
             entity=entity,
             typed_text=typed_text
         )
 
-        if dispatcher_result["success"]:
+        if result["success"]:
 
             self.status_label.setText(
-                dispatcher_result["status"]
+                result["status"]
             )
 
             return
@@ -166,26 +187,34 @@ class MainWindow(QMainWindow):
             "Status : Listening..."
         )
 
-        text = self.recognizer.listen()
-        
-        if text:
+        self.microphone_button.setEnabled(False)
 
-            self.status_label.setText(
-                "Status : Processing..."
-            )
+        try:
 
-            self.process_command(text)
+            text = self.recognizer.listen()
 
-        else:
+            if text and text.strip():
 
-            self.conversation_label.setText(
-                "Sorry!\n\nI couldn't understand."
-            )
+                self.status_label.setText(
+                    "Status : Processing..."
+                )
 
-            self.tts.speak(
-                "Sorry. I could not hear you."
-            )
+                self.process_command(text)
 
-            self.status_label.setText(
-                "Status : Failed"
-            )
+            else:
+
+                self.conversation_label.setText(
+                    "Sorry!\n\nI couldn't understand."
+                )
+
+                self.tts.speak(
+                    "Sorry. I could not hear you."
+                )
+
+                self.status_label.setText(
+                    "Status : Failed"
+                )
+
+        finally:
+
+            self.microphone_button.setEnabled(True)

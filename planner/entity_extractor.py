@@ -2,118 +2,44 @@
 Entity Extraction Module
 
 This module identifies application names
-from the user's voice command using
-fuzzy matching.
+from the SQLite database using
+RapidFuzz matching.
 """
 
 from rapidfuzz import process, fuzz
 
+from database.database_manager import DatabaseManager
+
 
 class EntityExtractor:
     """
-    Extracts application entities from
+    Extract application names from
     user commands.
     """
 
     def __init__(self):
 
-        # Supported Applications
-        self.applications = {
+        self.database = DatabaseManager()
 
-            # -------------------------
-            # Windows Apps
-            # -------------------------
+    def load_applications(self):
+        """
+        Load all applications stored
+        inside SQLite.
+        """
 
-            "notepad": "notepad",
-            "note pad": "notepad",
-            "node pad": "notepad",
-            "not to pad": "notepad",
-            "note card": "notepad",
+        applications = {}
 
-            "paint": "paint",
-            "mspaint": "paint",
+        rows = self.database.get_all_applications()
 
-            "calculator": "calculator",
-            "calc": "calculator",
+        for name, exe_name, _ in rows:
 
-            "command prompt": "command prompt",
-            "cmd": "command prompt",
+            applications[name] = exe_name
 
-            "powershell": "powershell",
-
-            "explorer": "file explorer",
-            "file explorer": "file explorer",
-
-            "this pc": "this pc",
-            "my computer": "this pc",
-
-            "task manager": "task manager",
-
-            "settings": "settings",
-
-            "control panel": "control panel",
-
-            "registry editor": "registry editor",
-
-            "services": "services",
-
-            "device manager": "device manager",
-
-            # -------------------------
-            # Browsers
-            # -------------------------
-
-            "chrome": "chrome",
-            "google chrome": "chrome",
-
-            "edge": "edge",
-            "microsoft edge": "edge",
-
-            "firefox": "firefox",
-
-            "brave": "brave",
-
-            "opera": "opera",
-
-            # -------------------------
-            # IDEs
-            # -------------------------
-
-            "vs code": "vs code",
-            "vscode": "vs code",
-            "visual studio code": "vs code",
-
-            "pycharm": "pycharm",
-
-            "android studio": "android studio",
-
-            # -------------------------
-            # Office
-            # -------------------------
-
-            "word": "word",
-            "microsoft word": "word",
-
-            "excel": "excel",
-            "microsoft excel": "excel",
-
-            "powerpoint": "powerpoint",
-            "power point": "powerpoint",
-
-            "outlook": "outlook",
-
-            "onenote": "onenote",
-
-            # -------------------------
-            # Others
-            # -------------------------
-
-            "spotify": "spotify"
-        }
+        return applications
 
     def extract_application(self, text):
         """
-        Extract application name from text.
+        Extract application name.
 
         Parameters
         ----------
@@ -127,20 +53,50 @@ class EntityExtractor:
         if not text:
             return None
 
-        text = text.lower()
-        text = text.strip()
+        text = text.lower().strip()
 
-        # Exact phrase match
-        for app in self.applications:
+        applications = self.load_applications()
 
-            if app in text:
+        if not applications:
+            return None
 
-                return self.applications[app]
+        # -------------------------
+        # Exact Match
+        # -------------------------
 
-        # Fuzzy Matching
+        for app_name in applications:
+
+            if app_name in text:
+
+                return applications[app_name]
+
+        # -------------------------
+        # Alias Match
+        # -------------------------
+
+        words = text.split()
+
+        for word in words:
+
+            alias = self.database.get_alias(word)
+
+            if alias:
+
+                application = self.database.get_application(
+                    alias[0]
+                )
+
+                if application:
+
+                    return application[1]
+
+        # -------------------------
+        # Fuzzy Match
+        # -------------------------
+
         best_match = process.extractOne(
             text,
-            self.applications.keys(),
+            applications.keys(),
             scorer=fuzz.partial_ratio
         )
 
@@ -148,10 +104,13 @@ class EntityExtractor:
 
             app_name, score, _ = best_match
 
-            print(f"Fuzzy Match : {app_name} ({score}%)")
+            print(
+                f"Fuzzy Match : "
+                f"{app_name} ({score:.1f}%)"
+            )
 
             if score >= 70:
 
-                return self.applications[app_name]
+                return applications[app_name]
 
         return None

@@ -6,10 +6,12 @@ This module launches Windows applications.
 
 import subprocess
 
-
+from automation.application_finder import ApplicationFinder
 class AppLauncher:
 
     def __init__(self):
+
+        self.finder = ApplicationFinder()
 
         self.applications = {
             # Windows Apps
@@ -104,10 +106,23 @@ class AppLauncher:
                 application
             )
 
-            subprocess.Popen(
-                application,
-                shell=True
+            application = self.finder.find_application(
+                application
             )
+
+            print(f"Resolved Application Path : {application}")
+
+            # Windows special URI
+            if application.startswith("ms-"):
+
+                import os
+                os.startfile(application)
+
+            # Normal executable
+            else:
+
+                import os
+                os.startfile(application)
 
             return True
 
