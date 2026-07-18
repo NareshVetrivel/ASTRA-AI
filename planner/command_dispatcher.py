@@ -20,7 +20,8 @@ class CommandDispatcher:
         keyboard_controller,
         mouse_controller,
         window_controller,
-        system_controller
+        system_controller,
+        file_finder
     ):
 
         self.tts = tts
@@ -32,6 +33,7 @@ class CommandDispatcher:
         self.mouse = mouse_controller
         self.window = window_controller
         self.system = system_controller
+        self.file_finder = file_finder
 
     def dispatch(
         self,
@@ -1145,6 +1147,37 @@ class CommandDispatcher:
                         if success
                         else
                         "Status : File Explorer Failed"
+                    )
+
+                }
+
+            # -------------------------
+            # Open File
+            # -------------------------
+
+            elif (
+                intent == "open_file"
+                and entity
+            ):
+
+                self.tts.speak(
+                    f"Opening {entity}"
+                )
+
+                success = self.file_finder.open_file(
+                    entity
+                )
+
+                return {
+
+                    "success": success,
+
+                    "status":
+                    (
+                        "Status : File Opened"
+                        if success
+                        else
+                        "Status : File Not Found"
                     )
 
                 }

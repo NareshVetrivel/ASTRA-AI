@@ -17,20 +17,24 @@ class DatabaseManager:
 
     def __init__(self):
 
+        # Project Root
         project_root = Path(__file__).resolve().parent.parent
 
+        # Database Path
         self.database_path = (
             project_root /
             "database" /
             "astra.db"
         )
 
+        # Connect Database
         self.connection = sqlite3.connect(
             self.database_path
         )
 
         self.cursor = self.connection.cursor()
 
+        # Create Required Tables
         self.create_tables()
 
     # --------------------------------------------------
@@ -38,6 +42,13 @@ class DatabaseManager:
     # --------------------------------------------------
 
     def create_tables(self):
+        """
+        Create required database tables.
+        """
+
+        # --------------------------------------
+        # Installed Applications
+        # --------------------------------------
 
         self.cursor.execute(
             """
@@ -59,6 +70,10 @@ class DatabaseManager:
             """
         )
 
+        # --------------------------------------
+        # Application Aliases
+        # --------------------------------------
+
         self.cursor.execute(
             """
             CREATE TABLE IF NOT EXISTS aliases (
@@ -73,13 +88,42 @@ class DatabaseManager:
             """
         )
 
-        self.connection.commit()
+        # --------------------------------------
+        # Indexed Files
+        # --------------------------------------
+
+        self.cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS files (
+
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+                name TEXT NOT NULL,
+
+                extension TEXT,
+
+                full_path TEXT UNIQUE,
+
+                file_size INTEGER,
+
+                last_modified TEXT,
+
+                last_scanned TEXT
+
+            )
+            """
+        )
+
+        self.commit()
 
     # --------------------------------------------------
     # Commit
     # --------------------------------------------------
 
     def commit(self):
+        """
+        Commit all pending database changes.
+        """
 
         self.connection.commit()
 
@@ -92,14 +136,18 @@ class DatabaseManager:
         name,
         exe_name,
         full_path,
-        source="scanner"
+        source="SCANNER"
     ):
+        """
+        Insert or update an application.
+        """
 
         try:
 
             self.cursor.execute(
                 """
-                INSERT OR REPLACE INTO applications
+                INSERT OR REPLACE INTO
+                applications
                 (
                     name,
                     exe_name,
@@ -125,7 +173,7 @@ class DatabaseManager:
         except Exception as error:
 
             print(
-                f"Database Insert Error : {error}"
+                f"Application Insert Error : {error}"
             )
 
             return False
@@ -139,12 +187,16 @@ class DatabaseManager:
         alias,
         application_name
     ):
+        """
+        Store application alias.
+        """
 
         try:
 
             self.cursor.execute(
                 """
-                INSERT OR REPLACE INTO aliases
+                INSERT OR REPLACE INTO
+                aliases
                 (
                     alias,
                     application_name
@@ -170,6 +222,60 @@ class DatabaseManager:
             return False
 
     # --------------------------------------------------
+    # Insert File
+    # --------------------------------------------------
+
+    def insert_file(
+        self,
+        name,
+        extension,
+        full_path,
+        file_size,
+        last_modified
+    ):
+        """
+        Store indexed file.
+        """
+
+        try:
+
+            self.cursor.execute(
+                """
+                INSERT OR REPLACE INTO
+                files
+                (
+                    name,
+                    extension,
+                    full_path,
+                    file_size,
+                    last_modified,
+                    last_scanned
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    name.lower(),
+                    extension.lower(),
+                    full_path,
+                    file_size,
+                    last_modified,
+                    datetime.now().isoformat()
+                )
+            )
+
+            self.commit()
+
+            return True
+
+        except Exception as error:
+
+            print(
+                f"File Insert Error : {error}"
+            )
+
+            return False
+        
+    # --------------------------------------------------
     # Get Application
     # --------------------------------------------------
 
@@ -177,6 +283,9 @@ class DatabaseManager:
         self,
         name
     ):
+        """
+        Return application details.
+        """
 
         self.cursor.execute(
             """
@@ -202,10 +311,14 @@ class DatabaseManager:
         self,
         alias
     ):
+        """
+        Return application alias.
+        """
 
         self.cursor.execute(
             """
-            SELECT application_name
+            SELECT
+                application_name
             FROM aliases
             WHERE alias = ?
             """,
@@ -217,10 +330,73 @@ class DatabaseManager:
         return self.cursor.fetchone()
 
     # --------------------------------------------------
+    # Get File
+    # --------------------------------------------------
+
+    def get_file(
+        self,
+        name
+    ):
+        """
+        Return indexed file.
+        """
+
+        self.cursor.execute(
+            """
+            SELECT
+                name,
+                extension,
+                full_path
+            FROM files
+            WHERE name LIKE ?
+            LIMIT 1
+            """,
+            (
+                f"%{name.lower()}%",
+            )
+        )
+
+        return self.cursor.fetchone()
+
+    # --------------------------------------------------
+    # Search Files
+    # --------------------------------------------------
+
+    def search_files(
+        self,
+        keyword
+    ):
+        """
+        Search matching files.
+        """
+
+        self.cursor.execute(
+            """
+            SELECT
+                name,
+                extension,
+                full_path
+            FROM files
+            WHERE
+                name LIKE ?
+            ORDER BY name
+            LIMIT 20
+            """,
+            (
+                f"%{keyword.lower()}%",
+            )
+        )
+
+        return self.cursor.fetchall()
+
+    # --------------------------------------------------
     # Get All Applications
     # --------------------------------------------------
 
     def get_all_applications(self):
+        """
+        Return all applications.
+        """
 
         self.cursor.execute(
             """
@@ -236,6 +412,28 @@ class DatabaseManager:
         return self.cursor.fetchall()
 
     # --------------------------------------------------
+    # Get All Files
+    # --------------------------------------------------
+
+    def get_all_files(self):
+        """
+        Return all indexed files.
+        """
+
+        self.cursor.execute(
+            """
+            SELECT
+                name,
+                extension,
+                full_path
+            FROM files
+            ORDER BY name
+            """
+        )
+
+        return self.cursor.fetchall()
+
+    # --------------------------------------------------
     # Application Exists
     # --------------------------------------------------
 
@@ -243,6 +441,9 @@ class DatabaseManager:
         self,
         name
     ):
+        """
+        Check application exists.
+        """
 
         self.cursor.execute(
             """
@@ -258,10 +459,38 @@ class DatabaseManager:
         return self.cursor.fetchone() is not None
 
     # --------------------------------------------------
-    # Database Count
+    # File Exists
+    # --------------------------------------------------
+
+    def file_exists(
+        self,
+        full_path
+    ):
+        """
+        Check file exists.
+        """
+
+        self.cursor.execute(
+            """
+            SELECT 1
+            FROM files
+            WHERE full_path = ?
+            """,
+            (
+                full_path,
+            )
+        )
+
+        return self.cursor.fetchone() is not None
+
+    # --------------------------------------------------
+    # Application Count
     # --------------------------------------------------
 
     def application_count(self):
+        """
+        Return total applications.
+        """
 
         self.cursor.execute(
             """
@@ -273,10 +502,48 @@ class DatabaseManager:
         return self.cursor.fetchone()[0]
 
     # --------------------------------------------------
+    # File Count
+    # --------------------------------------------------
+
+    def file_count(self):
+        """
+        Return total indexed files.
+        """
+
+        self.cursor.execute(
+            """
+            SELECT COUNT(*)
+            FROM files
+            """
+        )
+
+        return self.cursor.fetchone()[0]
+
+    # --------------------------------------------------
+    # Clear Files
+    # --------------------------------------------------
+
+    def clear_files(self):
+        """
+       Remove only indexed files.
+        """
+
+        self.cursor.execute(
+            """
+            DELETE FROM files
+            """
+        )
+
+        self.commit()
+
+    # --------------------------------------------------
     # Clear Database
     # --------------------------------------------------
 
     def clear_database(self):
+        """
+        Remove all stored data.
+        """
 
         self.cursor.execute(
             """
@@ -290,6 +557,12 @@ class DatabaseManager:
             """
         )
 
+        self.cursor.execute(
+            """
+            DELETE FROM files
+            """
+        )
+
         self.commit()
 
     # --------------------------------------------------
@@ -297,5 +570,8 @@ class DatabaseManager:
     # --------------------------------------------------
 
     def close(self):
+        """
+        Close SQLite connection.
+        """
 
         self.connection.close()

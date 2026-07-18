@@ -4,6 +4,11 @@ Entity Extraction Module
 This module identifies application names
 from the SQLite database using
 RapidFuzz matching.
+
+It also extracts file search queries
+for File Finder.
+
+ASTRA-AI V1
 """
 
 from rapidfuzz import process, fuzz
@@ -13,18 +18,21 @@ from database.database_manager import DatabaseManager
 
 class EntityExtractor:
     """
-    Extract application names from
-    user commands.
+    Extract application names
+    and file names.
     """
 
     def __init__(self):
 
         self.database = DatabaseManager()
 
+    # --------------------------------------------------
+    # Load Applications
+    # --------------------------------------------------
+
     def load_applications(self):
         """
-        Load all applications stored
-        inside SQLite.
+        Load all stored applications.
         """
 
         applications = {}
@@ -37,20 +45,20 @@ class EntityExtractor:
 
         return applications
 
-    def extract_application(self, text):
+    # --------------------------------------------------
+    # Extract Application
+    # --------------------------------------------------
+
+    def extract_application(
+        self,
+        text
+    ):
         """
         Extract application name.
-
-        Parameters
-        ----------
-        text : str
-
-        Returns
-        -------
-        str | None
         """
 
         if not text:
+
             return None
 
         text = text.lower().strip()
@@ -58,6 +66,7 @@ class EntityExtractor:
         applications = self.load_applications()
 
         if not applications:
+
             return None
 
         # -------------------------
@@ -78,12 +87,16 @@ class EntityExtractor:
 
         for word in words:
 
-            alias = self.database.get_alias(word)
+            alias = self.database.get_alias(
+                word
+            )
 
             if alias:
 
-                application = self.database.get_application(
-                    alias[0]
+                application = (
+                    self.database.get_application(
+                        alias[0]
+                    )
                 )
 
                 if application:
@@ -95,9 +108,13 @@ class EntityExtractor:
         # -------------------------
 
         best_match = process.extractOne(
+
             text,
+
             applications.keys(),
+
             scorer=fuzz.partial_ratio
+
         )
 
         if best_match:
@@ -105,8 +122,11 @@ class EntityExtractor:
             app_name, score, _ = best_match
 
             print(
+
                 f"Fuzzy Match : "
+
                 f"{app_name} ({score:.1f}%)"
+
             )
 
             if score >= 70:
@@ -114,3 +134,69 @@ class EntityExtractor:
                 return applications[app_name]
 
         return None
+
+    # --------------------------------------------------
+    # Extract File Query
+    # --------------------------------------------------
+
+    def extract_file_query(
+        self,
+        text
+    ):
+        """
+        Extract filename from
+        voice command.
+        """
+
+        if not text:
+
+            return None
+
+        text = text.lower().strip()
+
+        remove_words = {
+
+            "open",
+
+            "file",
+
+            "document",
+
+            "folder",
+
+            "please",
+
+            "my",
+
+            "the"
+
+        }
+
+        words = [
+
+            word
+
+            for word in text.split()
+
+            if word not in remove_words
+
+        ]
+
+        query = " ".join(words).strip()
+
+        if not query:
+
+            return None
+
+        return query
+
+    # --------------------------------------------------
+    # Close
+    # --------------------------------------------------
+
+    def close(self):
+        """
+        Close database connection.
+        """
+
+        self.database.close()

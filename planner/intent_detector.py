@@ -17,6 +17,30 @@ class IntentDetector:
 
     def __init__(self):
 
+        self.application_open_keywords = {
+
+            "chrome",
+            "google chrome",
+            "edge",
+            "microsoft edge",
+            "firefox",
+            "notepad",
+            "paint",
+            "calculator",
+            "calc",
+            "cmd",
+            "command prompt",
+            "powershell",
+            "explorer",
+            "word",
+            "excel",
+            "powerpoint",
+            "vscode",
+            "visual studio code",
+            "pycharm"
+
+        }
+
         self.intent_keywords = {
 
             # ---------------------------------
@@ -126,6 +150,20 @@ class IntentDetector:
 
         text = text.lower()
         text = text.strip()
+
+        # ---------------------------------
+        # Smart Open Detection
+        # ---------------------------------
+
+        if text.startswith("open"):
+
+            for app in self.application_open_keywords:
+
+                if app in text:
+
+                    return "launch_application"
+
+            return "open_file"
 
         # ---------------------------------
         # Multi-word Commands (Highest Priority)

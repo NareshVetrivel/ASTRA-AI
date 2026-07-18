@@ -20,6 +20,8 @@ from automation.system_controller import SystemController
 from automation.app_launcher import AppLauncher
 from automation.app_closer import AppCloser
 from voice.text_to_speech import TextToSpeech
+from workers.initialization_worker import InitializationWorker
+from automation.file_finder import FileFinder
 
 class MainWindow(QMainWindow):
     """
@@ -44,6 +46,7 @@ class MainWindow(QMainWindow):
         self.mouse_controller = MouseController()
         self.window_controller = WindowController()
         self.system_controller = SystemController()
+        self.file_finder = FileFinder()
 
         self.dispatcher = CommandDispatcher(
             tts=self.tts,
@@ -52,7 +55,8 @@ class MainWindow(QMainWindow):
             keyboard_controller=self.keyboard_controller,
             mouse_controller=self.mouse_controller,
             window_controller=self.window_controller,
-            system_controller=self.system_controller
+            system_controller=self.system_controller,
+            file_finder=self.file_finder
         )
         # Window Settings
         self.setWindowTitle(settings.WINDOW_TITLE)
@@ -63,6 +67,10 @@ class MainWindow(QMainWindow):
 
         # Build UI
         self.setup_ui()
+
+        self.file_finder = FileFinder()
+
+        self.start_initialization()
 
     def setup_ui(self):
         """
@@ -83,7 +91,7 @@ class MainWindow(QMainWindow):
 
         # Conversation Label
         self.conversation_label = QLabel(
-            settings.WELCOME_MESSAGE
+            "Welcome to ASTRA-AI\n\nClick the microphone to start."
         )
         self.conversation_label.setAlignment(Qt.AlignCenter)
         self.conversation_label.setWordWrap(True)
@@ -136,7 +144,17 @@ class MainWindow(QMainWindow):
 
             return
 
-        entity = self.entity_extractor.extract_application(text)
+        if intent == "open_file":
+
+            entity = self.entity_extractor.extract_file_query(
+                text
+            )
+
+        else:
+
+            entity = self.entity_extractor.extract_application(
+                text
+            )
 
         typed_text = self.text_extractor.extract_text(text)
 
@@ -167,6 +185,12 @@ class MainWindow(QMainWindow):
                 result["status"]
             )
 
+            self.conversation_label.setText(
+
+                f"Executed Successfully\n\n{text}"
+
+            )
+
             return
 
         else:
@@ -177,6 +201,99 @@ class MainWindow(QMainWindow):
             self.status_label.setText(
                 "Status : No Action"
             )
+
+    # --------------------------------------------------
+    # Start Initialization
+    # --------------------------------------------------
+
+    def start_initialization(self):
+        """
+        Start background initialization.
+        """
+
+        self.status_label.setText(
+            "Status : Initializing..."
+        )
+
+        self.microphone_button.setEnabled(False)
+
+        self.worker = InitializationWorker()
+
+        self.worker.status_changed.connect(
+            self.update_initialization_status
+        )
+
+        self.worker.finished_success.connect(
+            self.initialization_completed
+        )
+
+        self.worker.finished_error.connect(
+            self.initialization_failed
+        )
+
+        self.worker.start()
+
+
+    # --------------------------------------------------
+    # Update Status
+    # --------------------------------------------------
+
+    def update_initialization_status(
+        self,
+        message
+    ):
+        """
+        Update initialization status.
+        """
+
+        self.status_label.setText(
+            f"Status : {message}"
+        )
+
+
+    # --------------------------------------------------
+    # Initialization Completed
+    # --------------------------------------------------
+
+    def initialization_completed(self):
+        """
+        Called when initialization
+        completes successfully.
+        """
+
+        self.status_label.setText(
+            "Status : Ready"
+        )
+
+        self.microphone_button.setEnabled(True)
+
+        self.conversation_label.setText(
+            "Welcome to ASTRA-AI\n\n"
+            "Click the microphone to start."
+        )
+
+
+    # --------------------------------------------------
+    # Initialization Failed
+    # --------------------------------------------------
+
+    def initialization_failed(
+        self,
+        error
+    ):
+        """
+        Called when initialization fails.
+        """
+
+        self.status_label.setText(
+            "Status : Initialization Failed"
+        )
+
+        self.microphone_button.setEnabled(True)
+
+        self.conversation_label.setText(
+            f"Initialization Error\n\n{error}"
+        )
 
     def start_listening(self):
         """
@@ -190,6 +307,12 @@ class MainWindow(QMainWindow):
         self.microphone_button.setEnabled(False)
 
         try:
+
+            self.tts.speak(
+
+                "Listening."
+
+            )
 
             text = self.recognizer.listen()
 
