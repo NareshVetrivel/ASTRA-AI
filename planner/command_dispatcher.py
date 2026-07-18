@@ -331,6 +331,110 @@ class CommandDispatcher:
                 }
 
             # -------------------------
+            # Arrow Up
+            # -------------------------
+
+            elif intent == "arrow_up":
+
+                self.tts.speak(
+                    "Moving up."
+                )
+
+                success = self.keyboard.arrow_up()
+
+                return {
+
+                    "success": success,
+
+                    "status":
+                    (
+                        "Status : Arrow Up Pressed"
+                        if success
+                        else
+                        "Status : Arrow Up Failed"
+                    )
+
+                }
+
+            # -------------------------
+            # Arrow Down
+            # -------------------------
+
+            elif intent == "arrow_down":
+
+                self.tts.speak(
+                    "Moving down."
+                )
+
+                success = self.keyboard.arrow_down()
+
+                return {
+
+                    "success": success,
+
+                    "status":
+                    (
+                        "Status : Arrow Down Pressed"
+                        if success
+                        else
+                        "Status : Arrow Down Failed"
+                    )
+
+                }
+
+            # -------------------------
+            # Arrow Left
+            # -------------------------
+
+            elif intent == "arrow_left":
+
+                self.tts.speak(
+                    "Moving left."
+                )
+
+                success = self.keyboard.arrow_left()
+
+                return {
+
+                    "success": success,
+
+                    "status":
+                    (
+                        "Status : Arrow Left Pressed"
+                        if success
+                        else
+                        "Status : Arrow Left Failed"
+                    )
+
+                }
+
+            # -------------------------
+            # Arrow Right
+            # -------------------------
+
+            elif intent == "arrow_right":
+
+                self.tts.speak(
+                    "Moving right."
+                )
+
+                success = self.keyboard.arrow_right()
+
+                return {
+
+                    "success": success,
+
+                    "status":
+                    (
+                        "Status : Arrow Right Pressed"
+                        if success
+                        else
+                        "Status : Arrow Right Failed"
+                    )
+
+                }
+
+            # -------------------------
             # Backspace
             # -------------------------
 
@@ -379,6 +483,162 @@ class CommandDispatcher:
                         if success
                         else
                         "Status : Delete Failed"
+                    )
+
+                }
+
+            # -------------------------
+            # Home
+            # -------------------------
+
+            elif intent == "home":
+
+                self.tts.speak(
+                    "Pressing Home."
+                )
+
+                success = self.keyboard.home()
+
+                return {
+
+                    "success": success,
+
+                    "status":
+                    (
+                        "Status : Home Pressed"
+                        if success
+                        else
+                        "Status : Home Failed"
+                    )
+
+                }
+
+            # -------------------------
+            # End
+            # -------------------------
+
+            elif intent == "end":
+
+                self.tts.speak(
+                    "Pressing End."
+                )
+
+                success = self.keyboard.end()
+
+                return {
+
+                    "success": success,
+
+                    "status":
+                    (
+                        "Status : End Pressed"
+                        if success
+                        else
+                        "Status : End Failed"
+                    )
+
+                }
+
+            # -------------------------
+            # Page Up
+            # -------------------------
+
+            elif intent == "page_up":
+
+                self.tts.speak(
+                    "Pressing Page Up."
+                )
+
+                success = self.keyboard.page_up()
+
+                return {
+
+                    "success": success,
+
+                    "status":
+                    (
+                        "Status : Page Up Pressed"
+                        if success
+                        else
+                        "Status : Page Up Failed"
+                    )
+
+                }
+
+            # -------------------------
+            # Page Down
+            # -------------------------
+
+            elif intent == "page_down":
+
+                self.tts.speak(
+                    "Pressing Page Down."
+                )
+
+                success = self.keyboard.page_down()
+
+                return {
+
+                    "success": success,
+
+                    "status":
+                    (
+                        "Status : Page Down Pressed"
+                        if success
+                        else
+                        "Status : Page Down Failed"
+                    )
+
+                }
+
+            # -------------------------
+            # Escape
+            # -------------------------
+
+            elif intent == "escape":
+
+                self.tts.speak(
+                    "Pressing Escape."
+                )
+
+                success = self.keyboard.escape()
+
+                return {
+
+                    "success": success,
+
+                    "status":
+                    (
+                        "Status : Escape Pressed"
+                        if success
+                        else
+                        "Status : Escape Failed"
+                    )
+
+                }
+
+            # -------------------------
+            # Space
+            # -------------------------
+
+            elif intent == "space":
+
+                self.tts.speak(
+                    "Pressing Space."
+                )
+
+                success = self.keyboard.space()
+
+                return {
+
+                    "success": success,
+
+                    "status":
+                    (
+                        "Status : Space Pressed"
+                        if success
+                        else
+                        "Status : Space Failed"
                     )
 
                 }

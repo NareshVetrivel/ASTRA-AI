@@ -20,34 +20,95 @@ class EntityExtractor:
         # Supported Applications
         self.applications = {
 
-            "chrome": "chrome.exe",
-            "google chrome": "chrome.exe",
+            # -------------------------
+            # Windows Apps
+            # -------------------------
 
-            "notepad": "notepad.exe",
-            "note pad": "notepad.exe",
-            "node pad": "notepad.exe",
-            "not to pad": "notepad.exe",
-            "note card": "notepad.exe",
+            "notepad": "notepad",
+            "note pad": "notepad",
+            "node pad": "notepad",
+            "not to pad": "notepad",
+            "note card": "notepad",
 
-            "paint": "mspaint.exe",
+            "paint": "paint",
+            "mspaint": "paint",
 
-            "calculator": "calc.exe",
-            "calc": "calc.exe",
+            "calculator": "calculator",
+            "calc": "calculator",
 
-            "word": "winword.exe",
-            "microsoft word": "winword.exe",
+            "command prompt": "command prompt",
+            "cmd": "command prompt",
 
-            "excel": "excel.exe",
-            "microsoft excel": "excel.exe",
+            "powershell": "powershell",
 
-            "powerpoint": "powerpnt.exe",
-            "power point": "powerpnt.exe",
+            "explorer": "file explorer",
+            "file explorer": "file explorer",
 
-            "vscode": "Code.exe",
-            "vs code": "Code.exe",
-            "visual studio code": "Code.exe",
+            "this pc": "this pc",
+            "my computer": "this pc",
 
-            "spotify": "spotify.exe"
+            "task manager": "task manager",
+
+            "settings": "settings",
+
+            "control panel": "control panel",
+
+            "registry editor": "registry editor",
+
+            "services": "services",
+
+            "device manager": "device manager",
+
+            # -------------------------
+            # Browsers
+            # -------------------------
+
+            "chrome": "chrome",
+            "google chrome": "chrome",
+
+            "edge": "edge",
+            "microsoft edge": "edge",
+
+            "firefox": "firefox",
+
+            "brave": "brave",
+
+            "opera": "opera",
+
+            # -------------------------
+            # IDEs
+            # -------------------------
+
+            "vs code": "vs code",
+            "vscode": "vs code",
+            "visual studio code": "vs code",
+
+            "pycharm": "pycharm",
+
+            "android studio": "android studio",
+
+            # -------------------------
+            # Office
+            # -------------------------
+
+            "word": "word",
+            "microsoft word": "word",
+
+            "excel": "excel",
+            "microsoft excel": "excel",
+
+            "powerpoint": "powerpoint",
+            "power point": "powerpoint",
+
+            "outlook": "outlook",
+
+            "onenote": "onenote",
+
+            # -------------------------
+            # Others
+            # -------------------------
+
+            "spotify": "spotify"
         }
 
     def extract_application(self, text):
@@ -67,6 +128,7 @@ class EntityExtractor:
             return None
 
         text = text.lower()
+        text = text.strip()
 
         # Exact phrase match
         for app in self.applications:
@@ -88,7 +150,7 @@ class EntityExtractor:
 
             print(f"Fuzzy Match : {app_name} ({score}%)")
 
-            if score >= 75:
+            if score >= 70:
 
                 return self.applications[app_name]
 

@@ -26,11 +26,13 @@ class IntentDetector:
             "start": "launch_application",
             "run": "launch_application",
             "launch": "launch_application",
+            "execute": "launch_application",
 
             "close": "close_application",
             "exit": "close_application",
             "stop": "close_application",
             "quit": "close_application",
+            "terminate": "close_application",
 
             # ---------------------------------
             # Typing Commands
@@ -52,8 +54,24 @@ class IntentDetector:
             # ---------------------------------
             "enter": "press_enter",
             "tab": "press_tab",
+
             "backspace": "backspace",
             "delete": "delete",
+
+            "escape": "escape",
+            "esc": "escape",
+
+            "space": "space",
+
+            "up": "arrow_up",
+            "down": "arrow_down",
+            "left": "arrow_left",
+            "right": "arrow_right",
+
+            "home": "home",
+            "end": "end",
+
+            "page": "page_down",
 
             # ---------------------------------
             # Mouse Commands
@@ -62,6 +80,7 @@ class IntentDetector:
             "left": "left_click",
             "right": "right_click",
             "double": "double_click",
+            "scroll": "scroll_down",
 
             # ---------------------------------
             # Window Commands
@@ -69,6 +88,8 @@ class IntentDetector:
             "minimize": "minimize_window",
             "maximize": "maximize_window",
             "restore": "restore_window",
+            "minimise": "minimize_window",
+            "maximise": "maximize_window",
 
             # ---------------------------------
             # System Commands
@@ -104,6 +125,7 @@ class IntentDetector:
             return None
 
         text = text.lower()
+        text = text.strip()
 
         # ---------------------------------
         # Multi-word Commands (Highest Priority)
@@ -164,22 +186,63 @@ class IntentDetector:
         # System Commands
         # ---------------------------------
 
-        if "volume up" in text:
+        # Volume
+
+        if (
+            "volume up" in text
+            or "increase volume" in text
+            or "raise volume" in text
+        ):
             return "volume_up"
 
-        if "volume down" in text:
+        if (
+            "volume down" in text
+            or "decrease volume" in text
+            or "lower volume" in text
+        ):
             return "volume_down"
 
-        if "lock screen" in text:
+        # Mute
+
+        if (
+            "mute" in text
+            or "mute audio" in text
+            or "turn off sound" in text
+        ):
+            return "mute"
+
+        # Lock
+
+        if (
+            "lock screen" in text
+            or "lock computer" in text
+            or "lock my pc" in text
+            or "lock system" in text
+        ):
             return "lock_screen"
 
-        if "take screenshot" in text:
+        # Screenshot
+
+        if (
+            "take screenshot" in text
+            or "screen shot" in text
+            or "capture screen" in text
+            or "take screen shot" in text
+        ):
             return "take_screenshot"
+
+        # Task Manager
 
         if "task manager" in text:
             return "open_task_manager"
 
-        if "file explorer" in text:
+        # Explorer
+
+        if (
+            "file explorer" in text
+            or "this pc" in text
+            or "my computer" in text
+        ):
             return "open_file_explorer"
 
         # ---------------------------------
@@ -213,7 +276,7 @@ class IntentDetector:
                 f"{keyword} ({score:.1f}%)"
             )
 
-            if score >= 75:
+            if score >= 70:
 
                 return self.intent_keywords[keyword]
 

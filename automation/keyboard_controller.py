@@ -68,6 +68,8 @@ class KeyboardController:
         key = key.lower()
 
         key_map = {
+
+            # Basic Keys
             "enter": "{ENTER}",
             "tab": "{TAB}",
             "space": " ",
@@ -75,14 +77,54 @@ class KeyboardController:
             "escape": "{ESC}",
             "backspace": "{BACKSPACE}",
             "delete": "{DELETE}",
+
+            # Arrow Keys
             "up": "{UP}",
             "down": "{DOWN}",
             "left": "{LEFT}",
-            "right": "{RIGHT}"
+            "right": "{RIGHT}",
+
+            # Navigation Keys
+            "home": "{HOME}",
+            "end": "{END}",
+            "pageup": "{PGUP}",
+            "pagedown": "{PGDN}",
+            "insert": "{INSERT}",
+
+            # Function Keys
+            "f1": "{F1}",
+            "f2": "{F2}",
+            "f3": "{F3}",
+            "f4": "{F4}",
+            "f5": "{F5}",
+            "f6": "{F6}",
+            "f7": "{F7}",
+            "f8": "{F8}",
+            "f9": "{F9}",
+            "f10": "{F10}",
+            "f11": "{F11}",
+            "f12": "{F12}"
         }
 
         if key in key_map:
             send_keys(key_map[key])
+            return True
+
+        # Letters
+
+        if len(key) == 1 and key.isalpha():
+
+            send_keys(key)
+
+            return True
+
+
+        # Numbers
+
+        if len(key) == 1 and key.isdigit():
+
+            send_keys(key)
+
             return True
 
         return False
@@ -170,10 +212,97 @@ class KeyboardController:
 
         return self.press_key("backspace")
 
-
     def delete(self):
         """
         Press Delete key.
         """
 
         return self.press_key("delete")
+    
+    def arrow_up(self):
+        """
+        Press Up arrow key.
+        """
+
+        return self.press_key("up")
+
+
+    def arrow_down(self):
+        """
+        Press Down arrow key.
+        """
+
+        return self.press_key("down")
+
+
+    def arrow_left(self):
+        """
+        Press Left arrow key.
+        """
+
+        return self.press_key("left")
+
+
+    def arrow_right(self):
+        """
+        Press Right arrow key.
+        """
+
+        return self.press_key("right")
+    
+    def home(self):
+        """
+        Press Home key.
+        """
+
+        return self.press_key("home")
+
+
+    def end(self):
+        """
+        Press End key.
+        """
+
+        return self.press_key("end")
+
+
+    def page_up(self):
+        """
+        Press Page Up key.
+        """
+
+        return self.press_key("pageup")
+
+
+    def page_down(self):
+        """
+        Press Page Down key.
+        """
+
+        return self.press_key("pagedown")
+
+
+    def escape(self):
+        """
+        Press Escape key.
+        """
+
+        return self.press_key("escape")
+
+
+    def space(self):
+        """
+        Press Space key.
+        """
+
+        return self.press_key("space")
+    
+    def press_character(self, character):
+
+        """
+        Press a single letter or number.
+        """
+
+        return self.press_key(character)
+    
+    
