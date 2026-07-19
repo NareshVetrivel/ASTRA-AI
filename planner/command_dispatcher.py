@@ -5,6 +5,8 @@ Routes the detected intent
 to the appropriate controller.
 """
 
+from automation.folder_manager import FolderManager
+from automation.file_manager import FileManager
 
 class CommandDispatcher:
 
@@ -21,7 +23,9 @@ class CommandDispatcher:
         mouse_controller,
         window_controller,
         system_controller,
-        file_finder
+        file_finder,
+        folder_manager,
+        file_manager
     ):
 
         self.tts = tts
@@ -34,6 +38,9 @@ class CommandDispatcher:
         self.window = window_controller
         self.system = system_controller
         self.file_finder = file_finder
+
+        self.folder_manager = folder_manager
+        self.file_manager = file_manager
 
     def dispatch(
         self,
@@ -1179,6 +1186,428 @@ class CommandDispatcher:
                         else
                         "Status : File Not Found"
                     )
+
+                }
+
+            # -------------------------
+            # Open Folder
+            # -------------------------
+
+            elif (
+
+                intent == "open_folder"
+
+                and entity
+
+            ):
+
+                self.tts.speak(
+
+                    f"Opening {entity}"
+
+                )
+
+                success = (
+
+                    self.folder_manager
+
+                    .open_folder(entity)
+
+                )
+
+                return {
+
+                    "success": success,
+
+                    "status":
+
+                    (
+
+                        "Status : Folder Opened"
+
+                        if success
+
+                        else
+
+                        "Status : Folder Not Found"
+
+                    )
+
+                }
+
+            # -------------------------
+            # Create File
+            # -------------------------
+
+            elif (
+                intent == "create_file"
+                and entity
+            ):
+
+                self.tts.speak(
+                    f"Creating {entity}"
+                )
+
+                success = self.file_manager.create_file(
+                    entity
+                )
+
+                return {
+
+                    "success": success,
+
+                    "status":
+                    (
+                        "Status : File Created"
+                        if success
+                        else
+                        "Status : Create Failed"
+                    )
+
+                }
+
+            # -------------------------
+            # Delete File
+            # -------------------------
+
+            elif (
+                intent == "delete_file"
+                and entity
+            ):
+
+                self.tts.speak(
+                    f"Deleting {entity}"
+                )
+
+                success = self.file_manager.delete_file(
+                    entity
+                )
+
+                return {
+
+                    "success": success,
+
+                    "status":
+                    (
+                        "Status : File Deleted"
+                        if success
+                        else
+                        "Status : Delete Failed"
+                    )
+
+                }
+
+            # -------------------------
+            # Rename File
+            # -------------------------
+
+            elif intent == "rename_file":
+
+                return {
+
+                    "success": False,
+
+                    "status":
+
+                    "Status : Pending"
+
+                }
+
+            # -------------------------
+            # Copy File
+            # -------------------------
+
+            elif intent == "copy_file":
+
+                return {
+
+                    "success": False,
+
+                    "status":
+
+                    "Status : Pending"
+
+                }
+
+            # -------------------------
+            # Move File
+            # -------------------------
+
+            elif intent == "move_file":
+
+                return {
+
+                    "success": False,
+
+                    "status":
+
+                    "Status : Pending"
+
+                }
+
+            # -------------------------
+            # Compress File
+            # -------------------------
+
+            elif (
+                intent == "compress_file"
+                and entity
+            ):
+
+                success = self.file_manager.compress_file(
+                    entity
+                )
+
+                return {
+
+                    "success": success,
+
+                    "status":
+                    (
+                        "Status : ZIP Created"
+                        if success
+                        else
+                        "Status : Compression Failed"
+                    )
+
+                }
+
+            # -------------------------
+            # Extract ZIP
+            # -------------------------
+
+            elif (
+                intent == "extract_zip"
+                and entity
+            ):
+
+                success = self.file_manager.extract_zip(
+                    entity
+                )
+
+                return {
+
+                    "success": success,
+
+                    "status":
+                    (
+                        "Status : ZIP Extracted"
+                        if success
+                        else
+                        "Status : Extraction Failed"
+                    )
+
+                }
+
+            # -------------------------
+            # Create Folder
+            # -------------------------
+
+            elif (
+
+                intent == "create_folder"
+
+                and entity
+
+            ):
+
+                success = (
+
+                    self.folder_manager
+
+                    .create_folder(entity)
+
+                )
+
+                return {
+
+                    "success": success,
+
+                    "status":
+
+                    (
+
+                        "Status : Folder Created"
+
+                        if success
+
+                        else
+
+                        "Status : Create Failed"
+
+                    )
+
+                }
+            
+            # -------------------------
+            # Rename Folder
+            # -------------------------
+
+            elif intent == "rename_folder":
+
+                return {
+
+                    "success": False,
+
+                    "status":
+
+                    "Status : Pending"
+
+                }
+            
+            # -------------------------
+            # Delete Folder
+            # -------------------------
+
+            elif (
+
+                intent == "delete_folder"
+
+                and entity
+
+            ):
+
+                success = (
+
+                    self.folder_manager
+
+                    .delete_folder(entity)
+
+                )
+
+                return {
+
+                    "success": success,
+
+                    "status":
+
+                    (
+
+                        "Status : Folder Deleted"
+
+                        if success
+
+                        else
+
+                        "Status : Delete Failed"
+
+                    )
+
+                }
+            
+            # -------------------------
+            # Move Folder
+            # -------------------------
+
+            elif intent == "move_folder":
+
+                return {
+
+                    "success": False,
+
+                    "status":
+
+                    "Status : Pending"
+
+                }
+            
+            # -------------------------
+            # Copy Folder
+            # -------------------------
+
+            elif intent == "copy_folder":
+
+                return {
+
+                    "success": False,
+
+                    "status":
+
+                    "Status : Pending"
+
+                }
+            
+            # -------------------------
+            # Empty Recycle Bin
+            # -------------------------
+
+            elif intent == "empty_recycle_bin":
+
+                success = (
+
+                    self.folder_manager
+
+                    .empty_recycle_bin()
+
+                )
+
+                return {
+
+                    "success": success,
+
+                    "status":
+
+                    (
+
+                        "Status : Recycle Bin Emptied"
+
+                        if success
+
+                        else
+
+                        "Status : Failed"
+
+                    )
+
+                }
+
+            # -------------------------
+            # Search by Extension
+            # -------------------------
+
+            elif intent == "search_extension":
+
+                return {
+
+                    "success": False,
+
+                    "status":
+
+                    "Status : Pending"
+
+                }
+
+
+            # -------------------------
+            # Search by Date
+            # -------------------------
+
+            elif intent == "search_date":
+
+                return {
+
+                    "success": False,
+
+                    "status":
+
+                    "Status : Pending"
+
+                }
+
+
+            # -------------------------
+            # Search by Size
+            # -------------------------
+
+            elif intent == "search_size":
+
+                return {
+
+                    "success": False,
+
+                    "status":
+
+                    "Status : Pending"
 
                 }
 

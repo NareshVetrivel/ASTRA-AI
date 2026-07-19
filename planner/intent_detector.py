@@ -41,6 +41,38 @@ class IntentDetector:
 
         }
 
+        self.folder_open_keywords = {
+
+            "desktop",
+
+            "documents",
+
+            "downloads",
+
+            "pictures",
+
+            "videos",
+
+            "music",
+
+            "this pc",
+
+            "my computer",
+
+            "computer",
+
+            "recycle bin",
+
+            "trash",
+
+            "c drive",
+
+            "d drive",
+
+            "e drive"
+
+        }
+
         self.intent_keywords = {
 
             # ---------------------------------
@@ -129,7 +161,15 @@ class IntentDetector:
             # ---------------------------------
             "select": "select_all",
             "save": "save_file",
-            "print": "print_file"
+            "print": "print_file",
+
+            # Folder
+
+            "folder": "open_folder",
+
+            # File
+
+            "file": "open_file"
         }
 
     def detect_intent(self, text):
@@ -157,13 +197,105 @@ class IntentDetector:
 
         if text.startswith("open"):
 
+            # Applications
+
             for app in self.application_open_keywords:
 
                 if app in text:
 
                     return "launch_application"
 
+            # Special Folders
+
+            for folder in self.folder_open_keywords:
+
+                if folder in text:
+
+                    return "open_folder"
+
+            # Default
+
             return "open_file"
+
+        # ---------------------------------
+        # Folder Commands
+        # ---------------------------------
+
+        if "create folder" in text:
+
+            return "create_folder"
+
+        if "rename folder" in text:
+
+            return "rename_folder"
+
+        if "delete folder" in text:
+
+            return "delete_folder"
+
+        if "move folder" in text:
+
+            return "move_folder"
+
+        if "copy folder" in text:
+
+            return "copy_folder"
+
+        if (
+
+            "empty recycle bin" in text
+
+            or
+
+            "clear recycle bin" in text
+
+        ):
+
+            return "empty_recycle_bin"
+
+        # ---------------------------------
+        # File Commands
+        # ---------------------------------
+
+        if "create file" in text:
+
+            return "create_file"
+
+        if "delete file" in text:
+
+            return "delete_file"
+
+        if "rename file" in text:
+
+            return "rename_file"
+
+        if "move file" in text:
+
+            return "move_file"
+
+        if "copy file" in text:
+
+            return "copy_file"
+
+        if "zip file" in text:
+
+            return "compress_file"
+
+        if "extract zip" in text:
+
+            return "extract_zip"
+
+        if "search extension" in text:
+
+            return "search_extension"
+
+        if "search date" in text:
+
+            return "search_date"
+
+        if "search size" in text:
+
+            return "search_size"
 
         # ---------------------------------
         # Multi-word Commands (Highest Priority)

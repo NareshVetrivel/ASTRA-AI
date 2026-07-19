@@ -26,6 +26,42 @@ class EntityExtractor:
 
         self.database = DatabaseManager()
 
+        # ---------------------------------
+        # Special Folders
+        # ---------------------------------
+
+        self.special_folders = {
+
+            "desktop",
+
+            "documents",
+
+            "downloads",
+
+            "pictures",
+
+            "videos",
+
+            "music",
+
+            "this pc",
+
+            "my computer",
+
+            "computer",
+
+            "recycle bin",
+
+            "trash",
+
+            "c drive",
+
+            "d drive",
+
+            "e drive"
+
+        }
+
     # --------------------------------------------------
     # Load Applications
     # --------------------------------------------------
@@ -136,6 +172,67 @@ class EntityExtractor:
         return None
 
     # --------------------------------------------------
+    # Extract Folder
+    # --------------------------------------------------
+
+    def extract_folder(
+        self,
+        text
+    ):
+        """
+        Extract folder name from
+        voice command.
+        """
+
+        if not text:
+
+            return None
+
+        text = text.lower().strip()
+
+        # -------------------------
+        # Exact Match
+        # -------------------------
+
+        for folder in self.special_folders:
+
+            if folder in text:
+
+                return folder
+
+        # -------------------------
+        # Fuzzy Match
+        # -------------------------
+
+        best_match = process.extractOne(
+
+            text,
+
+            self.special_folders,
+
+            scorer=fuzz.partial_ratio
+
+        )
+
+        if best_match:
+
+            folder, score, _ = best_match
+
+            print(
+
+                f"Folder Match : "
+
+                f"{folder} ({score:.1f}%)"
+
+            )
+
+            if score >= 75:
+
+                return folder
+
+        return None
+
+    # --------------------------------------------------
     # Extract File Query
     # --------------------------------------------------
 
@@ -164,11 +261,31 @@ class EntityExtractor:
 
             "folder",
 
+            "create",
+
+            "rename",
+
+            "delete",
+
+            "move",
+
+            "copy",
+
             "please",
 
             "my",
 
-            "the"
+            "the",
+
+            "named",
+
+            "called",
+
+            "to",
+
+            "into",
+
+            "in"
 
         }
 

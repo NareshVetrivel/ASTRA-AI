@@ -22,6 +22,8 @@ from automation.app_closer import AppCloser
 from voice.text_to_speech import TextToSpeech
 from workers.initialization_worker import InitializationWorker
 from automation.file_finder import FileFinder
+from automation.folder_manager import FolderManager
+from automation.file_manager import FileManager
 
 class MainWindow(QMainWindow):
     """
@@ -47,6 +49,8 @@ class MainWindow(QMainWindow):
         self.window_controller = WindowController()
         self.system_controller = SystemController()
         self.file_finder = FileFinder()
+        self.folder_manager = FolderManager()
+        self.file_manager = FileManager()
 
         self.dispatcher = CommandDispatcher(
             tts=self.tts,
@@ -56,7 +60,9 @@ class MainWindow(QMainWindow):
             mouse_controller=self.mouse_controller,
             window_controller=self.window_controller,
             system_controller=self.system_controller,
-            file_finder=self.file_finder
+            file_finder=self.file_finder,
+            folder_manager=self.folder_manager,
+            file_manager=self.file_manager
         )
         # Window Settings
         self.setWindowTitle(settings.WINDOW_TITLE)
@@ -67,8 +73,6 @@ class MainWindow(QMainWindow):
 
         # Build UI
         self.setup_ui()
-
-        self.file_finder = FileFinder()
 
         self.start_initialization()
 
@@ -144,11 +148,63 @@ class MainWindow(QMainWindow):
 
             return
 
-        if intent == "open_file":
+        # ---------------------------------
+        # File Commands
+        # ---------------------------------
+
+        if intent in {
+
+            "open_file",
+
+            "create_file",
+
+            "delete_file",
+
+            "rename_file",
+
+            "move_file",
+
+            "copy_file",
+
+            "compress_file",
+
+            "extract_zip"
+
+        }:
 
             entity = self.entity_extractor.extract_file_query(
                 text
             )
+
+        # ---------------------------------
+        # Folder Commands
+        # ---------------------------------
+
+        elif intent in {
+
+            "open_folder",
+
+            "create_folder",
+
+            "delete_folder",
+
+            "rename_folder",
+
+            "move_folder",
+
+            "copy_folder",
+
+            "empty_recycle_bin"
+
+        }:
+
+            entity = self.entity_extractor.extract_folder(
+                text
+            )
+
+        # ---------------------------------
+        # Application Commands
+        # ---------------------------------
 
         else:
 
