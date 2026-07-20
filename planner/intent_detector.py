@@ -37,8 +37,9 @@ class IntentDetector:
             "powerpoint",
             "vscode",
             "visual studio code",
-            "pycharm"
-
+            "pycharm",
+            "internet",
+            "browser"
         }
 
         self.folder_open_keywords = {
@@ -195,7 +196,86 @@ class IntentDetector:
         # Smart Open Detection
         # ---------------------------------
 
-        if text.startswith("open"):
+        if (
+
+            text.startswith("open")
+
+            or
+
+            text.startswith("launch")
+
+            or
+
+            text.startswith("start")
+
+            or
+
+            text.startswith("run")
+
+        ):
+
+            # ---------------------------------
+            # Browser Website Detection
+            # ---------------------------------
+
+            if any(site in text for site in [
+
+                "youtube",
+                "google",
+                "gmail",
+                "github",
+                "wikipedia",
+                "amazon",
+                "flipkart",
+                "linkedin",
+                "instagram",
+                "facebook",
+                "twitter",
+                ".com",
+                ".org",
+                ".net"
+
+            ]):
+
+                return "open_website"
+
+            # ---------------------------------
+            # Google Search
+            # ---------------------------------
+
+            if (
+
+                text.startswith("search")
+
+                or
+
+                "search google" in text
+
+                or
+
+                "google search" in text
+
+            ):
+
+                return "google_search"
+
+            # Browser commands (check BEFORE folders)
+
+            if text == "open history":
+
+                return "browser_history"
+
+            if text == "history":
+
+                return "browser_history"
+
+            if text == "open browser history":
+
+                return "browser_history"
+
+            if text == "open browser downloads":
+
+                return "browser_downloads"
 
             # Applications
 
@@ -213,7 +293,15 @@ class IntentDetector:
 
                     return "open_folder"
 
-            # Default
+            # Website
+
+            if "www." in text:
+
+                return "open_website"
+
+            if "." in text:
+
+                return "open_website"
 
             return "open_file"
 
@@ -296,6 +384,114 @@ class IntentDetector:
         if "search size" in text:
 
             return "search_size"
+
+        # ---------------------------------
+        # Browser Commands
+        # ---------------------------------
+
+        if "new tab" in text:
+
+            return "new_tab"
+
+        if "close tab" in text:
+
+            return "close_tab"
+
+        if "next tab" in text:
+
+            return "next_tab"
+
+        if "previous tab" in text:
+
+            return "previous_tab"
+
+        if "refresh" in text:
+
+            return "refresh"
+
+        if "reload" in text:
+
+            return "refresh"
+
+        if (
+
+            "history" == text
+
+            or
+
+            "open history" == text
+
+            or
+
+            "browser history" in text
+
+        ):
+
+            return "browser_history"
+
+        if (
+
+            text == "downloads"
+
+            or
+
+            text == "open downloads"
+
+            or
+
+            "browser downloads" in text
+
+        ):
+
+            return "browser_downloads"
+
+        if "bookmark page" in text:
+
+            return "bookmark_page"
+
+        if "bookmark" in text:
+
+            return "browser_bookmarks"
+
+        if "address bar" in text:
+
+            return "address_bar"
+
+        if "go back" in text:
+
+            return "browser_back"
+
+        if "go forward" in text:
+
+            return "browser_forward"
+
+        if (
+
+            "private window" in text
+
+            or
+
+            "incognito" in text
+
+            or
+
+            "inprivate" in text
+
+        ):
+
+            return "private_window"
+
+        if (
+
+            "open website" in text
+
+            or
+
+            "visit" in text
+
+        ):
+
+            return "open_website"
 
         # ---------------------------------
         # Multi-word Commands (Highest Priority)

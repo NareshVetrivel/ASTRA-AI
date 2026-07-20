@@ -11,6 +11,7 @@ import pyautogui
 from pywinauto.keyboard import send_keys
 
 
+BROWSER_DELAY = 1.5
 class KeyboardController:
     """
     Perform keyboard automation tasks.
@@ -161,14 +162,32 @@ class KeyboardController:
             "ctrl+y": "^y",
             "ctrl+p": "^p",
             "ctrl+n": "^n",
-            "ctrl+o": "^o"
+            "ctrl+o": "^o",
+            "ctrl+t": "^t",
+            "ctrl+w": "^w",
+            "ctrl+tab": "^{TAB}",
+            "ctrl+shift+tab": "^+{TAB}",
+            "ctrl+r": "^r",
+            "ctrl+d": "^d",
+            "ctrl+h": "^h",
+            "ctrl+j": "^j",
+            "ctrl+shift+b": "^+b",
+            "ctrl+l": "^l",
+            "alt+left": "%{LEFT}",
+            "alt+right": "%{RIGHT}",
+            "ctrl+shift+n": "^+n"
         }
 
         if shortcut in shortcut_map:
             send_keys(shortcut_map[shortcut])
             return True
 
-        return False
+        # Generic fallback using PyAutoGUI
+        try:
+            pyautogui.hotkey(*[key.lower() for key in keys])
+            return True
+        except Exception:
+            return False
 
     def copy(self):
         """
@@ -204,6 +223,113 @@ class KeyboardController:
         """
 
         return self.hotkey("ctrl", "y")
+    
+
+    # --------------------------------------------------
+    # Browser Shortcuts
+    # --------------------------------------------------
+    def new_tab(self):
+        """
+        Open a new browser tab.
+        """
+        time.sleep(BROWSER_DELAY)
+        return self.hotkey("ctrl", "t")
+
+
+    def close_tab(self):
+        """
+        Close browser tab.
+        """
+        time.sleep(BROWSER_DELAY)
+        return self.hotkey("ctrl", "w")
+
+
+    def next_tab(self):
+        """
+        Go to next browser tab.
+        """
+        time.sleep(BROWSER_DELAY)
+        return self.hotkey("ctrl", "tab")
+
+
+    def previous_tab(self):
+        """
+        Go to Previous browser tab.
+        """
+        time.sleep(BROWSER_DELAY)
+        return self.hotkey("ctrl", "shift", "tab")
+
+
+    def refresh(self):
+        """
+        Refresh browser tab.
+        """
+        time.sleep(BROWSER_DELAY)
+        return self.hotkey("ctrl", "r")
+
+
+    def bookmarks(self):
+        """
+        Show bookmark bar.
+        """
+        time.sleep(BROWSER_DELAY)
+        return self.hotkey("ctrl", "shift", "b")
+
+
+    def downloads(self):
+        """
+        Open a Downloads browser tab.
+        """
+        time.sleep(BROWSER_DELAY)
+        return self.hotkey("ctrl", "j")
+
+
+    def history(self):
+        """
+        Open a history browser tab.
+        """
+        time.sleep(BROWSER_DELAY)
+        return self.hotkey("ctrl", "h")
+
+
+    def address_bar(self):
+        """
+        Focus browser address bar.
+        """
+        time.sleep(BROWSER_DELAY)
+        return self.hotkey("ctrl", "l")
+
+
+    def bookmark_page(self):
+        """
+        bookmark browser tab.
+        """
+        time.sleep(BROWSER_DELAY)
+        return self.hotkey("ctrl", "d")
+
+
+    def private_window(self):
+        """
+        Open a new private browser tab.
+        """
+        time.sleep(BROWSER_DELAY)
+        return self.hotkey("ctrl", "shift", "n")
+
+
+    def back(self):
+        """
+        Go to back browser tab.
+        """
+        time.sleep(BROWSER_DELAY)
+        return self.hotkey("alt", "left")
+
+
+    def forward(self):
+        """
+        Go forward.
+        """
+        time.sleep(BROWSER_DELAY)
+        return self.hotkey("alt", "right")
     
     def backspace(self):
         """

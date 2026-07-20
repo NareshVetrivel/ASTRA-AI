@@ -5,9 +5,6 @@ Routes the detected intent
 to the appropriate controller.
 """
 
-from automation.folder_manager import FolderManager
-from automation.file_manager import FileManager
-
 class CommandDispatcher:
 
     """
@@ -25,7 +22,8 @@ class CommandDispatcher:
         system_controller,
         file_finder,
         folder_manager,
-        file_manager
+        file_manager,
+        browser_controller
     ):
 
         self.tts = tts
@@ -41,12 +39,18 @@ class CommandDispatcher:
 
         self.folder_manager = folder_manager
         self.file_manager = file_manager
+        self.browser = browser_controller
+        
 
     def dispatch(
         self,
         intent,
         entity=None,
-        typed_text=None
+        typed_text=None,
+        browser=None,
+        website=None,
+        search_query=None,
+        profile=None
     ):
         """
         Execute the detected intent.
@@ -1594,6 +1598,274 @@ class CommandDispatcher:
 
                 }
 
+            # -------------------------
+            # Open Website
+            # -------------------------
+
+            elif intent == "open_website":
+
+                success = self.browser.open_website(
+
+                    website,
+
+                    browser or "chrome"
+
+                )
+
+                return {
+
+                    "success": success,
+
+                    "status":
+
+                    (
+
+                        "Status : Website Opened"
+
+                        if success
+
+                        else
+
+                        "Status : Website Failed"
+
+                    )
+
+                }
+
+            # -------------------------
+            # Google Search
+            # -------------------------
+
+            elif intent == "google_search":
+
+                success = self.browser.google_search(
+
+                    search_query,
+
+                    browser or "chrome"
+
+                )
+
+                return {
+
+                    "success": success,
+
+                    "status":
+
+                    (
+
+                        "Status : Search Completed"
+
+                        if success
+
+                        else
+
+                        "Status : Search Failed"
+
+                    )
+
+                }
+
+            # -------------------------
+            # New Tab
+            # -------------------------
+
+            elif intent == "new_tab":
+
+                success = self.browser.new_tab()
+
+                return {
+                    "success": success,
+                    "status": "Status : New Tab"
+                }
+
+            # -------------------------
+            # Close Tab
+            # -------------------------
+
+            elif intent == "close_tab":
+
+                success = self.browser.close_tab()
+
+                return {
+                    "success": success,
+                    "status": "Status : Tab Closed"
+                }
+
+            # -------------------------
+            # Next Tab
+            # -------------------------
+
+            elif intent == "next_tab":
+
+                success = self.browser.next_tab()
+
+                return {
+                    "success": success,
+                    "status": "Status : Next Tab"
+                }
+
+            # -------------------------
+            # Previous Tab
+            # -------------------------
+
+            elif intent == "previous_tab":
+
+                success = self.browser.previous_tab()
+
+                return {
+                    "success": success,
+                    "status": "Status : Previous Tab"
+                }
+
+            # -------------------------
+            # Refresh 
+            # -------------------------
+
+            elif intent == "refresh":
+
+                success = self.browser.refresh()
+
+                return {
+                    "success": success,
+                    "status": "Status : Page Refreshed"
+                }
+
+            # -------------------------
+            # Downloads
+            # -------------------------
+
+            elif intent == "browser_downloads":
+
+                success = self.browser.open_downloads()
+
+                return {
+                    "success": success,
+                    "status": "Status : Downloads Opened"
+                }
+
+            # -------------------------
+            # History
+            # -------------------------
+
+            elif intent == "browser_history":
+
+                success = self.browser.open_history()
+
+                return {
+                    "success": success,
+                    "status": "Status : History Opened"
+                }
+
+            # -------------------------
+            # Bookmark Bar
+            # -------------------------
+
+            elif intent == "browser_bookmarks":
+
+                success = self.browser.show_bookmarks()
+
+                return {
+                    "success": success,
+                    "status": "Status : Bookmark Bar"
+                }
+
+            # -------------------------
+            # Bookmark Page
+            # -------------------------
+
+            elif intent == "bookmark_page":
+
+                success = self.browser.bookmark_page()
+
+                return {
+                    "success": success,
+                    "status": "Status : Page Bookmarked"
+                }
+
+            # -------------------------
+            # Address Bar
+            # -------------------------
+
+            elif intent == "address_bar":
+
+                success = self.browser.focus_address_bar()
+
+                return {
+                    "success": success,
+                    "status": "Status : Address Bar"
+                }
+
+            # -------------------------
+            # Browser Back
+            # -------------------------
+
+            elif intent == "browser_back":
+
+                success = self.browser.back()
+
+                return {
+                    "success": success,
+                    "status": "Status : Back"
+                }
+
+            # -------------------------
+            # Browser Forward
+            # -------------------------
+
+            elif intent == "browser_forward":
+
+                success = self.browser.forward()
+
+                return {
+                    "success": success,
+                    "status": "Status : Forward"
+                }
+
+            # -------------------------
+            # Private Window
+            # -------------------------
+
+            elif intent == "private_window":
+
+                success = self.browser.private_window()
+
+                return {
+                    "success": success,
+                    "status": "Status : Private Window"
+                }
+
+            # -------------------------
+            # Open Chrome Profile
+            # -------------------------
+
+            elif intent == "open_chrome_profile":
+
+                success = self.browser.open_profile(
+
+                    profile
+
+                )
+
+                return {
+
+                    "success": success,
+
+                    "status":
+
+                    (
+
+                        "Status : Chrome Profile Opened"
+
+                        if success
+
+                        else
+
+                        "Status : Profile Failed"
+
+                    )
+
+                }
 
             # -------------------------
             # Search by Size

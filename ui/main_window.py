@@ -24,6 +24,7 @@ from workers.initialization_worker import InitializationWorker
 from automation.file_finder import FileFinder
 from automation.folder_manager import FolderManager
 from automation.file_manager import FileManager
+from automation.browser_controller import BrowserController
 
 class MainWindow(QMainWindow):
     """
@@ -51,6 +52,7 @@ class MainWindow(QMainWindow):
         self.file_finder = FileFinder()
         self.folder_manager = FolderManager()
         self.file_manager = FileManager()
+        self.browser_controller = BrowserController()
 
         self.dispatcher = CommandDispatcher(
             tts=self.tts,
@@ -62,7 +64,8 @@ class MainWindow(QMainWindow):
             system_controller=self.system_controller,
             file_finder=self.file_finder,
             folder_manager=self.folder_manager,
-            file_manager=self.file_manager
+            file_manager=self.file_manager,
+            browser_controller=self.browser_controller
         )
         # Window Settings
         self.setWindowTitle(settings.WINDOW_TITLE)
@@ -177,6 +180,68 @@ class MainWindow(QMainWindow):
             )
 
         # ---------------------------------
+        # Browser Commands
+        # ---------------------------------
+
+        elif intent in {
+
+            "launch_application",
+
+            "open_website",
+
+            "google_search",
+
+            "new_tab",
+
+            "close_tab",
+
+            "next_tab",
+
+            "previous_tab",
+
+            "refresh",
+
+            "browser_downloads",
+
+            "browser_history",
+
+            "browser_bookmarks",
+
+            "bookmark_page",
+
+            "address_bar",
+
+            "browser_back",
+
+            "browser_forward",
+
+            "private_window",
+
+            "open_chrome_profile"
+
+        }:
+
+            if intent == "launch_application":
+
+                entity = self.entity_extractor.extract_browser(text)
+
+            elif intent == "open_website":
+
+                entity = self.entity_extractor.extract_website(text)
+
+            elif intent == "google_search":
+
+                entity = self.entity_extractor.extract_search_query(text)
+
+            elif intent == "open_chrome_profile":
+
+                entity = None
+
+            else:
+
+                entity = None
+
+        # ---------------------------------
         # Folder Commands
         # ---------------------------------
 
@@ -214,25 +279,78 @@ class MainWindow(QMainWindow):
 
         typed_text = self.text_extractor.extract_text(text)
 
+        browser = self.entity_extractor.extract_browser(text)
+
+        website = self.entity_extractor.extract_website(text)
+
+        search_query = self.entity_extractor.extract_search_query(text)
+
+        profile = self.entity_extractor.extract_profile(text)
+
         # Show Analysis
         self.conversation_label.setText(
+
             f"You Said:\n\n{text}\n\n"
+
             f"Intent : {intent}\n"
+
             f"Entity : {entity}\n"
-            f"Text   : {typed_text}"
+
+            f"Browser : {browser}\n"
+
+            f"Website : {website}\n"
+
+            f"Search : {search_query}\n"
+
+            f"Profile : {profile}\n"
+
+            f"Text : {typed_text}"
+
         )
 
         print("\n========== ASTRA ==========")
         print(f"Text    : {text}")
         print(f"Intent  : {intent}")
         print(f"Entity  : {entity}")
-        print(f"Typing  : {typed_text}")
+        print(f"Browser : {browser}")
+
+        print(f"Website : {website}")
+
+        print(f"Search : {search_query}")
+
+        print(f"Profile : {profile}")
+
+        print(f"Typing : {typed_text}")
         print("===========================\n")
 
         result = self.dispatcher.dispatch(
+
             intent=intent,
+
             entity=entity,
-            typed_text=typed_text
+
+            typed_text=typed_text,
+
+            browser=browser,
+
+            website=website,
+
+            search_query=search_query,
+
+            profile=profile
+
+            if intent in {
+
+                "launch_application",
+
+                "open_website",
+
+                "google_search"
+
+            }
+
+            else typed_text
+
         )
 
         if result["success"]:
