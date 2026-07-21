@@ -189,7 +189,15 @@ class MainWindow(QMainWindow):
 
             "open_website",
 
+            "open_google",
+
+            "open_youtube",
+
             "google_search",
+
+            "youtube_search",
+
+            "play_youtube",
 
             "new_tab",
 
@@ -217,7 +225,7 @@ class MainWindow(QMainWindow):
 
             "private_window",
 
-            "open_chrome_profile"
+            "open_chrome_profile",
 
         }:
 
@@ -229,9 +237,25 @@ class MainWindow(QMainWindow):
 
                 entity = self.entity_extractor.extract_website(text)
 
+            elif intent == "open_google":
+
+                entity = "google.com"
+
+            elif intent == "open_youtube":
+
+                entity = "youtube.com"                
+
             elif intent == "google_search":
 
                 entity = self.entity_extractor.extract_search_query(text)
+
+            elif intent == "youtube_search":
+
+                entity = self.entity_extractor.extract_youtube_query(text)
+
+            elif intent == "play_youtube":
+
+                entity = self.entity_extractor.extract_youtube_query(text)
 
             elif intent == "open_chrome_profile":
 
@@ -283,7 +307,23 @@ class MainWindow(QMainWindow):
 
         website = self.entity_extractor.extract_website(text)
 
-        search_query = self.entity_extractor.extract_search_query(text)
+        if intent == "google_search":
+
+            search_query = self.entity_extractor.extract_search_query(text)
+
+        elif intent in {
+
+            "youtube_search",
+
+            "play_youtube"
+
+        }:
+
+            search_query = self.entity_extractor.extract_youtube_query(text)
+
+        else:
+
+            search_query = None
 
         profile = self.entity_extractor.extract_profile(text)
 
@@ -300,7 +340,7 @@ class MainWindow(QMainWindow):
 
             f"Website : {website}\n"
 
-            f"Search : {search_query}\n"
+            f"Search Query : {search_query}\n"
 
             f"Profile : {profile}\n"
 
@@ -338,18 +378,6 @@ class MainWindow(QMainWindow):
             search_query=search_query,
 
             profile=profile
-
-            if intent in {
-
-                "launch_application",
-
-                "open_website",
-
-                "google_search"
-
-            }
-
-            else typed_text
 
         )
 

@@ -106,14 +106,22 @@ class EntityExtractor:
 
             "naresh s": "Default",
 
+            "nares": "Default",
+
+            "nareesh": "Default",
+
+            "naresh profile": "Default",
+
             "naresh senthil": "Profile 1",
 
             "college": "Profile 1",
 
-            "ragxii": "Profile 12"
+            "college profile": "Profile 1",
 
+            "ragxii": "Profile 12",
+
+            "ragxii profile": "Profile 12"
         }
-
     # --------------------------------------------------
     # Load Applications
     # --------------------------------------------------
@@ -306,7 +314,15 @@ class EntityExtractor:
 
         for name, url in self.websites.items():
 
-            if name in text:
+            if f"open {name}" in text:
+
+                return url
+
+            if f"{name} website" in text:
+
+                return url
+
+            if text == name:
 
                 return url
 
@@ -314,9 +330,35 @@ class EntityExtractor:
 
         words = text.split()
 
+        valid_domains = {
+
+            "com",
+
+            "org",
+
+            "net",
+
+            "in",
+
+            "io",
+
+            "edu",
+
+            "gov"
+
+        }
+
         for word in words:
 
-            if "." in word:
+            word = word.strip(".,!?")
+
+            if "." not in word:
+
+                continue
+
+            extension = word.split(".")[-1]
+
+            if extension in valid_domains:
 
                 return word
 
@@ -376,8 +418,71 @@ class EntityExtractor:
 
             "on",
 
-            "please"
+            "please",
+            
+            "chrome",
 
+            "edge"      
+
+        }
+
+        words = [
+
+            word
+
+            for word in text.split()
+
+            if word not in remove_words
+
+        ]
+
+        query = " ".join(words).strip()
+
+        return query if query else None
+
+    # --------------------------------------------------
+    # Extract YouTube Query
+    # --------------------------------------------------
+
+    def extract_youtube_query(
+        self,
+        text
+    ):
+        """
+        Extract YouTube search query.
+        """
+
+        if not text:
+
+            return None
+
+        text = text.lower()
+
+        remove_words = {
+
+            "play",
+
+            "search",
+
+            "youtube",
+
+            "video",
+
+            "song",
+
+            "music",
+
+            "official",
+
+            "audio",
+
+            "lyrical",
+
+            "on",
+
+            "in",
+
+            "please"
         }
 
         words = [
@@ -442,11 +547,11 @@ class EntityExtractor:
 
         # Exact Match
 
-        for profile in self.chrome_profiles:
+        for profile, chrome_profile in self.chrome_profiles.items():
 
             if profile in text:
 
-                return profile
+                return chrome_profile
 
         # Fuzzy Match
 
@@ -472,7 +577,7 @@ class EntityExtractor:
 
             if score >= 80:
 
-                return profile
+                return self.chrome_profiles[profile]
 
         return None
 
@@ -529,7 +634,25 @@ class EntityExtractor:
 
             "into",
 
-            "in"
+            "in",
+
+            "youtube",
+
+            "play",
+
+            "video",
+
+            "song",
+
+            "using",
+
+            "with",
+
+            "browser",
+
+            "chrome",
+
+            "edge"
 
         }
 

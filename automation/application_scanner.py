@@ -265,3 +265,14 @@ class ApplicationScanner:
                 alias,
                 application
             )
+
+    # --------------------------------------------------
+    # Close
+    # --------------------------------------------------
+
+    def close(self):
+        """
+        Close database connection.
+        """
+
+        self.database.close()

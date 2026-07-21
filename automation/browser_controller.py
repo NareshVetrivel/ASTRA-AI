@@ -47,13 +47,23 @@ class BrowserController:
 
             "naresh": "Default",
 
+            "nares": "Default",
+
+            "nareesh": "Default",
+
             "naresh s": "Default",
+
+            "naresh profile": "Default",
 
             "college": "Profile 1",
 
+            "college profile": "Profile 1",
+
             "naresh senthil": "Profile 1",
 
-            "ragxii": "Profile 12"
+            "ragxii": "Profile 12",
+
+            "ragxii profile": "Profile 12"
 
         }
 
@@ -196,9 +206,26 @@ class BrowserController:
 
             return False
 
-        profile_name = profile_name.lower()
+        profile_name = profile_name.lower().strip()
 
-        profile = self.chrome_profiles.get(profile_name)
+        # Dispatcher may already pass "Default", "Profile 1", etc.
+        if profile_name in {
+            "default",
+            "profile 1",
+            "profile 12"
+        }:
+            profile = profile_name.title().replace("Profile", "Profile")
+
+        else:
+            profile = None
+
+            for alias, folder in self.chrome_profiles.items():
+
+                if alias in profile_name:
+
+                    profile = folder
+
+                    break
 
         if not profile:
 
@@ -247,41 +274,48 @@ class BrowserController:
             return False
 
     # --------------------------------------------------
+    # Open Profile (Alias)
+    # --------------------------------------------------
+
+    def open_profile(
+        self,
+        profile_name,
+        url=None
+    ):
+        """
+        Alias for opening Chrome profile.
+        """
+
+        return self.open_chrome_profile(
+            profile_name,
+            url
+        )
+
+    # --------------------------------------------------
     # Normalize URL
     # --------------------------------------------------
 
     @staticmethod
-    def normalize_url(
-        url
-    ):
-        """
-        Convert website text
-        into valid URL.
-        """
+    def normalize_url(url):
 
         url = url.strip().lower()
 
-        if url.startswith(
-
-            "http://"
-
-        ):
+        if url.startswith("http://"):
 
             return url
 
-        if url.startswith(
-
-            "https://"
-
-        ):
+        if url.startswith("https://"):
 
             return url
 
         if "." not in url:
 
-            url += ".com"
+            return (
+                "https://www.google.com/search?q="
+                + quote_plus(url)
+            )
 
-        return f"https://{url}"
+        return "https://" + url
 
     # --------------------------------------------------
     # Open Website
@@ -311,19 +345,20 @@ class BrowserController:
             website
         )
 
+        browser_path = self.get_browser_path(browser)
+
+        if not browser_path:
+
+            print(f"Browser path not found : {browser}")
+
+            return False
+
         try:
 
-            subprocess.Popen(
-
-            [
-            self.browser_paths[browser],
-
-            "--new-tab",
-
-            url
-
-            ]
-            )
+            subprocess.Popen([
+                browser_path,
+                url
+            ])
 
             print(
 
@@ -365,6 +400,12 @@ class BrowserController:
         if not self.browser_exists(browser):
 
             return False
+        
+        browser_path = self.get_browser_path(browser)
+
+        if not browser_path:
+
+            return False
 
         search_url = (
 
@@ -376,16 +417,10 @@ class BrowserController:
 
         try:
 
-            subprocess.Popen(
-            [
-            self.browser_paths[browser],
-
-            "--new-tab",
-
-            search_url
-
-            ]
-            )
+            subprocess.Popen([
+                browser_path,
+                search_url
+            ])
 
             print(
 
@@ -404,6 +439,115 @@ class BrowserController:
             )
 
             return False
+
+    def open_google(
+        self,
+        browser="chrome"
+    ):
+        """
+        Open Google homepage.
+        """
+
+        return self.open_website(
+            "google.com",
+            browser
+        )
+
+    # --------------------------------------------------
+    # YouTube Search
+    # --------------------------------------------------
+
+    def youtube_search(
+        self,
+        query,
+        browser="chrome"
+    ):
+        """
+        Search YouTube.
+        """
+
+        if not query:
+            return False
+
+        browser = browser.lower()
+
+        if not self.browser_exists(browser):
+            return False
+        
+        browser_path = self.get_browser_path(browser)
+
+        if not browser_path:
+
+            return False
+
+        search_url = (
+            "https://www.youtube.com/results?search_query="
+            + quote_plus(query)
+        )
+
+        try:
+
+            subprocess.Popen([
+                browser_path,
+                search_url
+            ])
+
+            print(f"YouTube Search : {query}")
+
+            return True
+
+        except Exception as error:
+
+            print(error)
+
+            return False
+
+    def open_youtube(
+        self,
+        browser="chrome"
+    ):
+        """
+        Open YouTube homepage.
+        """
+
+        return self.open_website(
+            "youtube.com",
+            browser
+        )
+
+    # --------------------------------------------------
+    # Play YouTube Video
+    # --------------------------------------------------
+
+    def play_youtube(
+        self,
+        query,
+        browser="chrome"
+    ):
+        """
+        Search and play first YouTube result.
+        """
+
+        success = self.youtube_search(
+            query,
+            browser
+        )
+
+        if not success:
+            return False
+
+        import time
+
+        time.sleep(5)
+
+        # Focus first result
+        self.keyboard.press_key("tab")
+        self.keyboard.press_key("tab")
+        self.keyboard.press_key("tab")
+
+        self.keyboard.press_key("enter")
+
+        return True
 
     # --------------------------------------------------
     # New Tab

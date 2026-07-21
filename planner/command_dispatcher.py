@@ -71,6 +71,24 @@ class CommandDispatcher:
                 and entity
             ):
 
+                # Website takes priority
+                if website:
+
+                    self.tts.speak(
+                        f"Opening {website}"
+                    )
+
+                    return {
+
+                        "success": self.browser.open_website(
+                            website,
+                            browser or entity
+                        ),
+
+                        "status": "Status : Website Opened"
+
+                    }
+
                 app_name = entity.replace(
                     ".exe",
                     ""
@@ -1604,6 +1622,22 @@ class CommandDispatcher:
 
             elif intent == "open_website":
 
+                if not website:
+
+                    return {
+
+                        "success": False,
+
+                        "status": "Status : Invalid Website"
+
+                    }
+
+                self.tts.speak(
+
+                    f"Opening {website}"
+
+                )
+
                 success = self.browser.open_website(
 
                     website,
@@ -1633,10 +1667,50 @@ class CommandDispatcher:
                 }
 
             # -------------------------
+            # Google Home
+            # -------------------------
+
+            elif intent == "open_google":
+
+                success = self.browser.open_google(
+                    browser or "chrome"
+                )
+
+                return {
+
+                    "success": success,
+
+                    "status": "Status : Google Opened"
+
+                }
+
+            # -------------------------
+            # Youtube Home
+            # -------------------------
+
+            elif intent == "open_youtube":
+
+                success = self.browser.open_youtube(
+                    browser or "chrome"
+                )
+
+                return {
+
+                    "success": success,
+
+                    "status": "Status : YouTube Opened"
+
+                }
+
+            # -------------------------
             # Google Search
             # -------------------------
 
             elif intent == "google_search":
+
+                self.tts.speak(
+                    f"Searching {search_query}"
+                )
 
                 success = self.browser.google_search(
 
@@ -1661,6 +1735,84 @@ class CommandDispatcher:
                         else
 
                         "Status : Search Failed"
+
+                    )
+
+                }
+
+            # -------------------------
+            # YouTube Search
+            # -------------------------
+
+            elif intent == "youtube_search":
+
+                self.tts.speak(
+
+                    f"Searching YouTube for {search_query}"
+
+                )
+
+                success = self.browser.youtube_search(
+
+                    search_query,
+
+                    browser or "chrome"
+
+                )
+
+                return {
+
+                    "success": success,
+
+                    "status":
+
+                    (
+
+                        "Status : YouTube Search"
+
+                        if success
+
+                        else
+
+                        "Status : Search Failed"
+
+                    )
+
+                }
+
+            # -------------------------
+            # Play YouTube
+            # -------------------------
+
+            elif intent == "play_youtube":
+
+                self.tts.speak(
+                    "Playing on YouTube."
+                )
+
+                success = self.browser.play_youtube(
+
+                    search_query,
+
+                    browser or "chrome"
+
+                )
+
+                return {
+
+                    "success": success,
+
+                    "status":
+
+                    (
+
+                        "Status : Playing Video"
+
+                        if success
+
+                        else
+
+                        "Status : Play Failed"
 
                     )
 
@@ -1841,10 +1993,13 @@ class CommandDispatcher:
 
             elif intent == "open_chrome_profile":
 
+                self.tts.speak(
+                    f"Opening {profile} profile."
+                )
+
                 success = self.browser.open_profile(
-
-                    profile
-
+                    profile,
+                    website
                 )
 
                 return {
@@ -1852,17 +2007,11 @@ class CommandDispatcher:
                     "success": success,
 
                     "status":
-
                     (
-
                         "Status : Chrome Profile Opened"
-
                         if success
-
                         else
-
                         "Status : Profile Failed"
-
                     )
 
                 }

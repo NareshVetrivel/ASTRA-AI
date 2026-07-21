@@ -221,89 +221,113 @@ class IntentDetector:
             if any(site in text for site in [
 
                 "youtube",
-                "google",
+
                 "gmail",
+
                 "github",
+
                 "wikipedia",
+
                 "amazon",
+
                 "flipkart",
+
                 "linkedin",
+
                 "instagram",
+
                 "facebook",
+
                 "twitter",
-                ".com",
-                ".org",
-                ".net"
+
+                "chatgpt",
+
+                "reddit",
+
+                "stackoverflow"
 
             ]):
 
                 return "open_website"
 
-            # ---------------------------------
-            # Google Search
-            # ---------------------------------
+       # ---------------------------------
+        # Google Search
+        # ---------------------------------
 
-            if (
+        if (
 
-                text.startswith("search")
+            text.startswith("search")
 
+            or
+
+            text.startswith("google search")
+
+            or
+
+            text.startswith("search google")
+
+            or
+
+            " search " in text
+
+        ):
+
+            return "google_search"
+
+        # Browser commands (check BEFORE folders)
+
+        if text == "open history":
+
+            return "browser_history"
+
+        if text == "history":
+
+            return "browser_history"
+
+        if text == "open browser history":
+
+            return "browser_history"
+
+        if text == "open browser downloads":
+
+            return "browser_downloads"
+
+        # Chrome Profiles
+
+        if (
+            "profile" in text
+            and
+            (
+                "open" in text
                 or
-
-                "search google" in text
-
+                "launch" in text
                 or
+                "start" in text
+            )
+        ):
+            return "open_chrome_profile"
 
-                "google search" in text
+        # Special Folders
 
-            ):
+        for folder in self.folder_open_keywords:
 
-                return "google_search"
+            if folder in text:
 
-            # Browser commands (check BEFORE folders)
+                return "open_folder"
 
-            if text == "open history":
+        # Website
 
-                return "browser_history"
+        if "www." in text:
 
-            if text == "history":
+            return "open_website"
 
-                return "browser_history"
+        # Applications
 
-            if text == "open browser history":
+        for app in self.application_open_keywords:
 
-                return "browser_history"
+            if app in text:
 
-            if text == "open browser downloads":
-
-                return "browser_downloads"
-
-            # Applications
-
-            for app in self.application_open_keywords:
-
-                if app in text:
-
-                    return "launch_application"
-
-            # Special Folders
-
-            for folder in self.folder_open_keywords:
-
-                if folder in text:
-
-                    return "open_folder"
-
-            # Website
-
-            if "www." in text:
-
-                return "open_website"
-
-            if "." in text:
-
-                return "open_website"
-
-            return "open_file"
+                return "launch_application"
 
         # ---------------------------------
         # Folder Commands
@@ -445,6 +469,48 @@ class IntentDetector:
 
             return "browser_downloads"
 
+        if (
+
+            "youtube" in text
+
+            and
+
+            "search" in text
+
+        ):
+
+            return "youtube_search"
+
+        # YouTube
+
+        if (
+
+            text.startswith("play")
+
+            or
+
+            "play song" in text
+
+            or
+
+            "play music" in text
+
+            or
+
+            "play video" in text
+
+            or
+
+            " song" in text
+
+            or
+
+            " music" in text
+
+        ):
+
+            return "play_youtube"
+
         if "bookmark page" in text:
 
             return "bookmark_page"
@@ -480,6 +546,7 @@ class IntentDetector:
         ):
 
             return "private_window"
+
 
         if (
 
@@ -610,6 +677,19 @@ class IntentDetector:
             or "my computer" in text
         ):
             return "open_file_explorer"
+
+        # Default Open Command
+
+        if (
+            text.startswith("open")
+            or
+            text.startswith("launch")
+            or
+            text.startswith("run")
+        ):
+            if "profile" not in text:
+
+                return "open_file"
 
         # ---------------------------------
         # Exact Match
