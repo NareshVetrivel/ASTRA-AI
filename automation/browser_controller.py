@@ -24,6 +24,10 @@ from urllib.parse import quote_plus
 
 from database.database_manager import DatabaseManager
 from automation.keyboard_controller import KeyboardController
+try:
+    from automation.playwright_controller import PlaywrightController
+except ImportError:
+    PlaywrightController = None
 
 
 class BrowserController:
@@ -38,6 +42,13 @@ class BrowserController:
         self.browser_paths = self.load_browser_paths()
 
         self.keyboard = KeyboardController()
+
+        if PlaywrightController:
+            self.playwright = PlaywrightController(
+                profile="Default"
+            )
+        else:
+            self.playwright = None
 
         # ---------------------------------
         # Chrome Profiles
@@ -117,6 +128,9 @@ class BrowserController:
         Check whether browser exists.
         """
 
+        if not browser:
+            return False
+
         return browser.lower() in self.browser_paths
 
     # --------------------------------------------------
@@ -130,6 +144,9 @@ class BrowserController:
         """
         Return executable path.
         """
+
+        if not browser:
+            return None
 
         return self.browser_paths.get(
             browser.lower()
@@ -159,17 +176,15 @@ class BrowserController:
 
         try:
 
-            subprocess.Popen(
-
-            [
-
-            self.browser_paths[browser],
-
-            "--new-window"
-
+            command = [
+                self.browser_paths[browser],
+                "--new-window"
             ]
 
-            )
+            if browser == "chrome":
+                command.append("--remote-debugging-port=9222")
+
+            subprocess.Popen(command)
 
             print(
 
@@ -240,13 +255,14 @@ class BrowserController:
             return False
 
         command = [
-
             chrome,
-
-            f'--profile-directory={profile}'
-
+            "--user-data-dir=C:\\ASTRA_AI_BROWSER",
+            f"--profile-directory={profile}",
+            "--remote-debugging-port=9222",
+            "--new-window",
+            "--no-first-run",
+            "--no-default-browser-check"
         ]
-
         if url:
 
             command.append(
@@ -525,29 +541,23 @@ class BrowserController:
         browser="chrome"
     ):
         """
-        Search and play first YouTube result.
+        Play first YouTube result.
         """
 
-        success = self.youtube_search(
-            query,
-            browser
-        )
+        if self.playwright:
 
-        if not success:
-            return False
+            try:
+                if not query:
+                    return False
 
-        import time
+                return self.playwright.play_youtube(query)
 
-        time.sleep(5)
+            except Exception as error:
 
-        # Focus first result
-        self.keyboard.press_key("tab")
-        self.keyboard.press_key("tab")
-        self.keyboard.press_key("tab")
+                print(f"Playwright Failed : {error}")
 
-        self.keyboard.press_key("enter")
-
-        return True
+        # Fallback
+        return self.youtube_search(query, browser)
 
     # --------------------------------------------------
     # New Tab
@@ -763,5 +773,8 @@ class BrowserController:
         """
         Close database.
         """
+
+        if self.playwright:
+            self.playwright.close()
 
         self.database.close()

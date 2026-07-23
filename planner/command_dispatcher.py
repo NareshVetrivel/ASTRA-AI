@@ -1786,13 +1786,15 @@ class CommandDispatcher:
 
             elif intent == "play_youtube":
 
+                query = search_query or entity
+
                 self.tts.speak(
-                    "Playing on YouTube."
+                    f"Playing {query} on YouTube."
                 )
 
                 success = self.browser.play_youtube(
 
-                    search_query,
+                    query,
 
                     browser or "chrome"
 

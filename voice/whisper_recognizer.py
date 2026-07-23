@@ -19,6 +19,15 @@ class WhisperRecognizer:
         Initialize Whisper model and microphone.
         """
 
+        self.recognizer = sr.Recognizer()
+
+        self.recognizer.dynamic_energy_threshold = True
+        self.recognizer.energy_threshold = 250
+        self.recognizer.pause_threshold = 0.8
+        self.recognizer.non_speaking_duration = 0.5
+
+        self.microphone = sr.Microphone()
+
         print("\nLoading Faster-Whisper model...")
 
         self.model = WhisperModel(
@@ -28,9 +37,6 @@ class WhisperRecognizer:
         )
 
         print("Whisper model loaded successfully.")
-
-        self.recognizer = sr.Recognizer()
-        self.microphone = sr.Microphone()
 
     def record_audio(self):
         """
@@ -48,14 +54,16 @@ class WhisperRecognizer:
 
                 self.recognizer.adjust_for_ambient_noise(
                     source,
-                    duration=1
+                    duration=0.5
                 )
 
                 audio = self.recognizer.listen(
                     source,
-                    timeout=5,
-                    phrase_time_limit=8
+                    timeout=None,
+                    phrase_time_limit=10
                 )
+                print("Audio captured successfully.")
+                print("Audio Bytes :", len(audio.frame_data))
 
             temp_file = "temp_audio.wav"
 
@@ -84,6 +92,11 @@ class WhisperRecognizer:
 
             audio_file = self.record_audio()
 
+            print("Audio File :", audio_file)
+
+            if audio_file:
+                print("File Size :", os.path.getsize(audio_file))
+
             if audio_file is None:
                 return None
 
@@ -93,7 +106,7 @@ class WhisperRecognizer:
                 audio_file,
                 beam_size=5,
                 language="en",
-                vad_filter=True
+                vad_filter=False
             )
 
             text_parts = []
@@ -107,8 +120,8 @@ class WhisperRecognizer:
             print(f"Recognized Text : {text}")
             print("===========================\n")
 
-            if os.path.exists(audio_file):
-                os.remove(audio_file)
+            #if os.path.exists(audio_file):
+                #os.remove(audio_file)
 
             if text == "":
                 return None

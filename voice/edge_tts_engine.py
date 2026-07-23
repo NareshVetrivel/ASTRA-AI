@@ -5,6 +5,7 @@ Microsoft Edge Text To Speech Engine
 import asyncio
 import os
 import tempfile
+import threading
 
 import edge_tts
 import pygame
@@ -19,9 +20,13 @@ class EdgeTTSEngine:
 
         self.voice = "en-IN-NeerjaNeural"
 
-        pygame.mixer.init()
+        if not pygame.mixer.get_init():
+            pygame.mixer.init()
 
     async def _generate_speech(self, text, file_path):
+        """
+        Generate speech using Microsoft Edge TTS.
+        """
 
         communicate = edge_tts.Communicate(
             text=text,
@@ -30,10 +35,11 @@ class EdgeTTSEngine:
 
         await communicate.save(file_path)
 
-    def speak(self, text):
-
-        if not text:
-            return
+    def _speak_sync(self, text):
+        """
+        Generate and play speech inside
+        a dedicated thread.
+        """
 
         temp_file = tempfile.NamedTemporaryFile(
             delete=False,
@@ -41,17 +47,26 @@ class EdgeTTSEngine:
         )
 
         temp_path = temp_file.name
-
         temp_file.close()
+
+        loop = asyncio.new_event_loop()
 
         try:
 
-            asyncio.run(
+            asyncio.set_event_loop(loop)
+
+            loop.run_until_complete(
                 self._generate_speech(
                     text,
                     temp_path
                 )
             )
+
+        finally:
+
+            loop.close()
+
+        try:
 
             pygame.mixer.music.load(temp_path)
 
@@ -62,7 +77,24 @@ class EdgeTTSEngine:
 
         finally:
 
-            pygame.mixer.music.unload()
+            try:
+                pygame.mixer.music.unload()
+            except Exception:
+                pass
 
             if os.path.exists(temp_path):
                 os.remove(temp_path)
+
+    def speak(self, text):
+        """
+        Speak text asynchronously.
+        """
+
+        if not text:
+            return
+
+        threading.Thread(
+            target=self._speak_sync,
+            args=(text,),
+            daemon=True
+        ).start()

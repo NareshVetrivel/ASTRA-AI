@@ -231,7 +231,7 @@ class MainWindow(QMainWindow):
 
             if intent == "launch_application":
 
-                entity = self.entity_extractor.extract_browser(text)
+                entity = self.entity_extractor.extract_application(text)
 
             elif intent == "open_website":
 
