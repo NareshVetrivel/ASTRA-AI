@@ -543,3 +543,24 @@ class MainWindow(QMainWindow):
         finally:
 
             self.microphone_button.setEnabled(True)
+
+    # --------------------------------------------------
+    # Close Application
+    # --------------------------------------------------
+
+    def closeEvent(self, event):
+        """
+        Cleanup resources before closing ASTRA.
+        """
+
+        try:
+
+            self.browser_controller.close()
+
+        except Exception as error:
+
+            print(
+                f"Browser Cleanup Error : {error}"
+            )
+
+        super().closeEvent(event)

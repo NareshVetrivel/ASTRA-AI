@@ -2,6 +2,7 @@
 Playwright Browser Automation
 
 ASTRA-AI V1
+Production Ready
 """
 
 import subprocess
@@ -12,7 +13,7 @@ from urllib.parse import quote_plus
 from playwright.sync_api import (
     sync_playwright,
     Error,
-    TimeoutError
+    TimeoutError,
 )
 
 
@@ -36,6 +37,19 @@ class PlaywrightController:
         self.page = None
 
     # --------------------------------------------------
+    # Reset Browser State
+    # --------------------------------------------------
+
+    def _reset_browser(self):
+        """
+        Clear all browser references.
+        """
+
+        self.browser = None
+        self.context = None
+        self.page = None
+
+    # --------------------------------------------------
     # Chrome Executable
     # --------------------------------------------------
 
@@ -45,7 +59,7 @@ class PlaywrightController:
 
             r"C:\Program Files\Google\Chrome\Application\chrome.exe",
 
-            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
 
         ]
 
@@ -101,47 +115,52 @@ class PlaywrightController:
 
             "--no-default-browser-check",
 
-            "--disable-popup-blocking"
+            "--disable-popup-blocking",
 
         ]
 
         subprocess.Popen(command)
 
     # --------------------------------------------------
-    # Connect To CDP
+    # Connect CDP
     # --------------------------------------------------
 
     def _connect_cdp(self):
 
-        self.browser = self.playwright.chromium.connect_over_cdp(
+        self.browser = (
 
-            f"http://127.0.0.1:{self.DEBUG_PORT}"
+            self.playwright.chromium.connect_over_cdp(
+
+                f"http://127.0.0.1:{self.DEBUG_PORT}"
+
+            )
 
         )
 
     # --------------------------------------------------
-    # Ensure Browser
+    # Ensure Browser Connection
     # --------------------------------------------------
 
     def _connect(self):
+        """
+        Ensure browser connection is alive.
+        Automatically reconnect if browser
+        was closed manually.
+        """
 
         try:
 
             if (
-
                 self.page
-
                 and
-
                 not self.page.is_closed()
-
             ):
 
                 return True
 
         except Exception:
 
-            pass
+            self._reset_browser()
 
         self._start_playwright()
 
@@ -174,36 +193,39 @@ class PlaywrightController:
             if not connected:
 
                 print(
-
                     "Unable to connect to Chrome CDP."
-
                 )
 
                 return False
 
-        if self.browser.contexts:
+        try:
 
-            self.context = self.browser.contexts[0]
+            if self.browser.contexts:
 
-        else:
+                self.context = self.browser.contexts[0]
 
-            self.context = self.browser.new_context()
+            else:
 
-        if self.context.pages:
+                self.context = self.browser.new_context()
 
-            self.page = self.context.pages[-1]
+            if self.context.pages:
 
-        else:
+                self.page = self.context.pages[-1]
 
-            self.page = self.context.new_page()
+            else:
 
-            self.page.goto(
+                self.page = self.context.new_page()
 
-                "https://www.google.com",
+                self.page.goto(
+                    "https://www.google.com",
+                    wait_until="domcontentloaded"
+                )
 
-                wait_until="domcontentloaded"
+        except Exception:
 
-            )
+            self._reset_browser()
+
+            return False
 
         print("Playwright Ready.")
 
@@ -218,11 +240,51 @@ class PlaywrightController:
 
         url = url.strip()
 
-        if url.startswith(("http://", "https://")):
+        if url.startswith((
+            "http://",
+            "https://"
+        )):
 
             return url
 
         return "https://" + url
+
+    # --------------------------------------------------
+    # Retry Browser Action
+    # --------------------------------------------------
+
+    def _retry_action(self, action, *args):
+        """
+        Execute a browser action.
+
+        If the browser was closed manually,
+        reconnect automatically and retry once.
+        """
+
+        try:
+
+            return action(*args)
+
+        except Exception as error:
+
+            message = str(error)
+
+            if (
+                "Target page" in message
+                or "Target closed" in message
+                or "context or browser has been closed" in message
+            ):
+
+                print("Browser disconnected.")
+                print("Reconnecting...")
+
+                self._reset_browser()
+
+                if self._connect():
+
+                    return action(*args)
+
+            raise error
 
     # --------------------------------------------------
     # Open Website
@@ -236,11 +298,9 @@ class PlaywrightController:
         if not self._connect():
             return False
 
-        try:
+        def _open(site):
 
-            url = self.normalize_url(
-                website
-            )
+            url = self.normalize_url(site)
 
             self.page.goto(
                 url,
@@ -248,11 +308,16 @@ class PlaywrightController:
                 timeout=60000
             )
 
-            print(
-                f"Opening : {url}"
-            )
+            print(f"Opening : {url}")
 
             return True
+
+        try:
+
+            return self._retry_action(
+                _open,
+                website
+            )
 
         except Exception as error:
 
@@ -274,14 +339,11 @@ class PlaywrightController:
         if not self._connect():
             return False
 
-        try:
+        def _search(search_query):
 
             url = (
-
                 "https://www.google.com/search?q="
-
-                + quote_plus(query)
-
+                + quote_plus(search_query)
             )
 
             self.page.goto(
@@ -291,10 +353,17 @@ class PlaywrightController:
             )
 
             print(
-                f"Searching Google : {query}"
+                f"Searching Google : {search_query}"
             )
 
             return True
+
+        try:
+
+            return self._retry_action(
+                _search,
+                query
+            )
 
         except Exception as error:
 
@@ -316,14 +385,11 @@ class PlaywrightController:
         if not self._connect():
             return False
 
-        try:
+        def _search(search_query):
 
             url = (
-
                 "https://www.youtube.com/results?search_query="
-
-                + quote_plus(query)
-
+                + quote_plus(search_query)
             )
 
             self.page.goto(
@@ -338,10 +404,17 @@ class PlaywrightController:
             )
 
             print(
-                f"YouTube Search : {query}"
+                f"YouTube Search : {search_query}"
             )
 
             return True
+
+        try:
+
+            return self._retry_action(
+                _search,
+                query
+            )
 
         except Exception as error:
 
@@ -363,12 +436,10 @@ class PlaywrightController:
         if not self.youtube_search(query):
             return False
 
-        try:
+        def _play(search_query):
 
             first_video = self.page.locator(
-
                 "ytd-video-renderer a#thumbnail"
-
             ).first
 
             first_video.wait_for(
@@ -386,10 +457,17 @@ class PlaywrightController:
             )
 
             print(
-                f"Playing : {query}"
+                f"Playing : {search_query}"
             )
 
             return True
+
+        try:
+
+            return self._retry_action(
+                _play,
+                query
+            )
 
         except TimeoutError:
 
@@ -424,10 +502,18 @@ class PlaywrightController:
         if not self._connect():
             return None
 
-        return self.page.url
+        try:
+
+            return self.page.url
+
+        except Exception:
+
+            self._reset_browser()
+
+            return None
 
     # --------------------------------------------------
-    # Refresh
+    # Refresh Page
     # --------------------------------------------------
 
     def refresh(self):
@@ -435,17 +521,66 @@ class PlaywrightController:
         if not self._connect():
             return False
 
-        self.page.reload(
-            wait_until="domcontentloaded"
-        )
+        try:
 
-        return True
+            self.page.reload(
+                wait_until="domcontentloaded"
+            )
+
+            return True
+
+        except Exception as error:
+
+            print(
+                f"Refresh Error : {error}"
+            )
+
+            self._reset_browser()
+
+            return False
 
     # --------------------------------------------------
-    # Close
+    # Close Browser Controller
     # --------------------------------------------------
 
     def close(self):
+        """
+        Gracefully shutdown Playwright.
+        """
+
+        try:
+
+            if (
+                self.page
+                and
+                not self.page.is_closed()
+            ):
+
+                self.page.close()
+
+        except Exception:
+
+            pass
+
+        try:
+
+            if self.context:
+
+                self.context.close()
+
+        except Exception:
+
+            pass
+
+        try:
+
+            if self.browser:
+
+                self.browser.close()
+
+        except Exception:
+
+            pass
 
         try:
 
@@ -457,7 +592,10 @@ class PlaywrightController:
 
             pass
 
-        self.browser = None
-        self.context = None
-        self.page = None
+        self._reset_browser()
+
         self.playwright = None
+
+        print(
+            "Playwright shutdown completed."
+        )
