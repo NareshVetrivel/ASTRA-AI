@@ -21,6 +21,10 @@ from automation.file_indexer import (
     FileIndexer
 )
 
+from voice.whisper_recognizer import (
+    WhisperRecognizer
+)
+
 
 class InitializationWorker(QThread):
     """
@@ -43,10 +47,13 @@ class InitializationWorker(QThread):
 
     def __init__(
         self,
+        recognizer,
         parent=None
     ):
 
         super().__init__(parent)
+
+        self.recognizer = recognizer
 
     # ----------------------------------
     # Run Worker
@@ -86,6 +93,16 @@ class InitializationWorker(QThread):
             indexer.index_files()
 
             indexer.close()
+
+            # --------------------------
+            # Whisper Model Loading
+            # --------------------------
+
+            self.status_changed.emit(
+                "Loading Whisper Model..."
+            )
+
+            self.recognizer.load_model()
 
             # --------------------------
             # Initialization Completed

@@ -28,6 +28,16 @@ class WhisperRecognizer:
 
         self.microphone = sr.Microphone()
 
+        self.model = None
+
+    def load_model(self):
+        """
+        Load Faster-Whisper model.
+        """
+
+        if self.model is not None:
+            return
+
         print("\nLoading Faster-Whisper model...")
 
         self.model = WhisperModel(
@@ -89,6 +99,12 @@ class WhisperRecognizer:
         """
 
         try:
+
+            if self.model is None:
+
+                print("Whisper model not loaded.")
+
+                return None
 
             audio_file = self.record_audio()
 

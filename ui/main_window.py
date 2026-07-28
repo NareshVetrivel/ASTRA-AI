@@ -36,22 +36,33 @@ class MainWindow(QMainWindow):
 
         # Core Modules
         self.recognizer = WhisperRecognizer()
+
         self.tts = TextToSpeech()
 
         self.intent_detector = IntentDetector()
+
         self.entity_extractor = EntityExtractor()
+
         self.text_extractor = TextExtractor()
 
         self.app_launcher = AppLauncher()
+
         self.app_closer = AppCloser()
 
         self.keyboard_controller = KeyboardController()
+
         self.mouse_controller = MouseController()
+
         self.window_controller = WindowController()
+
         self.system_controller = SystemController()
+
         self.file_finder = FileFinder()
+
         self.folder_manager = FolderManager()
+
         self.file_manager = FileManager()
+
         self.browser_controller = BrowserController()
 
         self.dispatcher = CommandDispatcher(
@@ -419,7 +430,9 @@ class MainWindow(QMainWindow):
 
         self.microphone_button.setEnabled(False)
 
-        self.worker = InitializationWorker()
+        self.worker = InitializationWorker(
+            self.recognizer
+        )
 
         self.worker.status_changed.connect(
             self.update_initialization_status
