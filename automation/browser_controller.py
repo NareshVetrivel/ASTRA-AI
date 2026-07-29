@@ -19,6 +19,7 @@ Features (Part 1)
 ASTRA-AI V1
 """
 
+import os
 import subprocess
 from urllib.parse import quote_plus
 
@@ -44,11 +45,22 @@ class BrowserController:
         self.keyboard = KeyboardController()
 
         if PlaywrightController:
+
+            # Personal Chrome
             self.playwright = PlaywrightController(
                 profile="Default"
             )
+
+            # Automation Chrome (Guest / ASTRA)
+            self.playwright_guest = PlaywrightController(
+                profile="Default",
+                user_data_dir=r"C:\ASTRA_AI_BROWSER"
+            )
+
         else:
+
             self.playwright = None
+            self.playwright_guest = None
 
         # ---------------------------------
         # Chrome Profiles
@@ -70,11 +82,7 @@ class BrowserController:
 
             "college profile": "Profile 1",
 
-            "naresh senthil": "Profile 1",
-
-            "ragxii": "Profile 12",
-
-            "ragxii profile": "Profile 12"
+            "naresh senthil": "Default"
 
         }
 
@@ -224,12 +232,11 @@ class BrowserController:
         profile_name = profile_name.lower().strip()
 
         # Dispatcher may already pass "Default", "Profile 1", etc.
-        if profile_name in {
-            "default",
-            "profile 1",
-            "profile 12"
-        }:
-            profile = profile_name.title().replace("Profile", "Profile")
+        if profile_name.lower() == "default":
+            profile = "Default"
+
+        elif profile_name.lower() == "profile 1":
+            profile = "Profile 1"
 
         else:
             profile = None
@@ -254,9 +261,16 @@ class BrowserController:
 
             return False
 
+        real_user_data = os.path.join(
+            os.environ["LOCALAPPDATA"],
+            "Google",
+            "Chrome",
+            "User Data"
+        )
+
         command = [
             chrome,
-            "--user-data-dir=C:\\ASTRA_AI_BROWSER",
+            f"--user-data-dir={real_user_data}",
             f"--profile-directory={profile}",
             "--remote-debugging-port=9222",
             "--new-window",
@@ -371,18 +385,15 @@ class BrowserController:
 
         try:
 
-            subprocess.Popen([
-                browser_path,
+            success = self.open_chrome_profile(
+                "Default",
                 url
-            ])
-
-            print(
-
-                f"Opening : {url}"
-
             )
 
-            return True
+            if success:
+                print(f"Opening : {url}")
+
+            return success
 
         except Exception as error:
 
@@ -433,18 +444,15 @@ class BrowserController:
 
         try:
 
-            subprocess.Popen([
-                browser_path,
+            success = self.open_chrome_profile(
+                "Default",
                 search_url
-            ])
-
-            print(
-
-                f"Searching Google : {query}"
-
             )
 
-            return True
+            if success:
+                print(f"Searching Google : {query}")
+
+            return success
 
         except Exception as error:
 
@@ -503,14 +511,15 @@ class BrowserController:
 
         try:
 
-            subprocess.Popen([
-                browser_path,
+            success = self.open_chrome_profile(
+                "Default",
                 search_url
-            ])
+            )
 
-            print(f"YouTube Search : {query}")
+            if success:
+                print(f"YouTube Search : {query}")
 
-            return True
+            return success
 
         except Exception as error:
 
@@ -550,7 +559,7 @@ class BrowserController:
                 if not query:
                     return False
 
-                return self.playwright.play_youtube(query)
+                return self.playwright_guest.play_youtube(query)
 
             except Exception as error:
 
@@ -776,5 +785,8 @@ class BrowserController:
 
         if self.playwright:
             self.playwright.close()
+
+        if self.playwright_guest:
+            self.playwright_guest.close()
 
         self.database.close()

@@ -5,10 +5,12 @@ ASTRA-AI V1
 Production Ready
 """
 
+import os
 import subprocess
 import time
 from pathlib import Path
 from urllib.parse import quote_plus
+from automation.keyboard_controller import KeyboardController
 
 from playwright.sync_api import (
     sync_playwright,
@@ -25,16 +27,30 @@ class PlaywrightController:
 
     DEBUG_PORT = 9222
 
-    USER_DATA_DIR = r"C:\ASTRA_AI_BROWSER"
-
-    def __init__(self, profile="Default"):
+    def __init__(
+        self,
+        profile="Default",
+        user_data_dir=None
+    ):
 
         self.profile = profile
+
+        self.USER_DATA_DIR = (
+            user_data_dir
+            or os.path.join(
+                os.environ["LOCALAPPDATA"],
+                "Google",
+                "Chrome",
+                "User Data"
+            )
+        )
 
         self.playwright = None
         self.browser = None
         self.context = None
         self.page = None
+
+        self.keyboard = KeyboardController()
 
     # --------------------------------------------------
     # Reset Browser State
@@ -94,11 +110,6 @@ class PlaywrightController:
                 "Google Chrome not found."
             )
 
-        Path(self.USER_DATA_DIR).mkdir(
-            parents=True,
-            exist_ok=True
-        )
-
         command = [
 
             chrome,
@@ -110,6 +121,8 @@ class PlaywrightController:
             f"--profile-directory={self.profile}",
 
             "--new-window",
+
+            "--start-maximized",
 
             "--no-first-run",
 
@@ -126,7 +139,6 @@ class PlaywrightController:
     # --------------------------------------------------
 
     def _connect_cdp(self):
-
         self.browser = (
 
             self.playwright.chromium.connect_over_cdp(
@@ -136,7 +148,6 @@ class PlaywrightController:
             )
 
         )
-
     # --------------------------------------------------
     # Ensure Browser Connection
     # --------------------------------------------------
@@ -147,7 +158,6 @@ class PlaywrightController:
         Automatically reconnect if browser
         was closed manually.
         """
-
         try:
 
             if (
@@ -200,26 +210,15 @@ class PlaywrightController:
 
         try:
 
-            if self.browser.contexts:
+            if not self.browser.contexts:
+                return False
 
-                self.context = self.browser.contexts[0]
-
-            else:
-
-                self.context = self.browser.new_context()
+            self.context = self.browser.contexts[-1]
 
             if self.context.pages:
-
                 self.page = self.context.pages[-1]
-
             else:
-
                 self.page = self.context.new_page()
-
-                self.page.goto(
-                    "https://www.google.com",
-                    wait_until="domcontentloaded"
-                )
 
         except Exception:
 
@@ -381,7 +380,6 @@ class PlaywrightController:
         self,
         query
     ):
-
         if not self._connect():
             return False
 
@@ -432,7 +430,6 @@ class PlaywrightController:
         self,
         query
     ):
-
         if not self.youtube_search(query):
             return False
 
@@ -449,12 +446,27 @@ class PlaywrightController:
 
             first_video.scroll_into_view_if_needed()
 
-            first_video.click()
+            self.page.wait_for_load_state("networkidle")
 
-            self.page.wait_for_url(
-                "**/watch*",
-                timeout=15000
-            )
+            first_video.click(force=True)
+
+            # Wait for video page
+            self.page.wait_for_load_state("domcontentloaded")
+
+            # Give YouTube player time to initialize
+            self.page.wait_for_timeout(3000)
+
+            # Move mouse away so controls disappear
+            self.page.mouse.move(0, 0)
+
+            # Enter fullscreen
+            self.page.locator(".ytp-fullscreen-button").click()
+
+            # Wait for fullscreen animation
+            self.page.wait_for_timeout(1000)
+
+            # Browser Full Screen (F11)
+            self.keyboard.press_key("f11")
 
             print(
                 f"Playing : {search_query}"
