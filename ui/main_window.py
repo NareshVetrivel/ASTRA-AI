@@ -61,9 +61,15 @@ class MainWindow(QMainWindow):
 
         self.folder_manager = FolderManager()
 
-        self.file_manager = FileManager()
+        self.file_manager = FileManager(
+            whisper=self.recognizer
+        )
 
         self.browser_controller = BrowserController()
+
+        self.last_application = None
+
+        self.typing_mode = False
 
         self.dispatcher = CommandDispatcher(
             tts=self.tts,
@@ -76,7 +82,8 @@ class MainWindow(QMainWindow):
             file_finder=self.file_finder,
             folder_manager=self.folder_manager,
             file_manager=self.file_manager,
-            browser_controller=self.browser_controller
+            browser_controller=self.browser_controller,
+            whisper=self.recognizer
         )
         # Window Settings
         self.setWindowTitle(settings.WINDOW_TITLE)
@@ -150,6 +157,32 @@ class MainWindow(QMainWindow):
 
         intent = self.intent_detector.detect_intent(text)
 
+        if (
+
+            intent is None
+
+            and
+
+            self.typing_mode
+
+        ):
+
+            self.keyboard_controller.type_text(text)
+
+            self.tts.speak(
+                "Typed successfully."
+            )
+
+            # Keep typing mode enabled until user
+            # explicitly stops or changes application.
+            self.typing_mode = True
+
+            self.status_label.setText(
+                "Status : Typed"
+            )
+
+            return
+
         if intent is None:
 
             self.tts.speak(
@@ -172,21 +205,59 @@ class MainWindow(QMainWindow):
 
             "create_file",
 
-            "delete_file",
-
-            "rename_file",
-
-            "move_file",
-
-            "copy_file",
-
-            "compress_file",
-
-            "extract_zip"
+            "delete_file"
 
         }:
 
             entity = self.entity_extractor.extract_file_query(
+                text
+            )
+
+        elif intent == "compress_file":
+
+            entity = self.entity_extractor.extract_compress_file(
+                text
+            )
+
+        elif intent == "extract_zip":
+
+            entity = self.entity_extractor.extract_extract_zip(
+                text
+            )
+
+        elif intent == "rename_file":
+
+            entity = self.entity_extractor.extract_rename_file(
+                text
+            )
+
+        elif intent == "copy_file":
+
+            entity = self.entity_extractor.extract_copy_file(
+                text
+            )
+
+        elif intent == "move_file":
+
+            entity = self.entity_extractor.extract_move_file(
+                text
+            )
+
+        elif intent == "search_extension":
+
+            entity = self.entity_extractor.extract_search_extension(
+                text
+            )
+
+        elif intent == "search_size":
+
+            entity = self.entity_extractor.extract_search_size(
+                text
+            )
+
+        elif intent == "search_date":
+
+            entity = self.entity_extractor.extract_search_date(
                 text
             )
 
@@ -197,6 +268,12 @@ class MainWindow(QMainWindow):
         elif intent in {
 
             "launch_application",
+
+            "create_word_document",
+
+            "create_excel_workbook",
+
+            "create_powerpoint_presentation",
 
             "open_website",
 
@@ -240,7 +317,17 @@ class MainWindow(QMainWindow):
 
         }:
 
-            if intent == "launch_application":
+            if intent in {
+
+                "launch_application",
+
+                "create_word_document",
+
+                "create_excel_workbook",
+
+                "create_powerpoint_presentation"
+
+            }:
 
                 entity = self.entity_extractor.extract_application(text)
 
@@ -374,6 +461,30 @@ class MainWindow(QMainWindow):
         print(f"Typing : {typed_text}")
         print("===========================\n")
 
+        # ---------------------------------
+        # Future Compound Commands
+        # ---------------------------------
+
+        if (
+
+            intent == "launch_application"
+
+            and
+
+            typed_text
+
+        ):
+
+            print(
+
+                "Compound Command Detected."
+
+            )
+
+        self.status_label.setText(
+            "Status : Executing..."
+        )
+
         result = self.dispatcher.dispatch(
 
             intent=intent,
@@ -394,6 +505,30 @@ class MainWindow(QMainWindow):
 
         if result["success"]:
 
+            if (
+
+                intent == "launch_application"
+
+                and
+
+                entity
+
+            ):
+
+                self.last_application = entity
+
+                if (
+
+                    "notepad" in entity.lower()
+
+                    or
+
+                    "word" in entity.lower()
+
+                ):
+
+                    self.typing_mode = True
+
             self.status_label.setText(
                 result["status"]
             )
@@ -411,6 +546,7 @@ class MainWindow(QMainWindow):
             self.tts.speak(
                 "Sorry. I could not understand your command."
             )
+
             self.status_label.setText(
                 "Status : No Action"
             )
@@ -529,7 +665,9 @@ class MainWindow(QMainWindow):
 
             )
 
-            text = self.recognizer.listen()
+            text = self.recognizer.listen(
+                retries=3
+            )
 
             if text and text.strip():
 

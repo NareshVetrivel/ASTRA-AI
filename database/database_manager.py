@@ -434,6 +434,35 @@ class DatabaseManager:
         return self.cursor.fetchall()
 
     # --------------------------------------------------
+    # Search By Extension
+    # --------------------------------------------------
+
+    def search_by_extension(
+        self,
+        extension
+    ):
+        """
+        Search files by extension.
+        """
+
+        self.cursor.execute(
+            """
+            SELECT
+                name,
+                extension,
+                full_path
+            FROM files
+            WHERE extension = ?
+            ORDER BY name
+            """,
+            (
+                extension.lower(),
+            )
+        )
+
+        return self.cursor.fetchall()
+
+    # --------------------------------------------------
     # Application Exists
     # --------------------------------------------------
 
@@ -482,6 +511,69 @@ class DatabaseManager:
         )
 
         return self.cursor.fetchone() is not None
+
+    # --------------------------------------------------
+    # Search By Size
+    # --------------------------------------------------
+
+    def search_by_size(
+        self,
+        minimum_size_mb
+    ):
+        """
+        Search files larger than
+        the given size.
+        """
+
+        minimum_size = minimum_size_mb * 1024 * 1024
+
+        self.cursor.execute(
+            """
+            SELECT
+                name,
+                extension,
+                full_path
+            FROM files
+            WHERE file_size >= ?
+            ORDER BY file_size DESC
+            """,
+            (
+                minimum_size,
+            )
+        )
+
+        return self.cursor.fetchall()
+
+    # --------------------------------------------------
+    # Search By Date
+    # --------------------------------------------------
+
+    def search_by_date(
+        self,
+        days
+    ):
+        """
+        Search recently modified files.
+        """
+
+        self.cursor.execute(
+            """
+            SELECT
+                name,
+                extension,
+                full_path
+            FROM files
+            WHERE
+                julianday('now') -
+                julianday(last_modified) <= ?
+            ORDER BY last_modified DESC
+            """,
+            (
+                days,
+            )
+        )
+
+        return self.cursor.fetchall()
 
     # --------------------------------------------------
     # Application Count
@@ -564,6 +656,201 @@ class DatabaseManager:
         )
 
         self.commit()
+
+    # --------------------------------------------------
+    # Update File Name
+    # --------------------------------------------------
+
+    def update_file_name(
+        self,
+        old_path,
+        new_name,
+        new_path
+    ):
+        """
+        Update renamed file.
+        """
+
+        try:
+
+            extension = Path(new_path).suffix.lower()
+
+            self.cursor.execute(
+                """
+                UPDATE files
+                SET
+                    name = ?,
+                    extension = ?,
+                    full_path = ?,
+                    last_modified = ?,
+                    last_scanned = ?
+                WHERE full_path = ?
+                """,
+                (
+                    Path(new_path).stem.lower(),
+                    extension,
+                    new_path,
+                    datetime.now().isoformat(),
+                    datetime.now().isoformat(),
+                    old_path
+                )
+            )
+
+            self.commit()
+
+            return True
+
+        except Exception as error:
+
+            print(
+                f"Update File Name Error : {error}"
+            )
+
+            return False
+
+    # --------------------------------------------------
+    # Update File Path
+    # --------------------------------------------------
+
+    def update_file_path(
+        self,
+        old_path,
+        new_path
+    ):
+        """
+        Update moved file path.
+        """
+
+        try:
+
+            self.cursor.execute(
+                """
+                UPDATE files
+                SET
+                    full_path = ?,
+                    last_modified = ?,
+                    last_scanned = ?
+                WHERE full_path = ?
+                """,
+                (
+                    new_path,
+                    datetime.now().isoformat(),
+                    datetime.now().isoformat(),
+                    old_path
+                )
+            )
+
+            self.commit()
+
+            return True
+
+        except Exception as error:
+
+            print(
+                f"Update File Path Error : {error}"
+            )
+
+            return False
+
+    # --------------------------------------------------
+    # Delete File
+    # --------------------------------------------------
+
+    def delete_file(
+        self,
+        full_path
+    ):
+        """
+        Remove file from database.
+        """
+
+        try:
+
+            self.cursor.execute(
+                """
+                DELETE FROM files
+                WHERE full_path = ?
+                """,
+                (
+                    full_path,
+                )
+            )
+
+            self.commit()
+
+            return True
+
+        except Exception as error:
+
+            print(
+                f"Delete File DB Error : {error}"
+            )
+
+            return False
+
+    # --------------------------------------------------
+    # Refresh File
+    # --------------------------------------------------
+
+    def refresh_file(
+        self,
+        file_path
+    ):
+        """
+        Insert or refresh
+        one file entry.
+        """
+
+        try:
+
+            file = Path(file_path)
+
+            if not file.exists():
+
+                return False
+
+            self.insert_file(
+
+                name=file.stem,
+
+                extension=file.suffix,
+
+                full_path=str(file),
+
+                file_size=file.stat().st_size,
+
+                last_modified=datetime.fromtimestamp(
+                    file.stat().st_mtime
+                ).isoformat()
+
+            )
+
+            return True
+
+        except Exception as error:
+
+            print(
+                f"Refresh File Error : {error}"
+            )
+
+            return False
+
+    # --------------------------------------------------
+    # Delete Missing File
+    # --------------------------------------------------
+
+    def delete_missing_file(
+        self,
+        full_path
+    ):
+        """
+        Remove missing file
+        from database.
+        """
+
+        return self.delete_file(
+            full_path
+        )
 
     # --------------------------------------------------
     # Close Database

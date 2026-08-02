@@ -21,23 +21,46 @@ class IntentDetector:
 
             "chrome",
             "google chrome",
+
             "edge",
             "microsoft edge",
+            "ms edge",
+
             "firefox",
+
             "notepad",
+            "note pad",
+            "node pad",
+
             "paint",
+
             "calculator",
             "calc",
+
             "cmd",
             "command prompt",
             "powershell",
+
             "explorer",
+
             "word",
+            "ms word",
+            "m s word",
+
             "excel",
+            "ms excel",
+            "m s excel",
+
             "powerpoint",
+            "power point",
+            "ppt",
+            "presentation",
+
             "vscode",
             "visual studio code",
+
             "pycharm",
+
             "internet",
             "browser"
         }
@@ -189,29 +212,41 @@ class IntentDetector:
         if not text:
             return None
 
-        text = text.lower()
-        text = text.strip()
+        text = (
+            text
+            .lower()
+            .strip()
+            .rstrip(".,!?")
+        )
+
+        # ---------------------------------
+        # Whisper Corrections
+        # ---------------------------------
+
+        text = (
+            text
+            .replace("bdf", "pdf")
+            .replace("pdf", "pdf")
+            .replace("estaday", "yesterday")
+            .replace("study", "today")
+        )
 
         # ---------------------------------
         # Smart Open Detection
         # ---------------------------------
 
         if (
-
-            text.startswith("open")
-
-            or
-
-            text.startswith("launch")
-
-            or
-
-            text.startswith("start")
-
-            or
-
-            text.startswith("run")
-
+            (
+                text.startswith("open")
+                or
+                text.startswith("launch")
+                or
+                text.startswith("run")
+            )
+            and
+            "find " not in text
+            and
+            "search " not in text
         ):
 
             # ---------------------------------
@@ -250,15 +285,136 @@ class IntentDetector:
 
                 return "open_website"
 
-       # ---------------------------------
+        # ---------------------------------
+        # File Search Commands
+        # ---------------------------------
+
+        file_extensions = {
+
+            "pdf",
+            "doc",
+            "docx",
+            "txt",
+            "ppt",
+            "pptx",
+            "xls",
+            "xlsx",
+            "csv",
+            "jpg",
+            "jpeg",
+            "png",
+            "mp3",
+            "mp4",
+            "zip"
+
+        }
+
+        # Don't treat ZIP commands as extension search
+
+        if not any(
+
+            keyword in text
+
+            for keyword in (
+
+                "compress",
+
+                "extract",
+
+                "unzip",
+
+                "zip file",
+
+                "create zip"
+
+            )
+
+        ):
+
+            if any(
+                extension in text
+                for extension in file_extensions
+            ) or any(
+                word in text
+                for word in (
+                    "word",
+                    "excel",
+                    "powerpoint",
+                    "ppt",
+                    "text"
+                )
+            ):
+
+                if any(
+                    keyword in text
+                    for keyword in (
+                        "file",
+                        "files",
+                        "find",
+                        "search",
+                        "show",
+                        "list"
+                    )
+                ):
+
+                    return "search_extension"
+
+        # ---------------------------------
+        # Search By Size
+        # ---------------------------------
+
+        if any(
+            keyword in text
+            for keyword in (
+                "larger than",
+                "bigger than",
+                "greater than",
+                "above",
+                "over",
+                "under",
+                "less than",
+                "smaller than",
+                "size"
+            )
+        ):
+
+            return "search_size"
+
+        # ---------------------------------
+        # Search By Date
+        # ---------------------------------
+
+        if any(
+
+            keyword in text
+
+            for keyword in (
+
+                "today",
+
+                "yesterday",
+
+                "last week",
+
+                "last month",
+
+                "recent",
+
+                "modified",
+
+                "created"
+
+            )
+
+        ):
+
+            return "search_date"
+
+        # ---------------------------------
         # Google Search
         # ---------------------------------
 
         if (
-
-            text.startswith("search")
-
-            or
 
             text.startswith("google search")
 
@@ -268,7 +424,19 @@ class IntentDetector:
 
             or
 
-            " search " in text
+            (
+                text.startswith("search")
+                and
+                "file" not in text
+            )
+
+            or
+
+            (
+                " search " in text
+                and
+                "file" not in text
+            )
 
         ):
 
@@ -307,6 +475,33 @@ class IntentDetector:
         ):
             return "open_chrome_profile"
 
+        # Move/Copy commands should be checked
+        # before folder detection
+
+        if (
+            "move file" in text
+            or
+            "move this file" in text
+            or
+            "move document" in text
+            or
+            "move pdf" in text
+        ):
+
+            return "move_file"
+
+        if (
+            "copy file" in text
+            or
+            "copy this file" in text
+            or
+            "copy document" in text
+            or
+            "copy pdf" in text
+        ):
+
+            return "copy_file"
+
         # Special Folders
 
         for folder in self.folder_open_keywords:
@@ -321,13 +516,114 @@ class IntentDetector:
 
             return "open_website"
 
-        # Applications
+        # ---------------------------------
+        # Search Extension (Priority)
+        # ---------------------------------
 
-        for app in self.application_open_keywords:
+        if any(
+            command in text
+            for command in (
 
-            if app in text:
+                "find pdf",
+                "find word",
+                "find excel",
+                "find powerpoint",
+                "find ppt",
+                "find text",
+                "find txt",
+                "find csv",
+                "find image",
+                "find images",
+                "find photo",
+                "find photos",
+                "find video",
+                "find videos",
+                "find music",
+                "find audio",
 
-                return "launch_application"
+                "search pdf",
+                "search word",
+                "search excel",
+                "search powerpoint",
+                "search ppt",
+                "search txt",
+                "search csv",
+
+                "show pdf",
+                "show word",
+                "show excel",
+
+                "list pdf",
+                "list word",
+                "list excel"
+
+            )
+        ):
+            return "search_extension"
+
+        # ---------------------------------
+        # Application Open / Close
+        # ---------------------------------
+
+        # Don't launch applications for search commands
+        if not any(
+            keyword in text
+            for keyword in (
+                "find",
+                "search",
+                "show",
+                "list",
+                "locate"
+            )
+        ):
+
+            for app in self.application_open_keywords:
+
+                if app in text:
+
+                    if any(
+
+                        keyword in text
+
+                        for keyword in (
+
+                            "close",
+
+                            "exit",
+
+                            "quit",
+
+                            "terminate",
+
+                            "stop"
+
+                        )
+
+                    ):
+
+                        return "close_application"
+
+                    if any(
+
+                        keyword in text
+
+                        for keyword in (
+
+                            "open",
+
+                            "launch",
+
+                            "run",
+
+                            "start"
+
+                        )
+
+                    ):
+
+                        return "launch_application"
+
+                    return "launch_application"
 
         # ---------------------------------
         # Folder Commands
@@ -381,33 +677,143 @@ class IntentDetector:
 
             return "rename_file"
 
-        if "move file" in text:
+        if (
 
-            return "move_file"
+            "copy file" in text
 
-        if "copy file" in text:
+            or
+
+            "copy this file" in text
+
+            or
+
+            "copy document" in text
+
+            or
+
+            "copy pdf" in text
+
+        ):
 
             return "copy_file"
 
-        if "zip file" in text:
+        if (
 
-            return "compress_file"
+            "move file" in text
 
-        if "extract zip" in text:
+            or
+
+            "move this file" in text
+
+            or
+
+            "move document" in text
+
+            or
+
+            "move pdf" in text
+
+        ):
+
+            return "move_file"
+
+        # ---------------------------------
+        # ZIP / Extract ZIP
+        # ---------------------------------
+
+        if (
+            "extract zip" in text
+            or
+            "extract file" in text
+            or
+            "extract archive" in text
+            or
+            "extract" in text
+            or
+            "unzip" in text
+            or
+            "un zip" in text
+            or
+            "open zip" in text
+        ):
 
             return "extract_zip"
 
-        if "search extension" in text:
+        if (
+            "compress file" in text
+            or
+            "compress" in text
+            or
+            "zip file" in text
+            or
+            "create zip" in text
+            or
+            "zip this file" in text
+            or
+            "make zip" in text
+            or
+            "archive file" in text
+        ):
 
-            return "search_extension"
+            return "compress_file"
 
-        if "search date" in text:
+        # ---------------------------------
+        # MS Office Automation (Intent Only)
+        # ---------------------------------
 
-            return "search_date"
+        if (
+            "word" in text
+            and
+            (
+                "new document" in text
+                or
+                "create document" in text
+                or
+                "blank document" in text
+            )
+        ):
 
-        if "search size" in text:
+            return "create_word_document"
 
-            return "search_size"
+
+        if (
+            "excel" in text
+            and
+            (
+                "new workbook" in text
+                or
+                "create workbook" in text
+                or
+                "blank workbook" in text
+                or
+                "new sheet" in text
+            )
+        ):
+
+            return "create_excel_workbook"
+
+
+        if (
+            "powerpoint" in text
+            or
+            "power point" in text
+            or
+            "ppt" in text
+        ):
+
+            if (
+                "new presentation" in text
+                or
+                "create presentation" in text
+                or
+                "create ppt" in text
+                or
+                "new ppt" in text
+                or
+                "blank presentation" in text
+            ):
+
+                return "create_powerpoint_presentation"
 
         # ---------------------------------
         # Browser Commands
@@ -560,6 +966,72 @@ class IntentDetector:
 
             return "open_website"
 
+        # Clipboard Commands
+
+        if (
+
+            "copy selected" in text
+
+            or
+
+            "copy the selected" in text
+
+            or
+
+            "copy selected text" in text
+
+            or
+
+            "copy text" in text
+
+            or
+
+            "copy the text" in text
+
+            or
+
+            text == "copy"
+
+            or
+
+            text == "copy it"
+
+        ):
+
+            return "copy"
+
+        if (
+
+            "paste text" in text
+
+            or
+
+            text == "paste"
+
+            or
+
+            text == "paste it"
+
+        ):
+
+            return "paste"
+
+        if (
+
+            "cut text" in text
+
+            or
+
+            text == "cut"
+
+            or
+
+            text == "cut it"
+
+        ):
+
+            return "cut"
+
         # ---------------------------------
         # Multi-word Commands (Highest Priority)
         # ---------------------------------
@@ -567,17 +1039,29 @@ class IntentDetector:
         if "select all" in text:
             return "select_all"
 
-        if "press enter" in text:
-            return "press_enter"
+        # ---------------------------------
+        # Press Commands (Highest Priority)
+        # ---------------------------------
 
-        if "press tab" in text:
-            return "press_tab"
+        if text.startswith("press"):
 
-        if "backspace" in text:
-            return "backspace"
+            if "enter" in text:
+                return "press_enter"
 
-        if "delete" in text:
-            return "delete"
+            if "tab" in text:
+                return "press_tab"
+
+            if "space" in text:
+                return "space"
+
+            if "escape" in text or "esc" in text:
+                return "escape"
+
+            if "backspace" in text:
+                return "backspace"
+
+            if "delete" in text:
+                return "delete"
 
         if "save file" in text:
             return "save_file"
@@ -689,7 +1173,11 @@ class IntentDetector:
         ):
             if "profile" not in text:
 
-                return "open_file"
+                if "file" in text:
+
+                    return "open_file"
+
+                return "launch_application"
 
         # ---------------------------------
         # Exact Match

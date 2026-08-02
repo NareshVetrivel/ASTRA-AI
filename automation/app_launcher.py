@@ -4,16 +4,27 @@ Application Launcher Module
 This module launches Windows applications.
 """
 
-import subprocess
+import os
+import time
+from pathlib import Path
 
 from automation.application_finder import ApplicationFinder
+from automation.window_controller import WindowController
+
+
 class AppLauncher:
+    """
+    Launch Windows applications.
+    """
 
     def __init__(self):
 
         self.finder = ApplicationFinder()
 
+        self.window_controller = WindowController()
+
         self.applications = {
+
             # Windows Apps
             "notepad": "notepad.exe",
             "note pad": "notepad.exe",
@@ -82,19 +93,43 @@ class AppLauncher:
             "onenote": "ONENOTE.EXE"
         }
 
-    def launch_application(self, application):
+    # --------------------------------------------------
+    # Wait Until Ready
+    # --------------------------------------------------
 
+    def wait_until_ready(
+        self,
+        application,
+        timeout=10
+    ):
         """
-        Launch the given application.
+        Wait until launched application
+        becomes active.
+        """
 
-        Parameters:
-            application (str)
+        return self.window_controller.wait_for_window(
+            application,
+            timeout
+        )
 
-        Returns:
-            bool
+    # --------------------------------------------------
+    # Launch Application
+    # --------------------------------------------------
+
+    def launch_application(
+        self,
+        application
+    ):
+        """
+        Launch application.
+
+        Returns
+        -------
+        bool
         """
 
         if not application:
+
             return False
 
         try:
@@ -102,32 +137,35 @@ class AppLauncher:
             application = application.lower()
 
             application = self.applications.get(
+
                 application,
+
                 application
+
             )
 
             application = self.finder.find_application(
                 application
             )
 
-            print(f"Resolved Application Path : {application}")
+            print(
+                f"Resolved Application Path : {application}"
+            )
 
-            # Windows special URI
-            if application.startswith("ms-"):
+            os.startfile(application)
 
-                import os
-                os.startfile(application)
+            time.sleep(1.5)
 
-            # Normal executable
-            else:
+            title = Path(application).stem
 
-                import os
-                os.startfile(application)
+            self.wait_until_ready(title)
 
             return True
 
         except Exception as error:
 
-            print(f"Error : {error}")
+            print(
+                f"Launch Error : {error}"
+            )
 
             return False

@@ -122,6 +122,111 @@ class EntityExtractor:
 
             "ragxii profile": "Profile 12"
         }
+
+    def normalize_text(
+        self,
+        text
+    ):
+        """
+        Normalize common STT mistakes.
+        """
+
+        if not text:
+
+            return text
+
+        text = f" {text.lower().strip()} "
+
+        replacements = {
+
+            " 2 ": " to ",
+
+            " too ": " to ",
+
+            " in to ": " into ",
+
+            " jpd ": " pdf ",
+
+            " p d f ": " pdf ",
+
+            " doc x ": " docx ",
+
+            " power point ": " powerpoint ",
+
+            " esther day ": " yesterday ",
+
+            " yesterdaye ": " yesterday ",
+
+            " last v ": " last week ",
+
+            " this weak ": " this week ",
+
+            "arch": "search",
+
+            "herch": "search",
+
+            "reach": "search",
+
+            "serch": "search",
+
+            "fined": "find",
+
+            "fence": "files",
+
+            "finds": "find",
+
+            "word fence": "word files",
+
+            "excel fence": "excel files",
+
+            "ppt fence": "ppt files",
+
+            "modified study": "modified today",
+
+            "modified estaday": "modified yesterday",
+
+            "node pad":"notepad",
+
+            "note that":"notepad",
+
+            "north pad":"notepad",
+
+            "ms word":"word",
+
+            "m s word":"word",
+
+            "power point":"powerpoint",
+
+            "excel sheet":"excel",
+
+            "excel file":"excel",
+
+            "word file":"word",
+
+            "ppt file":"ppt",
+
+            "reach":"search",
+
+            "herch":"search",
+
+            "serch":"search",
+
+            "arch":"search",
+
+            "fence":"files",
+
+            "study":"today",
+
+            "estaday":"yesterday"
+
+        }
+
+        for old, new in replacements.items():
+
+            text = text.replace(old, new)
+
+        return text.strip()
+
     # --------------------------------------------------
     # Load Applications
     # --------------------------------------------------
@@ -157,7 +262,7 @@ class EntityExtractor:
 
             return None
 
-        text = text.lower().strip()
+        text = self.normalize_text(text)
 
         applications = self.load_applications()
 
@@ -172,6 +277,30 @@ class EntityExtractor:
         for app_name in applications:
 
             if app_name in text:
+
+                # Ignore file search commands
+
+                if any(
+
+                    word in text
+
+                    for word in (
+
+                        "find",
+
+                        "search",
+
+                        "show",
+
+                        "locate",
+
+                        "filter"
+
+                    )
+
+                ):
+
+                    continue
 
                 return applications[app_name]
 
@@ -209,7 +338,7 @@ class EntityExtractor:
 
             applications.keys(),
 
-            scorer=fuzz.partial_ratio
+            scorer=fuzz.token_set_ratio
 
         )
 
@@ -225,7 +354,7 @@ class EntityExtractor:
 
             )
 
-            if score >= 70:
+            if score >= 75:
 
                 return applications[app_name]
 
@@ -248,7 +377,7 @@ class EntityExtractor:
 
             return None
 
-        text = text.lower().strip()
+        text = self.normalize_text(text)
 
         # -------------------------
         # Exact Match
@@ -308,13 +437,32 @@ class EntityExtractor:
 
             return None
 
-        text = text.lower().strip()
+        text = self.normalize_text(text)
 
         # Exact Match
 
         for name, url in self.websites.items():
 
-            if f"open {name}" in text:
+            # Don't treat browser launch
+            # as website open.
+
+            if (
+
+                f"open {name}" in text
+
+                and
+
+                "chrome" not in text
+
+                and
+
+                "edge" not in text
+
+                and
+
+                "browser" not in text
+
+            ):
 
                 return url
 
@@ -384,7 +532,7 @@ class EntityExtractor:
 
             )
 
-            if score >= 80:
+            if score >= 75:
 
                 return self.websites[name]
 
@@ -412,6 +560,8 @@ class EntityExtractor:
 
             "search",
 
+            "searching",
+
             "google",
 
             "for",
@@ -419,10 +569,22 @@ class EntityExtractor:
             "on",
 
             "please",
-            
+
             "chrome",
 
-            "edge"      
+            "edge",
+
+            "find",
+
+            "show",
+
+            "open",
+
+            "look",
+
+            "lookup",
+
+            "website"
 
         }
 
@@ -575,7 +737,7 @@ class EntityExtractor:
 
             )
 
-            if score >= 80:
+            if score >= 75:
 
                 return self.chrome_profiles[profile]
 
@@ -598,7 +760,7 @@ class EntityExtractor:
 
             return None
 
-        text = text.lower().strip()
+        text = self.normalize_text(text)
 
         remove_words = {
 
@@ -606,7 +768,11 @@ class EntityExtractor:
 
             "file",
 
+            "files",
+
             "document",
+
+            "documents",
 
             "folder",
 
@@ -619,6 +785,16 @@ class EntityExtractor:
             "move",
 
             "copy",
+
+            "compress",
+
+            "zip",
+
+            "extract",
+
+            "archive",
+
+            "unzip",
 
             "please",
 
@@ -636,13 +812,7 @@ class EntityExtractor:
 
             "in",
 
-            "youtube",
-
-            "play",
-
-            "video",
-
-            "song",
+            "from",
 
             "using",
 
@@ -652,7 +822,25 @@ class EntityExtractor:
 
             "chrome",
 
-            "edge"
+            "edge",
+
+            "find",
+
+            "search",
+
+            "show",
+
+            "locate",
+
+            "named",
+
+            "called",
+
+            "called as",
+
+            "by",
+
+            "name"
 
         }
 
@@ -673,6 +861,786 @@ class EntityExtractor:
             return None
 
         return query
+
+    # --------------------------------------------------
+    # Extract Search Keyword
+    # --------------------------------------------------
+
+    def extract_search_keyword(
+        self,
+        text
+    ):
+        """
+        Extract keyword from
+        search command.
+
+        Examples
+        --------
+        search python tutorial
+
+        find resume
+
+        show invoice
+
+        Returns
+        -------
+        str | None
+        """
+
+        if not text:
+
+            return None
+
+        text = self.normalize_text(text)
+
+        remove_words = {
+
+            "find",
+
+            "search",
+
+            "searching",
+
+            "show",
+
+            "locate",
+
+            "where",
+
+            "is",
+
+            "open",
+
+            "file",
+
+            "files",
+
+            "please",
+
+            "the",
+
+            "my"
+
+        }
+
+        words = [
+
+            word
+
+            for word in text.split()
+
+            if word not in remove_words
+
+        ]
+
+        keyword = " ".join(words).strip()
+
+        if not keyword:
+
+            return None
+
+        return keyword
+
+    # --------------------------------------------------
+    # Extract Search Result Index
+    # --------------------------------------------------
+
+    def extract_result_index(
+        self,
+        text
+    ):
+        """
+        Extract file result number.
+
+        Example
+        -------
+        open first file
+
+        delete second file
+
+        copy third file
+        """
+
+        if not text:
+
+            return None
+
+        text = text.lower()
+
+        mapping = {
+
+            "first":0,
+
+            "1st":0,
+
+            "one":0,
+
+            "second":1,
+
+            "2nd":1,
+
+            "two":1,
+
+            "third":2,
+
+            "3rd":2,
+
+            "three":2,
+
+            "fourth":3,
+
+            "4th":3,
+
+            "fifth":4,
+
+            "5th":4,
+
+            "last":-1
+
+        }
+
+        for word, index in mapping.items():
+
+            if word in text:
+
+                return index
+
+        return None
+
+    # --------------------------------------------------
+    # Extract Rename File
+    # --------------------------------------------------
+
+    def extract_rename_file(
+        self,
+        text
+    ):
+        """
+        Extract old and new filename.
+
+        Example
+        -------
+        rename notes to project
+
+        Returns
+        -------
+        dict | None
+        """
+
+        if not text:
+
+            return None
+
+        text = self.normalize_text(text)
+
+        remove_words = {
+
+            "rename",
+
+            "file",
+
+            "document",
+
+            "please",
+
+            "my",
+
+            "the",
+
+            "called",
+
+            "named"
+
+        }
+
+        words = [
+
+            word
+
+            for word in text.split()
+
+            if word not in remove_words
+
+        ]
+
+        if "2" in words:
+
+            words = [
+
+                "to"
+
+                if word == "2"
+
+                else word
+
+                for word in words
+
+            ]
+
+        if "to" not in words and "into" not in words:
+
+            return None
+
+        separator = "to"
+
+        if "into" in words:
+
+            separator = "into"
+
+        index = words.index(separator)
+
+        old_name = (
+            " ".join(
+                words[:index]
+            )
+            .strip()
+            .rstrip(".,!?")
+        )
+
+        new_name = (
+            " ".join(
+                words[index + 1:]
+            )
+            .strip()
+            .rstrip(".,!?")
+        )
+
+        if not old_name or not new_name:
+
+            return None
+
+        return {
+
+            "old_name": old_name,
+
+            "new_name": new_name
+
+        }
+
+    # --------------------------------------------------
+    # Extract Copy File
+    # --------------------------------------------------
+
+    def extract_copy_file(
+        self,
+        text
+    ):
+        """
+        Extract filename and destination.
+        """
+
+        if not text:
+
+            return None
+
+        text = self.normalize_text(text)
+
+        remove_words = {
+
+            "copy",
+
+            "file",
+
+            "document",
+
+            "please",
+
+            "my",
+
+            "the"
+
+        }
+
+        words = [
+
+            word
+
+            for word in text.split()
+
+            if word not in remove_words
+
+        ]
+
+        if "2" in words:
+
+            words = [
+
+                "to"
+
+                if word == "2"
+
+                else word
+
+                for word in words
+
+            ]
+
+        if "to" not in words and "into" not in words:
+
+            return None
+
+        separator = "to"
+
+        if "into" in words:
+
+            separator = "into"
+
+        index = words.index(separator)
+
+        filename = " ".join(
+
+            words[:index]
+
+        ).strip()
+
+        destination = (
+            " ".join(words[index + 1:])
+            .strip()
+            .rstrip(".,!?")
+        )
+
+        if not filename or not destination:
+
+            return None
+
+        return {
+
+            "filename": filename,
+
+            "destination": destination
+
+        }
+
+    # --------------------------------------------------
+    # Extract Move File
+    # --------------------------------------------------
+
+    def extract_move_file(
+        self,
+        text
+    ):
+        """
+        Extract filename and destination.
+        """
+
+        if not text:
+
+            return None
+
+        text = self.normalize_text(text)
+
+        remove_words = {
+
+            "move",
+
+            "file",
+
+            "document",
+
+            "please",
+
+            "my",
+
+            "the"
+
+        }
+
+        words = [
+
+            word
+
+            for word in text.split()
+
+            if word not in remove_words
+
+        ]
+
+        if "2" in words:
+
+            words = [
+
+                "to"
+
+                if word == "2"
+
+                else word
+
+                for word in words
+
+            ]
+
+        if "to" not in words and "into" not in words:
+
+            return None
+
+        separator = "to"
+
+        if "into" in words:
+
+            separator = "into"
+
+        index = words.index(separator)
+
+        filename = " ".join(
+
+            words[:index]
+
+        ).strip()
+
+        destination = (
+            " ".join(words[index + 1:])
+            .strip()
+            .rstrip(".,!?")
+        )
+
+        if not filename or not destination:
+
+            return None
+
+        return {
+
+            "filename": filename,
+
+            "destination": destination
+
+        }
+
+    # --------------------------------------------------
+    # Extract Compress File
+    # --------------------------------------------------
+
+    def extract_compress_file(
+        self,
+        text
+    ):
+        """
+        Extract filename for ZIP.
+        """
+
+        return self.extract_file_query(
+            text
+        )
+
+    # --------------------------------------------------
+    # Extract Extract ZIP
+    # --------------------------------------------------
+
+    def extract_extract_zip(
+        self,
+        text
+    ):
+        """
+        Extract ZIP filename.
+        """
+
+        return self.extract_file_query(
+            text
+        )
+
+    # --------------------------------------------------
+    # Extract Search Extension
+    # --------------------------------------------------
+
+    def extract_search_extension(
+        self,
+        text
+    ):
+        """
+        Extract file extension.
+
+        Example
+        -------
+        search pdf files
+        find txt files
+
+        Returns
+        -------
+        str | None
+        """
+
+        if not text:
+
+            return None
+
+        extensions = {
+
+            "txt",
+
+            "text",
+
+            "pdf",
+
+            "doc",
+
+            "docx",
+
+            "word",
+
+            "ppt",
+
+            "pptx",
+
+            "powerpoint",
+
+            "xls",
+
+            "xlsx",
+
+            "excel",
+
+            "csv",
+
+            "png",
+
+            "jpg",
+
+            "jpeg",
+
+            "gif",
+
+            "zip",
+
+            "mp3",
+
+            "wav",
+
+            "mp4",
+
+            "avi",
+
+            "py",
+
+            "bmp",
+
+            "webp",
+
+            "mov",
+
+            "mkv",
+
+            "flac",
+
+            "aac",
+
+            "json",
+
+            "xml"
+
+        }
+
+        words = text.lower().split()
+
+        for word in words:
+
+            word = word.replace(".", "")
+
+            mapping = {
+
+                "text":"txt",
+
+                "texts":"txt",
+
+                "word":"docx",
+
+                "words":"docx",
+
+                "document":"docx",
+
+                "documents":"docx",
+
+                "excel":"xlsx",
+
+                "excels":"xlsx",
+
+                "spreadsheet":"xlsx",
+
+                "powerpoint":"pptx",
+
+                "presentation":"pptx",
+
+                "presentations":"pptx",
+
+                "image":"jpg",
+
+                "images":"jpg",
+
+                "photo":"jpg",
+
+                "photos":"jpg",
+
+                "video":"mp4",
+
+                "videos":"mp4",
+
+                "audio":"mp3",
+
+                "audios":"mp3",
+
+                "jpd":"pdf",
+
+                "pdf file":"pdf",
+
+                "pdf files":"pdf",
+
+                "word file":"docx",
+
+                "excel file":"xlsx",
+
+                "ppt":"pptx",
+
+                "ppt file":"pptx",
+
+                "zip file":"zip",
+
+                "text file":"txt",
+
+                "jpeg image":"jpg",
+
+                "png image":"png",
+
+                "python":"py",
+
+                "python file":"py",
+
+                "json file":"json",
+
+                "xml file":"xml",
+
+                "audio file":"mp3",
+
+                "video file":"mp4",
+
+                "document":"docx",
+
+                "documents":"docx",
+
+                "spreadsheet":"xlsx",
+
+                "presentation":"pptx",
+
+                "presentations":"pptx",
+
+                "movie":"mp4",
+
+                "movies":"mp4",
+
+                "songs":"mp3",
+
+                "music":"mp3",
+
+                "pictures":"jpg",
+
+                "photos":"jpg"
+
+            }
+
+            if word in mapping:
+
+                return mapping[word]
+
+            if word in extensions:
+
+                return word
+
+        return None
+
+    # --------------------------------------------------
+    # Extract Search Size
+    # --------------------------------------------------
+
+    def extract_search_size(
+        self,
+        text
+    ):
+        """
+        Extract minimum file size in MB.
+
+        Example
+        -------
+        files larger than 100 mb
+
+        Returns
+        -------
+        int | None
+        """
+
+        if not text:
+
+            return None
+
+        words = text.lower().split()
+
+        for word in words:
+
+            if word.isdigit():
+
+                return int(word)
+
+        return None
+    
+    # --------------------------------------------------
+    # Extract Search Date
+    # --------------------------------------------------
+
+    def extract_search_date(
+        self,
+        text
+    ):
+        """
+        Extract search period.
+
+        Returns
+        -------
+        int
+        """
+
+        if not text:
+
+            return None
+
+        text = text.lower()
+
+        if "this week" in text:
+
+            return 7
+
+        if "this month" in text:
+
+            return 30
+
+        if "this year" in text:
+
+            return 365
+
+        if "today" in text:
+
+            return 0
+
+        if "yesterday" in text:
+
+            return 1
+
+        if "last week" in text:
+
+            return 7
+
+        if "last month" in text:
+
+            return 30
+
+        if "recent" in text:
+
+            return 7
+
+        words = text.split()
+
+        for word in words:
+
+            if word.isdigit():
+
+                return int(word)
+
+        return None
 
     # --------------------------------------------------
     # Close

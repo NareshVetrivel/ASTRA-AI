@@ -23,7 +23,8 @@ class CommandDispatcher:
         file_finder,
         folder_manager,
         file_manager,
-        browser_controller
+        browser_controller,
+        whisper
     ):
 
         self.tts = tts
@@ -40,6 +41,8 @@ class CommandDispatcher:
         self.folder_manager = folder_manager
         self.file_manager = file_manager
         self.browser = browser_controller
+
+        self.whisper = whisper
         
 
     def dispatch(
@@ -102,6 +105,9 @@ class CommandDispatcher:
                     self.app_launcher
                     .launch_application(entity)
                 )
+
+                # Application launcher already waits
+                # until the app is ready.
 
                 return {
 
@@ -1193,20 +1199,29 @@ class CommandDispatcher:
                     f"Opening {entity}"
                 )
 
-                success = self.file_finder.open_file(
+                success = self.file_manager.open_file(
                     entity
                 )
+
+                if success:
+                    self.keyboard.activate_window()
 
                 return {
 
                     "success": success,
 
                     "status":
+
                     (
+
                         "Status : File Opened"
+
                         if success
+
                         else
+
                         "Status : File Not Found"
+
                     )
 
                 }
@@ -1230,12 +1245,12 @@ class CommandDispatcher:
                 )
 
                 success = (
-
                     self.folder_manager
-
                     .open_folder(entity)
-
                 )
+
+                if success:
+                    self.keyboard.activate_window()
 
                 return {
 
@@ -1298,7 +1313,11 @@ class CommandDispatcher:
             ):
 
                 self.tts.speak(
-                    f"Deleting {entity}"
+                    f"I found {entity}."
+                )
+
+                self.tts.speak(
+                    "Do you want to delete it?"
                 )
 
                 success = self.file_manager.delete_file(
@@ -1310,11 +1329,17 @@ class CommandDispatcher:
                     "success": success,
 
                     "status":
+
                     (
+
                         "Status : File Deleted"
+
                         if success
+
                         else
-                        "Status : Delete Failed"
+
+                        "Status : Delete Cancelled"
+
                     )
 
                 }
@@ -1323,15 +1348,110 @@ class CommandDispatcher:
             # Rename File
             # -------------------------
 
-            elif intent == "rename_file":
+            elif (
+                intent == "rename_file"
+                and entity
+            ):
+
+                print("\n===================================")
+
+                print("RENAME CONFIRMATION")
+
+                print("===================================")
+
+                print()
+
+                print(entity["old_name"])
+
+                print()
+
+                print("Rename To")
+
+                print()
+
+                print(entity["new_name"])
+
+                self.tts.speak(
+                    "Do you want to rename this file?"
+                )
+
+                confirm = self.whisper.listen_confirmation()
+
+                confirm = confirm.lower().strip()
+
+                if confirm not in {
+
+                    "yes",
+
+                    "yeah",
+
+                    "yep",
+
+                    "ya",
+
+                    "yas",
+
+                    "yes.",
+
+                    "yes!",
+
+                    "ok",
+
+                    "okay",
+
+                    "sure"
+
+                }:
+
+                    self.tts.speak(
+                        "Rename cancelled."
+                    )
+
+                    return {
+
+                        "success": False,
+
+                        "status": "Status : Cancelled"
+
+                    }
+
+                success = self.file_manager.rename_file(
+
+                    entity["old_name"],
+
+                    entity["new_name"]
+
+                )
+
+                if success:
+
+                    self.tts.speak(
+                        "File renamed successfully."
+                    )
+
+                else:
+
+                    self.tts.speak(
+                        "Unable to rename the file."
+                    )
 
                 return {
 
-                    "success": False,
+                    "success": success,
 
                     "status":
 
-                    "Status : Pending"
+                    (
+
+                        "Status : File Renamed"
+
+                        if success
+
+                        else
+
+                        "Status : Rename Failed"
+
+                    )
 
                 }
 
@@ -1339,15 +1459,99 @@ class CommandDispatcher:
             # Copy File
             # -------------------------
 
-            elif intent == "copy_file":
+            elif (
+                intent == "copy_file"
+                and entity
+            ):
+
+                print("\n===================================")
+                print("COPY CONFIRMATION")
+                print("===================================")
+
+                print(f"\nFile : {entity['filename']}")
+                print(f"\nDestination : {entity['destination']}")
+
+                self.tts.speak(
+                    "Do you want to copy this file?"
+                )
+
+                confirm = self.whisper.listen_confirmation()
+
+                confirm = confirm.lower().strip()
+
+                if confirm not in {
+
+                    "yes",
+
+                    "yeah",
+
+                    "yep",
+
+                    "ya",
+
+                    "yas",
+
+                    "yes.",
+
+                    "yes!",
+
+                    "ok",
+
+                    "okay",
+
+                    "sure"
+
+                }:
+
+                    self.tts.speak(
+                        "Copy cancelled."
+                    )
+
+                    return {
+
+                        "success": False,
+
+                        "status": "Status : Cancelled"
+
+                    }
+
+                success = self.file_manager.copy_file(
+
+                    entity["filename"],
+
+                    entity["destination"]
+
+                )
+
+                if success:
+
+                    self.tts.speak(
+                        "File copied successfully."
+                    )
+
+                else:
+
+                    self.tts.speak(
+                        "Unable to copy the file."
+                    )
 
                 return {
 
-                    "success": False,
+                    "success": success,
 
                     "status":
 
-                    "Status : Pending"
+                    (
+
+                        "Status : File Copied"
+
+                        if success
+
+                        else
+
+                        "Status : Copy Failed"
+
+                    )
 
                 }
 
@@ -1355,15 +1559,99 @@ class CommandDispatcher:
             # Move File
             # -------------------------
 
-            elif intent == "move_file":
+            elif (
+                intent == "move_file"
+                and entity
+            ):
+
+                print("\n===================================")
+                print("MOVE CONFIRMATION")
+                print("===================================")
+
+                print(f"\nFile : {entity['filename']}")
+                print(f"\nDestination : {entity['destination']}")
+
+                self.tts.speak(
+                    "Do you want to move this file?"
+                )
+
+                confirm = self.whisper.listen_confirmation()
+
+                confirm = confirm.lower().strip()
+
+                if confirm not in {
+
+                    "yes",
+
+                    "yeah",
+
+                    "yep",
+
+                    "ya",
+
+                    "yas",
+
+                    "yes.",
+
+                    "yes!",
+
+                    "ok",
+
+                    "okay",
+
+                    "sure"
+
+                }:
+
+                    self.tts.speak(
+                        "Move cancelled."
+                    )
+
+                    return {
+
+                        "success": False,
+
+                        "status": "Status : Cancelled"
+
+                    }
+
+                success = self.file_manager.move_file(
+
+                    entity["filename"],
+
+                    entity["destination"]
+
+                )
+
+                if success:
+
+                    self.tts.speak(
+                        "File moved successfully."
+                    )
+
+                else:
+
+                    self.tts.speak(
+                        "Unable to move the file."
+                    )
 
                 return {
 
-                    "success": False,
+                    "success": success,
 
                     "status":
 
-                    "Status : Pending"
+                    (
+
+                        "Status : File Moved"
+
+                        if success
+
+                        else
+
+                        "Status : Move Failed"
+
+                    )
 
                 }
 
@@ -1376,20 +1664,84 @@ class CommandDispatcher:
                 and entity
             ):
 
+                print("\n===================================")
+                print("ZIP CONFIRMATION")
+                print("===================================")
+
+                print(f"\nFile : {entity}")
+
+                self.tts.speak(
+                    "Do you want to compress this file?"
+                )
+
+                confirm = self.whisper.listen_confirmation()
+
+                confirm = confirm.lower().strip()
+
+                if confirm not in {
+
+                    "yes",
+
+                    "yeah",
+
+                    "yep",
+
+                    "ya",
+
+                    "yas",
+
+                    "yes.",
+
+                    "yes!",
+
+                    "ok",
+
+                    "okay",
+
+                    "sure"
+
+                }:
+
+                    return {
+
+                        "success": False,
+
+                        "status": "Status : Cancelled"
+
+                    }
+
                 success = self.file_manager.compress_file(
                     entity
                 )
+
+                if success:
+
+                    self.tts.speak(
+                        "ZIP archive created successfully."
+                    )
+
+                else:
+
+                    self.tts.speak(
+                        "Unable to compress the file."
+                    )
 
                 return {
 
                     "success": success,
 
                     "status":
+
                     (
+
                         "Status : ZIP Created"
+
                         if success
+
                         else
+
                         "Status : Compression Failed"
+
                     )
 
                 }
@@ -1403,20 +1755,84 @@ class CommandDispatcher:
                 and entity
             ):
 
+                print("\n===================================")
+                print("EXTRACT CONFIRMATION")
+                print("===================================")
+
+                print(f"\nZIP File : {entity}")
+
+                self.tts.speak(
+                    "Do you want to extract this archive?"
+                )
+
+                confirm = self.whisper.listen_confirmation()
+
+                confirm = confirm.lower().strip()
+
+                if confirm not in {
+
+                    "yes",
+
+                    "yeah",
+
+                    "yep",
+
+                    "ya",
+
+                    "yas",
+
+                    "yes.",
+
+                    "yes!",
+
+                    "ok",
+
+                    "okay",
+
+                    "sure"
+
+                }:
+
+                    return {
+
+                        "success": False,
+
+                        "status": "Status : Cancelled"
+
+                    }
+
                 success = self.file_manager.extract_zip(
                     entity
                 )
+
+                if success:
+
+                    self.tts.speak(
+                        "ZIP archive extracted successfully."
+                    )
+
+                else:
+
+                    self.tts.speak(
+                        "Unable to extract the ZIP archive."
+                    )
 
                 return {
 
                     "success": success,
 
                     "status":
+
                     (
+
                         "Status : ZIP Extracted"
+
                         if success
+
                         else
+
                         "Status : Extraction Failed"
+
                     )
 
                 }
@@ -1587,15 +2003,71 @@ class CommandDispatcher:
             # Search by Extension
             # -------------------------
 
-            elif intent == "search_extension":
+            elif (
+                intent == "search_extension"
+                and entity
+            ):
+
+                self.tts.speak(
+                    f"Searching for {entity} files."
+                )
+
+                results = self.file_manager.search_by_extension(
+                    entity
+                )
+
+                if results:
+
+                    self.tts.speak(
+                        f"Showing {entity.upper()} files in File Explorer."
+                    )
+
+                    print("\n========== DISPATCH DEBUG ==========")
+                    print("Calling show_search_results()")
+                    print("Entity :", entity)
+                    print("Results :", len(results))
+                    print("====================================")
+
+                    self.file_manager.show_search_results(
+
+                        results,
+
+                        f"*.{entity.lower().lstrip('.')}"
+                    )
+
+                    # Give Explorer time to finish rendering
+                    self.window.wait_for_window(
+                        "File Explorer",
+                        timeout=10
+                    )
+
+                    self.keyboard.activate_window(
+                        0.5
+                    )
+
+                else:
+
+                    self.tts.speak(
+                        "No matching files found."
+                    )
 
                 return {
 
-                    "success": False,
+                    "success": bool(results),
 
                     "status":
 
-                    "Status : Pending"
+                    (
+
+                        "Status : Explorer Search Opened"
+
+                        if results
+
+                        else
+
+                        "Status : No Files Found"
+
+                    )
 
                 }
 
@@ -1604,15 +2076,85 @@ class CommandDispatcher:
             # Search by Date
             # -------------------------
 
-            elif intent == "search_date":
+            elif (
+                intent == "search_date"
+                and entity
+            ):
+
+                self.tts.speak(
+                    "Searching files."
+                )
+
+                results = self.file_manager.search_by_date(
+                    int(entity)
+                )
+
+                if results:
+
+                    self.tts.speak(
+                        "Showing search results in File Explorer."
+                    )
+
+                    if int(entity) == 0:
+
+                        query = "datemodified:today"
+
+                    elif int(entity) == 1:
+
+                        query = "datemodified:yesterday"
+
+                    elif int(entity) <= 7:
+
+                        query = "datemodified:this week"
+
+                    elif int(entity) <= 31:
+
+                        query = "datemodified:this month"
+
+                    else:
+
+                        query = "datemodified:this year"
+
+                    self.file_manager.show_search_results(
+
+                        results,
+
+                        query
+
+                    )
+
+                    self.window.wait_for_window(
+                        "File Explorer",
+                        timeout=10
+                    )
+
+                    self.keyboard.activate_window(
+                        0.5
+                    )
+
+                else:
+
+                    self.tts.speak(
+                        "No matching files found."
+                    )
 
                 return {
 
-                    "success": False,
+                    "success": len(results) > 0,
 
                     "status":
 
-                    "Status : Pending"
+                    (
+
+                        "Status : Explorer Search Opened"
+
+                        if results
+
+                        else
+
+                        "Status : No Files Found"
+
+                    )
 
                 }
 
@@ -2022,17 +2564,77 @@ class CommandDispatcher:
             # Search by Size
             # -------------------------
 
-            elif intent == "search_size":
+            elif (
+                intent == "search_size"
+                and entity
+            ):
+
+                self.tts.speak(
+                    f"Searching files larger than {entity} megabytes."
+                )
+
+                results = self.file_manager.search_by_size(
+                    float(entity)
+                )
+
+                if results:
+
+                    self.tts.speak(
+                        f"I found {len(results)} files."
+                    )
+
+                    self.tts.speak(
+                        "Opening File Explorer."
+                    )
+
+                    query = f"size:>{int(float(entity))}MB"
+
+                    self.file_manager.show_search_results(
+
+                        results,
+
+                        query
+
+                    )
+
+                    self.window.wait_for_window(
+                        "File Explorer",
+                        timeout=10
+                    )
+
+                    self.keyboard.activate_window(
+                        0.5
+                    )
+
+                else:
+
+                    self.tts.speak(
+                        "No matching files found."
+                    )
 
                 return {
 
-                    "success": False,
+                    "success": len(results) > 0,
 
                     "status":
 
-                    "Status : Pending"
+                    (
+
+                        f"Status : {len(results)} Files Found"
+
+                        if results
+
+                        else
+
+                        "Status : No Files Found"
+
+                    )
 
                 }
+
+            self.tts.speak(
+                "I could not understand your command."
+            )
 
             return {
 
@@ -2047,6 +2649,10 @@ class CommandDispatcher:
 
             print(
                 f"Dispatcher Error : {error}"
+            )
+
+            self.tts.speak(
+                "Sorry. Something went wrong."
             )
 
             return {

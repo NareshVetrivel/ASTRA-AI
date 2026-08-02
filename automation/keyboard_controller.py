@@ -40,15 +40,24 @@ class KeyboardController:
             return False
 
         # Wait for the target window
-        time.sleep(2)
+        time.sleep(0.8)
 
-        # Type text
-        pyautogui.write(
-            text,
-            interval=0.03
-        )
+        try:
 
-        return True
+            pyautogui.click()
+
+            time.sleep(0.2)
+
+            pyautogui.write(
+                text,
+                interval=0.02
+            )
+
+            return True
+
+        except Exception:
+
+            return False
 
     def press_key(self, key):
         """
@@ -64,7 +73,7 @@ class KeyboardController:
         if not key:
             return False
 
-        time.sleep(2)
+        time.sleep(0.3)
 
         key = key.lower()
 
@@ -146,7 +155,7 @@ class KeyboardController:
         if not keys:
             return False
 
-        time.sleep(2)
+        time.sleep(0.5)
 
         shortcut = "+".join(
             key.lower() for key in keys
@@ -431,4 +440,44 @@ class KeyboardController:
 
         return self.press_key(character)
     
-    
+    def press_enter_after_typing(self):
+        """
+        Press Enter after typing.
+        """
+
+        time.sleep(0.5)
+
+        return self.press_key("enter")
+
+
+    # --------------------------------------------------
+    # Activate Window
+    # --------------------------------------------------
+
+    def activate_window(
+        self,
+        seconds=1.5
+    ):
+        """
+        Wait until newly opened window
+        becomes active and bring focus.
+        """
+
+        time.sleep(seconds)
+
+        try:
+
+            # Wake the newly opened window
+            pyautogui.press("alt")
+
+            time.sleep(0.2)
+
+            pyautogui.click()
+
+            time.sleep(0.2)
+
+            return True
+
+        except Exception:
+
+            return False

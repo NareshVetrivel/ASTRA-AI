@@ -89,7 +89,10 @@ class WhisperRecognizer:
 
             return None
 
-    def listen(self):
+    def listen(
+        self,
+        retries=1
+    ):
         """
         Listen from microphone and convert
         speech into text.
@@ -106,46 +109,210 @@ class WhisperRecognizer:
 
                 return None
 
-            audio_file = self.record_audio()
+            for attempt in range(retries):
 
-            print("Audio File :", audio_file)
+                audio_file = self.record_audio()
 
-            if audio_file:
-                print("File Size :", os.path.getsize(audio_file))
+                print("Audio File :", audio_file)
 
-            if audio_file is None:
-                return None
+                if audio_file:
 
-            print("🧠 Transcribing...")
+                    print(
+                        "File Size :",
+                        os.path.getsize(audio_file)
+                    )
 
-            segments, _ = self.model.transcribe(
-                audio_file,
-                beam_size=5,
-                language="en",
-                vad_filter=False
-            )
+                if audio_file is None:
 
-            text_parts = []
+                    continue
 
-            for segment in segments:
-                text_parts.append(segment.text)
+                print("🧠 Transcribing...")
 
-            text = " ".join(text_parts).strip()
+                segments, _ = self.model.transcribe(
 
-            print("\n========== DEBUG ==========")
-            print(f"Recognized Text : {text}")
-            print("===========================\n")
+                    audio_file,
 
-            #if os.path.exists(audio_file):
-                #os.remove(audio_file)
+                    beam_size=5,
 
-            if text == "":
-                return None
+                    language="en",
 
-            return text
+                    vad_filter=True,
+
+                    condition_on_previous_text=False
+                )
+
+                text = " ".join(
+
+                    segment.text
+
+                    for segment in segments
+
+                ).strip()
+
+                print("\n========== DEBUG ==========")
+
+                print(
+
+                    f"Recognized Text : {text}"
+
+                )
+
+                print("===========================\n")
+
+                if text:
+
+                    text = (
+
+                        text
+
+                        .replace("  ", " ")
+
+                        .strip()
+
+                    )
+
+                    return text
+
+                print(
+
+                    f"No speech detected. Retry "
+
+                    f"{attempt + 1}/{retries}"
+
+                )
+
+            return None
 
         except Exception as error:
 
-            print(f"\nWhisper Error : {error}")
+            print(
+
+                f"\nWhisper Error : {error}"
+
+            )
 
             return None
+
+    # --------------------------------------------------
+    # Listen For Confirmation
+    # --------------------------------------------------
+
+    def listen_confirmation(
+        self,
+        retries=3
+    ):
+        """
+        Listen for
+
+        Yes
+
+        No
+
+        Cancel
+
+        Returns
+        -------
+        str | None
+        """
+
+        valid = {
+
+            "yes",
+
+            "no",
+
+            "cancel",
+
+            "stop"
+
+        }
+
+        for _ in range(retries):
+
+            text = self.listen()
+
+            if text is None:
+
+                print(
+                    "\nDidn't hear anything."
+                )
+
+                continue
+
+            text = (
+                text
+                .lower()
+                .strip()
+                .replace(".", "")
+                .replace(",", "")
+                .replace("!", "")
+                .replace("?", "")
+            )
+
+            # -------------------------
+            # Common Whisper Mistakes
+            # -------------------------
+
+            normalization = {
+
+                "yep": "yes",
+
+                "yup": "yes",
+
+                "yeah": "yes",
+
+                "yess": "yes",
+
+                "yea": "yes",
+
+                "you": "yes",
+
+                "ok": "yes",
+
+                "okay": "yes",
+
+                "confirm": "yes",
+
+                "sure": "yes",
+
+                "correct": "yes",
+
+                "nope": "no",
+
+                "nah": "no",
+
+                "cancel it": "cancel",
+
+                "stop it": "stop"
+
+            }
+
+            for old, new in normalization.items():
+
+                text = text.replace(old, new)
+
+            if "yes" in text:
+
+                return "yes"
+
+            if "no" in text:
+
+                return "no"
+
+            if "cancel" in text:
+
+                return "cancel"
+
+            if "stop" in text:
+
+                return "stop"
+
+            print(
+                "\nPlease say"
+            )
+
+            print(
+                "Yes, No or Cancel."
+            )
+
+        return None

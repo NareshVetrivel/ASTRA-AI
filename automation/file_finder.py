@@ -8,6 +8,10 @@ ASTRA-AI V1
 """
 
 import os
+import subprocess
+import time
+
+import pyautogui
 
 from rapidfuzz import process, fuzz
 
@@ -185,7 +189,7 @@ class FileFinder:
 
             file_names,
 
-            scorer=fuzz.partial_ratio
+            scorer=fuzz.WRatio
 
         )
 
@@ -200,7 +204,9 @@ class FileFinder:
             f"{matched_name} ({score:.1f}%)"
         )
 
-        if score < 70:
+        # Prevent wrong file selection
+
+        if score < 85:
 
             return None
 
@@ -211,6 +217,68 @@ class FileFinder:
                 return file[2]
 
         return None
+
+    # --------------------------------------------------
+    # Search By Extension
+    # --------------------------------------------------
+
+    def search_by_extension(
+        self,
+        extension
+    ):
+        """
+        Search using Windows File Explorer.
+        """
+
+        try:
+
+            print(
+                f"\nOpening Explorer Search : *.{extension}"
+            )
+
+            subprocess.Popen("explorer")
+
+            time.sleep(2.5)
+
+            # Wake Explorer window
+
+            pyautogui.press("alt")
+
+            time.sleep(0.2)
+
+            # Focus search box
+
+            pyautogui.hotkey(
+                "ctrl",
+                "e"
+            )
+
+            time.sleep(0.8)
+
+            # Click once to ensure focus
+
+            pyautogui.click()
+
+            time.sleep(0.2)
+
+            pyautogui.write(
+                f"*.{extension}",
+                interval=0.02
+            )
+
+            time.sleep(0.3)
+
+            pyautogui.press("enter")
+
+            return True
+
+        except Exception as error:
+
+            print(
+                f"\nExplorer Search Error : {error}"
+            )
+
+            return False
 
     # --------------------------------------------------
     # Open File
@@ -258,6 +326,116 @@ class FileFinder:
 
             print(
                 f"\nOpen File Error : {error}"
+            )
+
+            return False
+
+    # --------------------------------------------------
+    # Search By Size
+    # --------------------------------------------------
+
+    def search_by_size(
+        self,
+        minimum_size_mb
+    ):
+        """
+        Search files larger than
+        the given size.
+        """
+
+        results = self.database.search_by_size(
+            minimum_size_mb
+        )
+
+        if not results:
+
+            print(
+                "\nNo matching files found."
+            )
+
+            return False
+
+        print("\nMatching Files:\n")
+
+        for file in results:
+
+            print(file[2])
+
+        return True
+
+    # --------------------------------------------------
+    # Search By Date
+    # --------------------------------------------------
+
+    def search_by_date(
+        self,
+        days
+    ):
+        """
+        Search recently modified files
+        using File Explorer.
+        """
+
+        try:
+
+            if days == 0:
+
+                query = "datemodified:today"
+
+            elif days == 1:
+
+                query = "datemodified:yesterday"
+
+            elif days <= 7:
+
+                query = "datemodified:this week"
+
+            elif days <= 31:
+
+                query = "datemodified:this month"
+
+            else:
+
+                query = "datemodified:this year"
+
+            print(
+                f"\nExplorer Search : {query}"
+            )
+
+            subprocess.Popen("explorer")
+
+            time.sleep(2.5)
+
+            pyautogui.press("alt")
+
+            time.sleep(0.2)
+
+            pyautogui.hotkey(
+                "ctrl",
+                "e"
+            )
+
+            time.sleep(0.8)
+
+            pyautogui.click()
+
+            time.sleep(0.2)
+
+            pyautogui.write(
+                query,
+                interval=0.02
+            )
+
+            time.sleep(0.3)
+
+            pyautogui.press("enter")
+
+            return True
+
+        except Exception as error:
+
+            print(
+                f"\nExplorer Search Error : {error}"
             )
 
             return False
