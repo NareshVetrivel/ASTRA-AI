@@ -5,6 +5,8 @@ Routes the detected intent
 to the appropriate controller.
 """
 
+from ai.gemini_client import GeminiClient
+
 class CommandDispatcher:
 
     """
@@ -24,7 +26,8 @@ class CommandDispatcher:
         folder_manager,
         file_manager,
         browser_controller,
-        whisper
+        whisper,
+        gemini_client: GeminiClient
     ):
 
         self.tts = tts
@@ -43,6 +46,8 @@ class CommandDispatcher:
         self.browser = browser_controller
 
         self.whisper = whisper
+
+        self.gemini = gemini_client
         
 
     # --------------------------------------------------
@@ -136,7 +141,8 @@ class CommandDispatcher:
         browser=None,
         website=None,
         search_query=None,
-        profile=None
+        profile=None,
+        user_text=None
     ):
         """
         Execute the detected intent.
@@ -147,6 +153,30 @@ class CommandDispatcher:
         """
 
         try:
+
+            # -------------------------
+            # AI Conversation
+            # -------------------------
+
+            if intent == "ai_chat":
+
+                reply = self.gemini.generate_response(
+                    user_text or typed_text or entity or ""
+                )
+
+                self.tts.speak(reply)
+
+                return self.response(
+
+                    True,
+
+                    "Status : AI Response",
+
+                    "Status : AI Failed",
+
+                    reply
+
+                )
 
             # -------------------------
             # Launch Application
@@ -2675,10 +2705,6 @@ class CommandDispatcher:
 
                 )
 
-            reply = self.speak(
-                "I could not understand your command."
-            )
-
             return self.response(
 
                 False,
@@ -2687,7 +2713,7 @@ class CommandDispatcher:
 
                 "Status : No Action",
 
-                reply
+                ""
 
             )
 

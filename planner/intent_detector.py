@@ -97,6 +97,135 @@ class IntentDetector:
 
         }
 
+        # ---------------------------------
+        # AI Conversation Keywords
+        # ---------------------------------
+
+        self.ai_keywords = {
+
+            # Question words
+            "what",
+            "who",
+            "why",
+            "when",
+            "where",
+            "which",
+            "whose",
+            "whom",
+            "how",
+
+            # AI Requests
+            "explain",
+            "describe",
+            "define",
+            "compare",
+            "difference",
+            "meaning",
+            "guide",
+            "teach",
+            "learn",
+            "study",
+            "example",
+            "examples",
+            "summary",
+            "summarize",
+
+            # Natural Conversation
+            "tell me",
+            "tell",
+            "about",
+            "say",
+            "chat",
+            "talk",
+            "conversation",
+            "question",
+            "help",
+
+            # Knowledge
+            "information",
+            "details",
+            "history",
+            "advantages",
+            "disadvantages",
+            "benefits",
+            "uses",
+            "purpose",
+
+            # Programming
+            "python",
+            "java",
+            "c++",
+            "c#",
+            "javascript",
+            "html",
+            "css",
+            "sql",
+
+            # AI
+            "artificial intelligence",
+            "machine learning",
+            "deep learning",
+            "neural network",
+
+            # Tanglish
+            "pathi",
+
+            "pati",
+
+            "enna",
+
+            "enna da",
+
+            "epdi",
+
+            "eppadi",
+
+            "yen",
+
+            "ethuku",
+
+            "etharku",
+
+            "sollu",
+
+            "solunga",
+
+            "sollunga",
+
+            "puriyala",
+
+            "puriya",
+
+            "purinjikanum",
+
+            "vilakkam",
+
+            "explain",
+
+            "explain pannu",
+
+            "explain pannunga",
+
+            "detail ah",
+
+            "full detail",
+
+            "full explain",
+
+            "meaning",
+
+            "artham",
+
+            "history",
+
+            "future",
+
+            "use",
+
+            "uses"
+
+        }
+
         self.intent_keywords = {
 
             # ---------------------------------
@@ -196,6 +325,38 @@ class IntentDetector:
             "file": "open_file"
         }
 
+        self.tanglish_command_map = {
+
+            "thorakka": "open",
+            "thorak": "open",
+            "open pannu": "open",
+
+            "moodu": "close",
+            "close pannu": "close",
+
+            "theda": "search",
+            "thedu": "search",
+            "thedi": "search",
+
+            "kaatu": "show",
+
+            "podu": "play",
+
+            "uruvakku": "create",
+
+            "azhichidu": "delete",
+
+            "maathu": "rename",
+
+            "nagarthu": "move",
+
+            "copy pannu": "copy",
+
+            "start pannu": "start",
+
+            "stop pannu": "stop",
+        }
+
     def detect_intent(self, text):
         """
         Detect user intent.
@@ -212,12 +373,48 @@ class IntentDetector:
         if not text:
             return None
 
+        # Ignore very short accidental speech
+
+        if len(text.strip()) <= 1:
+
+            return None
+
         text = (
             text
             .lower()
             .strip()
             .rstrip(".,!?")
         )
+
+        # Remove duplicate filler words
+
+        fillers = {
+
+            "uh",
+
+            "um",
+
+            "hmm",
+
+            "mmm",
+
+            "ah",
+
+            "oh"
+
+        }
+
+        words = [
+
+            word
+
+            for word in text.split()
+
+            if word not in fillers
+
+        ]
+
+        text = " ".join(words)
 
         # ---------------------------------
         # Whisper Corrections
@@ -226,10 +423,32 @@ class IntentDetector:
         text = (
             text
             .replace("bdf", "pdf")
-            .replace("pdf", "pdf")
             .replace("estaday", "yesterday")
             .replace("study", "today")
+            .replace("you tube", "youtube")
+            .replace("you to", "youtube")
+            .replace("g mail", "gmail")
+            .replace("power point", "powerpoint")
+            .replace("note pad", "notepad")
+            .replace("command promt", "command prompt")
+            .replace("vs code", "vscode")
+            .replace("chrome browser", "chrome")
+            .replace("google chrome browser", "chrome")
+            .replace("u tube", "youtube")
+            .replace("you too", "youtube")
+            .replace("excel sheet", "excel")
+            .replace("power point presentation", "powerpoint")
+            .replace("visual studio", "vscode")
+            .replace("c plus plus", "c++")
+            .replace("artificial intelligent", "artificial intelligence")
         )
+
+        # remove duplicate spaces
+        text = " ".join(text.split())
+
+        for old, new in self.tanglish_command_map.items():
+
+            text = text.replace(old, new)
 
         # ---------------------------------
         # Smart Open Detection
@@ -248,6 +467,22 @@ class IntentDetector:
             and
             "search " not in text
         ):
+
+            # ---------------------------------
+            # Exact Browser Commands
+            # ---------------------------------
+
+            if text in ("youtube", "open youtube"):
+                return "open_youtube"
+
+            if text in ("google", "open google"):
+                return "open_google"
+
+            if text in ("gmail", "open gmail"):
+                return "open_website"
+
+            if text in ("github", "open github"):
+                return "open_website"
 
             # ---------------------------------
             # Browser Website Detection
@@ -579,7 +814,17 @@ class IntentDetector:
 
             for app in self.application_open_keywords:
 
-                if app in text:
+                if (
+                    app == text
+                    or
+                    f"open {app}" in text
+                    or
+                    f"launch {app}" in text
+                    or
+                    f"run {app}" in text
+                    or
+                    f"start {app}" in text
+                ):
 
                     if any(
 
@@ -1180,6 +1425,168 @@ class IntentDetector:
                 return "launch_application"
 
         # ---------------------------------
+        # Natural AI Questions
+        # ---------------------------------
+
+        question_patterns = (
+
+            "what is",
+
+            "who is",
+
+            "where is",
+
+            "when is",
+
+            "why is",
+
+            "how to",
+
+            "how does",
+
+            "tell me",
+
+            "can you explain",
+
+            "please explain",
+
+            "explain",
+
+            "define",
+
+            "difference between",
+
+            "compare",
+
+            "python pathi",
+
+            "java pathi",
+
+            "ai pathi",
+
+            "machine learning pathi",
+
+            "deep learning pathi",
+
+            "enna",
+
+            "epdi",
+
+            "yen"
+
+        )
+
+        if any(pattern in text for pattern in question_patterns):
+
+            return "ai_chat"
+
+        # ---------------------------------
+        # AI Conversation
+        # ---------------------------------
+
+        if any(
+            keyword in text
+            for keyword in self.ai_keywords
+        ):
+            return "ai_chat"
+
+        automation_words = {
+
+            "open",
+            "close",
+            "launch",
+            "run",
+            "start",
+            "delete",
+            "create",
+            "rename",
+            "copy",
+            "move",
+            "search",
+            "find",
+            "show",
+            "list",
+            "compress",
+            "extract",
+            "play",
+
+            "browser",
+
+            "youtube",
+
+            "google",
+
+            "chrome",
+
+            "edge",
+
+            "folder",
+
+            "file",
+
+            "notepad",
+
+            "word",
+
+            "excel",
+
+            "powerpoint",
+
+            "desktop",
+
+            "downloads",
+
+            "documents",
+
+            "calculator",
+
+            "paint",
+
+            "explorer"
+
+        }
+
+        if (
+
+            len(text.split()) >= 5
+
+            and
+
+            text.endswith("?")
+
+            or
+
+            any(
+
+                word in text
+
+                for word in (
+
+                    "explain",
+
+                    "describe",
+
+                    "why",
+
+                    "what",
+
+                    "how",
+
+                    "meaning",
+
+                    "compare",
+
+                    "difference"
+
+                )
+
+            )
+
+        ):
+
+            return "ai_chat"
+
+        # ---------------------------------
         # Exact Match
         # ---------------------------------
 
@@ -1196,21 +1603,28 @@ class IntentDetector:
         # ---------------------------------
 
         best_match = process.extractOne(
+
             text,
+
             self.intent_keywords.keys(),
-            scorer=fuzz.partial_ratio
+
+            scorer=fuzz.ratio
+
         )
 
         if best_match:
 
             keyword, score, _ = best_match
 
-            print(
-                f"Intent Fuzzy Match : "
-                f"{keyword} ({score:.1f}%)"
-            )
+            if score >= 92:
 
-            if score >= 70:
+                print(
+
+                    f"Intent Fuzzy Match : "
+
+                    f"{keyword} ({score:.1f}%)"
+
+                )
 
                 return self.intent_keywords[keyword]
 
@@ -1218,4 +1632,10 @@ class IntentDetector:
         # No Match
         # ---------------------------------
 
-        return None
+        # Very small unknown text
+
+        if len(text.split()) <= 2:
+
+            return None
+
+        return "ai_chat"

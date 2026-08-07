@@ -5,6 +5,9 @@ ASTRA-AI
 Premium Text To Speech Manager
 """
 
+from __future__ import annotations
+
+import threading
 import time
 
 from voice.edge_tts_engine import EdgeTTSEngine
@@ -12,7 +15,7 @@ from voice.edge_tts_engine import EdgeTTSEngine
 
 class TextToSpeech:
     """
-    Central Text-To-Speech manager.
+    Central Text-To-Speech Manager.
     """
 
     def __init__(self):
@@ -23,29 +26,42 @@ class TextToSpeech:
 
         self._closing = False
 
+        self.lock = threading.Lock()
+
     # --------------------------------------------------
     # Speak
     # --------------------------------------------------
 
-    def speak(self, text):
+    def speak(
+        self,
+        text: str
+    ):
 
         if self._closing:
+
             return
 
         if not self.enabled:
+
             return
 
-        if not text:
+        if text is None:
+
             return
 
         text = str(text).strip()
 
         if not text:
+
             return
 
         try:
 
-            self.engine.speak(text)
+            with self.lock:
+
+                if self.engine is not None:
+
+                    self.engine.speak(text)
 
         except Exception as error:
 
@@ -59,7 +75,11 @@ class TextToSpeech:
 
         try:
 
-            self.engine.stop()
+            with self.lock:
+
+                if self.engine is not None:
+
+                    self.engine.stop()
 
         except Exception:
 
@@ -69,22 +89,29 @@ class TextToSpeech:
     # Enable / Disable
     # --------------------------------------------------
 
-    def set_enabled(self, enabled=True):
+    def set_enabled(
+        self,
+        enabled=True
+    ):
 
-        self.enabled = enabled
+        self.enabled = bool(enabled)
 
     # --------------------------------------------------
     # Speaking Status
     # --------------------------------------------------
 
     def speaking(self):
-        """
-        Return actual engine speaking status.
-        """
 
         try:
+
+            if self.engine is None:
+
+                return False
+
             return self.engine.speaking()
+
         except Exception:
+
             return False
 
     # --------------------------------------------------
@@ -95,35 +122,80 @@ class TextToSpeech:
 
         while self.speaking():
 
-            time.sleep(0.05)
+            time.sleep(0.02)
 
     # --------------------------------------------------
     # Voice
     # --------------------------------------------------
 
-    def set_voice(self, voice):
+    def set_voice(
+        self,
+        voice
+    ):
 
-        self.engine.set_voice(voice)
+        try:
+
+            if self.engine is not None:
+
+                self.engine.set_voice(voice)
+
+        except Exception:
+
+            pass
 
     # --------------------------------------------------
     # Rate
     # --------------------------------------------------
 
-    def set_rate(self, rate):
+    def set_rate(
+        self,
+        rate
+    ):
 
-        if hasattr(self.engine, "set_rate"):
+        try:
 
-            self.engine.set_rate(rate)
+            if (
+
+                self.engine is not None
+
+                and
+
+                hasattr(self.engine, "set_rate")
+
+            ):
+
+                self.engine.set_rate(rate)
+
+        except Exception:
+
+            pass
 
     # --------------------------------------------------
     # Volume
     # --------------------------------------------------
 
-    def set_volume(self, volume):
+    def set_volume(
+        self,
+        volume
+    ):
 
-        if hasattr(self.engine, "set_volume"):
+        try:
 
-            self.engine.set_volume(volume)
+            if (
+
+                self.engine is not None
+
+                and
+
+                hasattr(self.engine, "set_volume")
+
+            ):
+
+                self.engine.set_volume(volume)
+
+        except Exception:
+
+            pass
 
     # --------------------------------------------------
     # Cleanup
@@ -133,8 +205,18 @@ class TextToSpeech:
 
         self._closing = True
 
-        self.stop()
+        try:
+
+            self.stop()
+
+        except Exception:
+
+            pass
 
         self.engine = None
 
-        print("TextToSpeech shutdown completed.")
+        print(
+
+            "TextToSpeech shutdown completed."
+
+        )

@@ -484,6 +484,36 @@ class MicrophoneButton(QPushButton):
             self.update()
 
     # ------------------------------------------------------
+    # Enabled / Disabled State
+    # ------------------------------------------------------
+
+    def setEnabled(self, enabled: bool):
+
+        super().setEnabled(enabled)
+
+        if enabled:
+
+            self.setCursor(
+                Qt.PointingHandCursor
+            )
+
+            self.shadow.setColor(
+                QColor(124, 58, 237, 0)
+            )
+
+        else:
+
+            self.setCursor(
+                Qt.ForbiddenCursor
+            )
+
+            self.shadow.setColor(
+                QColor(90, 90, 90, 70)
+            )
+
+        self.update()
+
+    # ------------------------------------------------------
     # Paint
     # ------------------------------------------------------
 
@@ -617,9 +647,15 @@ class MicrophoneButton(QPushButton):
 
         painter.setPen(Qt.NoPen)
 
-        painter.setBrush(
-            QColor("#7C3AED")
-        )
+        if self.isEnabled():
+
+            color = QColor("#7C3AED")
+
+        else:
+
+            color = QColor("#9CA3AF")
+
+        painter.setBrush(color)
 
         painter.drawEllipse(
 
@@ -643,6 +679,10 @@ class MicrophoneButton(QPushButton):
 
         if self.svg.isValid():
 
+            if not self.isEnabled():
+
+                painter.setOpacity(0.45)
+
             self.svg.render(
 
                 painter,
@@ -660,6 +700,8 @@ class MicrophoneButton(QPushButton):
                 )
 
             )
+
+            painter.setOpacity(1.0)
 
 # ==========================================================
 # Main Mic Widget

@@ -27,9 +27,18 @@ class WhisperRecognizer:
         self.recognizer = sr.Recognizer()
 
         self.recognizer.dynamic_energy_threshold = True
-        self.recognizer.energy_threshold = 250
-        self.recognizer.pause_threshold = 0.8
-        self.recognizer.non_speaking_duration = 0.5
+
+        self.recognizer.energy_threshold = 180
+
+        self.recognizer.dynamic_energy_adjustment_damping = 0.12
+
+        self.recognizer.dynamic_energy_ratio = 1.5
+
+        self.recognizer.pause_threshold = 0.55
+
+        self.recognizer.non_speaking_duration = 0.35
+
+        self.recognizer.operation_timeout = None
 
         self.microphone = sr.Microphone()
 
@@ -65,7 +74,11 @@ class WhisperRecognizer:
 
                 device="cpu",
 
-                compute_type="int8"
+                compute_type="int8",
+
+                cpu_threads=6,
+
+                num_workers=1
 
             )
 
@@ -108,7 +121,7 @@ class WhisperRecognizer:
         )
 
         level = min(
-            float(rms) * 15.0,
+            float(rms) * 22.0,
             1.0
         )
 
@@ -144,8 +157,13 @@ class WhisperRecognizer:
 
                 samplerate=16000,
 
-                callback=self._audio_callback
+                blocksize=512,
 
+                dtype="float32",
+
+                latency="low",
+
+                callback=self._audio_callback
             )
 
             self.audio_stream.start()
@@ -212,12 +230,21 @@ class WhisperRecognizer:
                         duration=0.3
                     )
 
+                    self.recognizer.energy_threshold = max(
+                        150,
+                        int(self.recognizer.energy_threshold * 0.85)
+                    )
+
                     self._noise_calibrated = True
 
                 audio = self.recognizer.listen(
+
                     source,
+
                     timeout=None,
-                    phrase_time_limit=8
+
+                    phrase_time_limit=6
+
                 )
 
                 print("Audio captured successfully.")
@@ -288,22 +315,42 @@ class WhisperRecognizer:
 
                     audio_file,
 
+                    language="en",
+
                     beam_size=1,
 
-                    language="en",
+                    best_of=1,
 
                     vad_filter=True,
 
-                    condition_on_previous_text=False
+                    vad_parameters={
+
+                        "min_silence_duration_ms": 180,
+
+                        "speech_pad_ms": 120,
+
+                        "threshold": 0.45
+
+                    },
+
+                    condition_on_previous_text=False,
+
+                    temperature=0.0,
+
+                    word_timestamps=False
                 )
 
                 text = " ".join(
 
-                    segment.text
+                    segment.text.strip()
 
                     for segment in segments
 
-                ).strip()
+                    if segment.text.strip()
+
+                )
+
+                text = " ".join(text.split())
 
                 print("\n========== DEBUG ==========")
 
@@ -323,6 +370,14 @@ class WhisperRecognizer:
 
                         .replace("  ", " ")
 
+                        .replace(" ,", ",")
+
+                        .replace(" .", ".")
+
+                        .replace(" ?", "?")
+
+                        .replace(" !", "!")
+
                         .strip()
 
                     )
@@ -335,7 +390,7 @@ class WhisperRecognizer:
 
                         pass
 
-                    return text
+                    return text.strip().lower()
 
                 print(
 

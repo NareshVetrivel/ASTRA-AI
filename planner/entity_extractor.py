@@ -139,93 +139,258 @@ class EntityExtractor:
 
         replacements = {
 
+            # ---------------------------------
+            # Numbers
+            # ---------------------------------
+
             " 2 ": " to ",
-
             " too ": " to ",
+            " tu ": " to ",
 
-            " in to ": " into ",
-
-            " jpd ": " pdf ",
-
-            " p d f ": " pdf ",
-
-            " doc x ": " docx ",
-
-            " power point ": " powerpoint ",
-
-            " esther day ": " yesterday ",
-
-            " yesterdaye ": " yesterday ",
-
-            " last v ": " last week ",
-
-            " this weak ": " this week ",
-
-            "arch": "search",
-
-            "herch": "search",
+            # ---------------------------------
+            # Common Whisper Mistakes
+            # ---------------------------------
 
             "reach": "search",
-
             "serch": "search",
+            "herch": "search",
+            "arch": "search",
+            "searchh": "search",
 
             "fined": "find",
-
-            "fence": "files",
-
             "finds": "find",
 
-            "word fence": "word files",
+            "fence": "files",
+            "filess": "files",
 
-            "excel fence": "excel files",
+            "jpd": "pdf",
+            "p d f": "pdf",
 
-            "ppt fence": "ppt files",
+            "doc x": "docx",
 
-            "modified study": "modified today",
+            "power point": "powerpoint",
 
-            "modified estaday": "modified yesterday",
+            "node pad": "notepad",
+            "north pad": "notepad",
+            "note pad": "notepad",
+            "note that": "notepad",
 
-            "node pad":"notepad",
+            "m s word": "word",
+            "ms word": "word",
 
-            "note that":"notepad",
+            "excel sheet": "excel",
+            "excel file": "excel",
 
-            "north pad":"notepad",
+            "ppt file": "ppt",
+            "word file": "word",
 
-            "ms word":"word",
+            "study": "today",
+            "estaday": "yesterday",
+            "yesterdaye": "yesterday",
+            "esther day": "yesterday",
 
-            "m s word":"word",
+            "this weak": "this week",
+            "last v": "last week",
 
-            "power point":"powerpoint",
+            # ---------------------------------
+            # Browser
+            # ---------------------------------
 
-            "excel sheet":"excel",
+            "google chrome": "chrome",
+            "chrome browser": "chrome",
+            "edge browser": "edge",
 
-            "excel file":"excel",
+            # ---------------------------------
+            # Tanglish Browser
+            # ---------------------------------
 
-            "word file":"word",
+            "kurom": "chrome",
+            "krom": "chrome",
+            "kuroam": "chrome",
 
-            "ppt file":"ppt",
+            # ---------------------------------
+            # Tanglish Applications
+            # ---------------------------------
 
-            "reach":"search",
+            "note book": "notepad",
+            "note padu": "notepad",
+            "notepadu": "notepad",
 
-            "herch":"search",
+            "power pointu": "powerpoint",
+            "powerpointu": "powerpoint",
 
-            "serch":"search",
+            "excelu": "excel",
+            "excel ah": "excel",
 
-            "arch":"search",
+            "wordu": "word",
+            "word ah": "word",
 
-            "fence":"files",
+            "chromeu": "chrome",
+            "chromela": "chrome",
 
-            "study":"today",
+            "edgeu": "edge",
 
-            "estaday":"yesterday"
+            "youtubeu": "youtube",
 
+            "googleu": "google",
+
+            # ---------------------------------
+            # Tanglish Commands
+            # ---------------------------------
+
+            "thorakka": "open",
+            "thorak": "open",
+            "thorakanum": "open",
+
+            "open pannu": "open",
+            "open panra": "open",
+            "open pannunga": "open",
+            "open pannu da": "open",
+
+            "moodu": "close",
+            "moodunga": "close",
+            "close pannu": "close",
+            "close pannu da": "close",
+
+            "thedu": "search",
+            "theda": "search",
+            "thedunga": "search",
+            "search pannu": "search",
+            "search pannu da": "search",
+            "search panni kudu": "search",
+            "thedi kudu": "search",
+            "thedi paaru": "search",
+
+            "kaatu": "show",
+            "kaamika": "show",
+            "kaaminga": "show",
+
+            "create pannu": "create",
+
+            "delete pannu": "delete",
+
+            "copy pannu": "copy",
+
+            "move pannu": "move",
+
+            "rename pannu": "rename",
+
+            "play pannu": "play",
+            "play pannu da": "play",
+
+            "download pannu": "download",
+
+            "install pannu": "install",
+
+            "launch pannu": "launch",
+
+            "start pannu": "start",
+
+            "stop pannu": "stop",
+
+            "poi open": "open",
+            "poi open pannu": "open",
+
+            "vechu open": "open",
+
+            "podu": "play",
+            "podunga": "play",
+
+            # ---------------------------------
+            # Tanglish File Words
+            # ---------------------------------
+
+            "pail": "file",
+            "payil": "file",
+
+            "foldera": "folder",
+            "folder ah": "folder",
+
+            # ---------------------------------
+            # Tanglish Websites
+            # ---------------------------------
+
+            "youtube la": "youtube",
+            "youtube le": "youtube",
+
+            "google la": "google",
+            "google le": "google",
+
+            "chrome la": "chrome",
+            "chrome le": "chrome",
+
+            "edge la": "edge",
+            "edge le": "edge",
+
+            "github la": "github",
+
+            "gmail la": "gmail",
+
+            "instagram la": "instagram",
+
+            "facebook la": "facebook",
+
+            # ---------------------------------
+            # Noise Words
+            # ---------------------------------
+
+            "please da": "",
+            "please dee": "",
+            "please di": "",
+            "please": "",
+
+            "machi": "",
+            "machi da": "",
+
+            "bro": "",
+            "nanba": "",
+
+            "appa": "",
+            "amma": "",
+
+            "konjam": "",
+
+            "venum": "",
+            "venum da": "",
+            "venum dee": "",
+
+            "iruku": "",
+            "irukka": "",
         }
 
         for old, new in replacements.items():
 
             text = text.replace(old, new)
 
-        return text.strip()
+        text = " ".join(text.split()).strip()
+
+        # ---------------------------------
+        # Remove Common Tamil Particles
+        # ---------------------------------
+
+        particles = (
+            " la",
+            " le",
+            " oda",
+            " kitta",
+            " kuda",
+            " ah",
+            " va",
+            " da",
+            " di",
+            " pa",
+            " ma",
+            " nu",
+            " ku",
+        )
+
+        for particle in particles:
+
+            if text.endswith(particle):
+
+                text = text[:-len(particle)].strip()
+
+        return text
 
     # --------------------------------------------------
     # Load Applications
@@ -263,6 +428,40 @@ class EntityExtractor:
             return None
 
         text = self.normalize_text(text)
+
+        # ---------------------------------
+        # Remove Command Words
+        # ---------------------------------
+
+        command_words = {
+
+            "open",
+            "close",
+            "launch",
+            "start",
+            "run",
+            "search",
+            "show",
+            "find",
+            "create",
+            "delete",
+            "copy",
+            "move",
+            "rename",
+            "play",
+        }
+
+        words = [
+
+            word
+
+            for word in text.split()
+
+            if word not in command_words
+
+        ]
+
+        text = " ".join(words)
 
         applications = self.load_applications()
 
@@ -346,15 +545,15 @@ class EntityExtractor:
 
             app_name, score, _ = best_match
 
-            print(
-
-                f"Fuzzy Match : "
-
-                f"{app_name} ({score:.1f}%)"
-
-            )
-
             if score >= 75:
+
+                print(
+
+                    f"Application Match : "
+
+                    f"{app_name} ({score:.1f}%)"
+
+                )
 
                 return applications[app_name]
 
@@ -407,15 +606,15 @@ class EntityExtractor:
 
             folder, score, _ = best_match
 
-            print(
-
-                f"Folder Match : "
-
-                f"{folder} ({score:.1f}%)"
-
-            )
-
             if score >= 75:
+
+                print(
+
+                    f"Folder Match : "
+
+                    f"{folder} ({score:.1f}%)"
+
+                )
 
                 return folder
 
@@ -441,10 +640,26 @@ class EntityExtractor:
 
         # Exact Match
 
-        for name, url in self.websites.items():
+        aliases = {
+
+            "youtube": ("youtube", "youtube la", "youtube le"),
+            "google": ("google", "google la", "google le"),
+            "gmail": ("gmail", "gmail la"),
+            "github": ("github", "github la"),
+            "instagram": ("instagram", "instagram la"),
+            "facebook": ("facebook", "facebook la"),
+        }
+
+        for key, values in aliases.items():
+
+            if any(v in text for v in values):
+
+                return self.websites[key]
 
             # Don't treat browser launch
             # as website open.
+
+        for name, url in self.websites.items():
 
             if (
 
@@ -526,13 +741,15 @@ class EntityExtractor:
 
             name, score, _ = best_match
 
-            print(
-
-                f"Website Match : {name} ({score:.1f}%)"
-
-            )
-
             if score >= 75:
+
+                print(
+
+                    f"Website Match : "
+
+                    f"{name} ({score:.1f}%)"
+
+                )
 
                 return self.websites[name]
 
@@ -554,7 +771,7 @@ class EntityExtractor:
 
             return None
 
-        text = text.lower()
+        text = self.normalize_text(text)
 
         remove_words = {
 
@@ -618,7 +835,7 @@ class EntityExtractor:
 
             return None
 
-        text = text.lower()
+        text = self.normalize_text(text)
 
         remove_words = {
 
@@ -677,15 +894,25 @@ class EntityExtractor:
 
             return "chrome"
 
-        text = text.lower()
+        text = self.normalize_text(text)
 
-        if "edge" in text:
+        browser_aliases = {
 
-            return "edge"
+            "chrome": "chrome",
+            "chromela": "chrome",
+            "chromeu": "chrome",
+            "kurom": "chrome",
+            "krom": "chrome",
 
-        if "chrome" in text:
+            "edge": "edge",
+            "edgeu": "edge",
+        }
 
-            return "chrome"
+        for alias, browser in browser_aliases.items():
+
+            if alias in text:
+
+                return browser
 
         return "chrome"
 
@@ -705,7 +932,7 @@ class EntityExtractor:
 
             return None
 
-        text = text.lower()
+        text = self.normalize_text(text)
 
         # Exact Match
 
@@ -731,13 +958,15 @@ class EntityExtractor:
 
             profile, score, _ = best_match
 
-            print(
-
-                f"Profile Match : {profile} ({score:.1f}%)"
-
-            )
-
             if score >= 75:
+
+                print(
+
+                    f"Profile Match : "
+
+                    f"{profile} ({score:.1f}%)"
+
+                )
 
                 return self.chrome_profiles[profile]
 
@@ -1428,7 +1657,9 @@ class EntityExtractor:
 
         }
 
-        words = text.lower().split()
+        text = self.normalize_text(text)
+
+        words = text.split()
 
         for word in words:
 

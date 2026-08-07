@@ -105,10 +105,29 @@ class InitializationWorker(QThread):
                 return
 
             # ------------------------------------------
-            # Scan Applications
+            # Load Whisper Model
             # ------------------------------------------
 
             self.progress_changed.emit(10)
+
+            self.status_changed.emit(
+                "Loading Whisper Model..."
+            )
+
+            print("Loading Whisper model...")
+
+            self.recognizer.load_model()
+
+            if self.should_stop():
+                return
+
+            print("Whisper model loaded.")
+
+            # ------------------------------------------
+            # Scan Applications
+            # ------------------------------------------
+
+            self.progress_changed.emit(30)
 
             self.status_changed.emit(
                 "Scanning Applications..."
@@ -129,7 +148,7 @@ class InitializationWorker(QThread):
             # Preparing
             # ------------------------------------------
 
-            self.progress_changed.emit(40)
+            self.progress_changed.emit(55)
 
             self.status_changed.emit(
                 "Preparing File Index..."
@@ -142,7 +161,7 @@ class InitializationWorker(QThread):
             # File Indexing
             # ------------------------------------------
 
-            self.progress_changed.emit(55)
+            self.progress_changed.emit(70)
 
             self.status_changed.emit(
                 "Indexing Files..."
@@ -163,7 +182,7 @@ class InitializationWorker(QThread):
             # Preparing ASTRA
             # ------------------------------------------
 
-            self.progress_changed.emit(90)
+            self.progress_changed.emit(95)
 
             self.status_changed.emit(
                 "Preparing ASTRA..."

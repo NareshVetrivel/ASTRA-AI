@@ -2,6 +2,7 @@ import os
 
 from PySide6.QtCore import (
     Qt,
+    QCoreApplication,
     QThread,
     Signal,
     Slot,
@@ -47,6 +48,7 @@ from planner.intent_detector import IntentDetector
 from planner.entity_extractor import EntityExtractor
 from planner.text_extractor import TextExtractor
 from planner.command_dispatcher import CommandDispatcher
+from ai.gemini_client import GeminiClient
 
 from automation.keyboard_controller import KeyboardController
 from automation.mouse_controller import MouseController
@@ -93,17 +95,20 @@ class VoiceWorker(QThread):
             if self._stop or self.isInterruptionRequested():
                 return
 
+            # Show listening prompt
+
             self.tts.speak("Listening.")
 
-            while self.tts.speaking():
+            # Don't wait for full speech completion.
+            # Start listening immediately after a short delay.
 
-                if self._stop or self.isInterruptionRequested():
-                    return
+            self.msleep(180)
 
-                self.msleep(40)
+            if self._stop or self.isInterruptionRequested():
+                return
 
             text = self.recognizer.listen(
-                retries=3
+                retries=2
             )
 
             if self._stop or self.isInterruptionRequested():
@@ -181,6 +186,8 @@ class MainWindow(QMainWindow):
 
         self.browser_controller = None
 
+        self.gemini = None
+
         # ----------------------------------
         # Runtime
         # ----------------------------------
@@ -193,6 +200,9 @@ class MainWindow(QMainWindow):
 
         self.voice_worker = None
         self.worker = None
+
+        # Prevent multiple mic clicks
+        self.processing_voice = False
 
         # ----------------------------------
         # Window
@@ -665,11 +675,10 @@ class MainWindow(QMainWindow):
 
         self.recognizer = WhisperRecognizer()
 
-        print("Loading Whisper Model...")
+        print("Whisper Recognizer Created.")
 
-        self.recognizer.load_model()
-
-        print("Whisper Loaded.")
+        # Whisper model will be loaded inside
+        # InitializationWorker.
 
         # ------------------------------------------
         # Voice
@@ -714,6 +723,12 @@ class MainWindow(QMainWindow):
         self.browser_controller = BrowserController()
 
         # ------------------------------------------
+        # Gemini AI
+        # ------------------------------------------
+
+        self.gemini = GeminiClient()
+
+        # ------------------------------------------
         # Dispatcher
         # ------------------------------------------
 
@@ -741,7 +756,9 @@ class MainWindow(QMainWindow):
 
             browser_controller=self.browser_controller,
 
-            whisper=self.recognizer
+            whisper=self.recognizer,
+
+            gemini_client=self.gemini
 
         )
 
@@ -808,7 +825,7 @@ class MainWindow(QMainWindow):
 
         if (
 
-            intent is None
+            intent == "type_text"
 
             and
 
@@ -838,10 +855,16 @@ class MainWindow(QMainWindow):
         # Unknown Command
         # ------------------------------------------
 
-        if intent is None:
+        if intent == "ai_chat":
+
+            self.lock_microphone()
+
+            ai_reply = self.gemini.generate_response(
+                text
+            )
 
             self.mic_widget.update_ai_message(
-                "Sorry, I couldn't understand that command."
+                ai_reply
             )
 
             try:
@@ -858,6 +881,18 @@ class MainWindow(QMainWindow):
 
                 pass
 
+            self.tts.speak(
+                ai_reply
+            )
+
+            self.tts.wait_until_done()
+
+            self.unlock_microphone()
+
+            self.status_label.setText(
+                "Status : Gemini AI"
+            )
+
             QTimer.singleShot(
 
                 1400,
@@ -867,24 +902,6 @@ class MainWindow(QMainWindow):
                 )
 
             )
-
-            self.tts.speak(
-                "I could not understand the command."
-            )
-
-            self.status_label.setText(
-                "Status : Unknown Command"
-            )
-
-            try:
-
-                self.left_panel.set_thinking(
-                    "Inactive"
-                )
-
-            except Exception:
-
-                pass
 
             return
         
@@ -1247,7 +1264,9 @@ class MainWindow(QMainWindow):
 
             search_query=search_query,
 
-            profile=profile
+            profile=profile,
+
+            user_text=text
 
         )
 
@@ -1270,6 +1289,12 @@ class MainWindow(QMainWindow):
             )
 
             self.mic_widget.update_ai_message(reply)
+
+            self.lock_microphone()
+
+            self.tts.wait_until_done()
+
+            self.unlock_microphone()
 
             if (
 
@@ -1354,11 +1379,15 @@ class MainWindow(QMainWindow):
 
         )
 
+        self.lock_microphone()
+
         self.tts.speak(
-
             "Sorry. I could not understand your command."
-
         )
+
+        self.tts.wait_until_done()
+
+        self.unlock_microphone()
 
         self.status_label.setText(
 
@@ -1418,7 +1447,7 @@ class MainWindow(QMainWindow):
         )
 
         self.worker = InitializationWorker(
-            self.recognizer
+            recognizer=self.recognizer
         )
 
         self.worker.status_changed.connect(
@@ -1712,6 +1741,35 @@ class MainWindow(QMainWindow):
             pass
 
     # --------------------------------------------------
+    # Lock Microphone
+    # --------------------------------------------------
+
+    def lock_microphone(self):
+
+        self.processing_voice = True
+
+        self.microphone_button.setEnabled(False)
+
+        self.microphone_button.setCursor(
+            Qt.ForbiddenCursor
+        )
+
+
+    # --------------------------------------------------
+    # Unlock Microphone
+    # --------------------------------------------------
+
+    def unlock_microphone(self):
+
+        self.processing_voice = False
+
+        self.microphone_button.setEnabled(True)
+
+        self.microphone_button.setCursor(
+            Qt.PointingHandCursor
+        )
+
+    # --------------------------------------------------
     # Start Listening
     # --------------------------------------------------
 
@@ -1720,19 +1778,21 @@ class MainWindow(QMainWindow):
         Start voice recognition.
         """
 
-        if self.voice_worker is not None:
+        if self.processing_voice:
+            return
+
+        if self.voice_worker:
 
             if self.voice_worker.isRunning():
-
                 return
+
+        self.lock_microphone()
 
         self.status_label.setText(
             "Status : Listening..."
         )
 
         self.mic_widget.show_listening()
-
-        self.microphone_button.setEnabled(False)
 
         try:
 
@@ -1746,33 +1806,15 @@ class MainWindow(QMainWindow):
 
             pass
 
-        self.voice_worker = VoiceWorker(
+        QApplication.processEvents()
 
-            self.recognizer,
+        QTimer.singleShot(
 
-            self.tts
+            10,
 
-        )
-
-        self.voice_worker.command_ready.connect(
-
-            self.process_command
+            self.start_voice_worker
 
         )
-
-        self.voice_worker.audio_level.connect(
-
-            self.update_audio_wave
-
-        )
-
-        self.voice_worker.finished.connect(
-
-            self.listening_finished
-
-        )
-
-        self.voice_worker.start()
 
     # --------------------------------------------------
     # Listening Finished
@@ -1784,7 +1826,13 @@ class MainWindow(QMainWindow):
             "Status : Ready"
         )
 
-        self.microphone_button.setEnabled(True)
+        QTimer.singleShot(
+
+            120,
+
+            self.unlock_microphone
+
+        )
 
         try:
 
@@ -1792,9 +1840,7 @@ class MainWindow(QMainWindow):
                 0.0
             )
 
-            self.mic_widget.set_listening(
-                False
-            )
+            self.mic_widget.set_listening(False)
 
             self.left_panel.set_listening(
                 "Idle"
@@ -1812,13 +1858,41 @@ class MainWindow(QMainWindow):
 
             pass
 
-        if self.voice_worker is not None:
+        if self.voice_worker:
 
             self.voice_worker.wait()
 
             self.voice_worker.deleteLater()
 
             self.voice_worker = None
+
+    # --------------------------------------------------
+    # Start Voice Worker
+    # --------------------------------------------------
+
+    def start_voice_worker(self):
+
+        self.voice_worker = VoiceWorker(
+
+            self.recognizer,
+
+            self.tts
+
+        )
+
+        self.voice_worker.command_ready.connect(
+            self.process_command
+        )
+
+        self.voice_worker.audio_level.connect(
+            self.update_audio_wave
+        )
+
+        self.voice_worker.finished.connect(
+            self.listening_finished
+        )
+
+        self.voice_worker.start()
 
     # --------------------------------------------------
     # Audio Wave Update
@@ -1882,11 +1956,17 @@ class MainWindow(QMainWindow):
         Initialize ASTRA.
         """
 
-        self.create_backend()
-
-        self.start_initialization()
-
         self.enable_premium_background()
+
+        QTimer.singleShot(
+            50,
+            self.create_backend
+        )
+
+        QTimer.singleShot(
+            100,
+            self.start_initialization
+        )
 
     # --------------------------------------------------
     # Close Event
@@ -1932,6 +2012,18 @@ class MainWindow(QMainWindow):
 
             print(
                 f"InitializationWorker Cleanup Error : {error}"
+            )
+
+        try:
+
+            if self.gemini:
+
+                self.gemini.close()
+
+        except Exception as error:
+
+            print(
+                f"Gemini Cleanup Error : {error}"
             )
 
         try:

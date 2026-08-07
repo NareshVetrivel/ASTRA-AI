@@ -7,12 +7,15 @@ Premium Microsoft Edge Neural TTS Engine
 Features
 --------
 ✓ Microsoft Edge Neural Voice
+✓ Faster Response
 ✓ Non-blocking
 ✓ Thread Safe
 ✓ Stop Current Speech
 ✓ Queue Safe
 ✓ Auto Cleanup
 """
+
+from __future__ import annotations
 
 import asyncio
 import os
@@ -45,7 +48,11 @@ class EdgeTTSEngine:
     # Generate Speech
     # --------------------------------------------------
 
-    async def _generate(self, text, filename):
+    async def _generate(
+        self,
+        text,
+        filename
+    ):
 
         communicate = edge_tts.Communicate(
 
@@ -58,10 +65,13 @@ class EdgeTTSEngine:
         await communicate.save(filename)
 
     # --------------------------------------------------
-    # Internal Speaker
+    # Internal Worker
     # --------------------------------------------------
 
-    def _worker(self, text):
+    def _worker(
+        self,
+        text
+    ):
 
         self.stop_event.clear()
 
@@ -85,17 +95,25 @@ class EdgeTTSEngine:
 
         try:
 
-            loop.run_until_complete(
+            try:
 
-                self._generate(
+                loop.run_until_complete(
 
-                    text,
+                    self._generate(
 
-                    filename
+                        text,
+
+                        filename
+
+                    )
 
                 )
 
-            )
+            except Exception as error:
+
+                print(f"TTS Generate Error : {error}")
+
+                return
 
         finally:
 
@@ -111,15 +129,21 @@ class EdgeTTSEngine:
 
             pygame.mixer.music.play()
 
-            while pygame.mixer.music.get_busy():
+            while (
 
-                if self.stop_event.is_set():
+                pygame.mixer.music.get_busy()
 
-                    pygame.mixer.music.stop()
+                and
 
-                    break
+                not self.stop_event.is_set()
 
-                pygame.time.wait(50)
+            ):
+
+                pygame.time.wait(10)
+
+        except Exception as error:
+
+            print(f"TTS Playback Error : {error}")
 
         finally:
 
@@ -134,14 +158,19 @@ class EdgeTTSEngine:
             try:
 
                 pygame.mixer.music.unload()
-
             except Exception:
 
                 pass
 
-            if os.path.exists(filename):
+            try:
 
-                os.remove(filename)
+                if os.path.exists(filename):
+
+                    os.remove(filename)
+
+            except Exception:
+
+                pass
 
             self.is_speaking = False
 
@@ -149,7 +178,10 @@ class EdgeTTSEngine:
     # Speak
     # --------------------------------------------------
 
-    def speak(self, text):
+    def speak(
+        self,
+        text
+    ):
 
         if not text:
 
@@ -163,19 +195,9 @@ class EdgeTTSEngine:
 
         with self.lock:
 
+            self.stop_event.set()
+
             self.stop()
-
-            if (
-
-                self.current_thread
-
-                and
-
-                self.current_thread.is_alive()
-
-            ):
-
-                self.current_thread.join(timeout=2)
 
             self.current_thread = threading.Thread(
 
@@ -205,27 +227,16 @@ class EdgeTTSEngine:
 
             pass
 
-        if (
-
-            self.current_thread
-
-            and
-
-            self.current_thread.is_alive()
-
-        ):
-
-            self.current_thread.join(timeout=2)
-
-        self.current_thread = None
-
         self.is_speaking = False
 
     # --------------------------------------------------
     # Voice
     # --------------------------------------------------
 
-    def set_voice(self, voice):
+    def set_voice(
+        self,
+        voice
+    ):
 
         self.voice = voice
 
