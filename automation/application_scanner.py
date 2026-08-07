@@ -64,21 +64,26 @@ class ApplicationScanner:
 
             print(f"Found : {app_name}")
 
-            self.database.insert_application(
+            if not self.database.application_exists(app_name):
 
-                name=app_name,
+                self.database.insert_application(
 
-                exe_name=executable,
+                    name=app_name,
 
-                full_path=path,
+                    exe_name=executable,
 
-                source="PATH"
+                    full_path=path,
 
-            )
+                    source="PATH"
+
+                )
 
             self.database.insert_alias(
+
                 app_name,
+
                 app_name
+
             )
 
     # -------------------------------------
@@ -119,7 +124,27 @@ class ApplicationScanner:
 
                 continue
 
-            for root, _, files in os.walk(folder):
+            for root, dirs, files in os.walk(folder):
+
+                dirs[:] = [
+
+                    directory
+
+                    for directory in dirs
+
+                    if directory.lower() not in {
+
+                        "windowsapps",
+                        "edgecore",
+                        "edgewebview",
+                        "copilot",
+                        "temp",
+                        "cache",
+                        "__pycache__"
+
+                    }
+
+                ]
 
                 for file in files:
 
@@ -135,11 +160,6 @@ class ApplicationScanner:
                         ):
                             continue
 
-                        full_path = os.path.join(
-                            root,
-                            file
-                        )
-
                         app_name = None
 
                         for name, exe in self.common_applications.items():
@@ -150,7 +170,19 @@ class ApplicationScanner:
 
                                 break
 
-                        if app_name not in found_apps:
+                        if (
+
+                            app_name
+
+                            and
+
+                            app_name not in found_apps
+
+                            and
+
+                            not self.database.application_exists(app_name)
+
+                        ):
 
                             found_apps.add(app_name)
 
@@ -190,11 +222,9 @@ class ApplicationScanner:
             print("\nApplications already exist in database.")
             print("Skipping scan...")
 
-            self.database.close()
-
             return
 
-        print("\nScanning system...")
+        print("\nScanning installed applications...")
 
         self.scan_environment()
 
@@ -218,7 +248,7 @@ class ApplicationScanner:
 
         print("\nScan Completed.")
 
-        self.database.close()
+        # Closed by InitializationWorker
 
     def insert_default_aliases(self):
         """

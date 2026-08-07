@@ -21,29 +21,19 @@ from automation.file_indexer import (
     FileIndexer
 )
 
-from voice.whisper_recognizer import (
-    WhisperRecognizer
-)
-
 
 class InitializationWorker(QThread):
     """
     Background initialization worker.
     """
 
-    # ----------------------------------
-    # Signals
-    # ----------------------------------
-
     status_changed = Signal(str)
+
+    progress_changed = Signal(int)
 
     finished_success = Signal()
 
     finished_error = Signal(str)
-
-    # ----------------------------------
-    # Constructor
-    # ----------------------------------
 
     def __init__(
         self,
@@ -55,67 +45,179 @@ class InitializationWorker(QThread):
 
         self.recognizer = recognizer
 
-    # ----------------------------------
-    # Run Worker
-    # ----------------------------------
+        self._stop_requested = False
+
+    # -------------------------------------------------
+    # Stop Request
+    # -------------------------------------------------
+
+    def stop(self):
+        """
+        Request graceful stop.
+        """
+
+        self._stop_requested = True
+
+    # -------------------------------------------------
+    # Check Stop
+    # -------------------------------------------------
+
+    def should_stop(self):
+
+        return (
+
+            self._stop_requested
+
+            or
+
+            self.isInterruptionRequested()
+
+        )
+
+    # -------------------------------------------------
+    # Run
+    # -------------------------------------------------
 
     def run(self):
-        """
-        Execute startup tasks.
-        """
+
+        scanner = None
+
+        indexer = None
 
         try:
 
-            # --------------------------
-            # Application Scan
-            # --------------------------
+            print("\n========== INITIALIZATION ==========")
+
+            if self.should_stop():
+                return
+
+            # ------------------------------------------
+            # Starting
+            # ------------------------------------------
+
+            self.progress_changed.emit(0)
+
+            self.status_changed.emit(
+                "Starting ASTRA..."
+            )
+
+            if self.should_stop():
+                return
+
+            # ------------------------------------------
+            # Scan Applications
+            # ------------------------------------------
+
+            self.progress_changed.emit(10)
 
             self.status_changed.emit(
                 "Scanning Applications..."
             )
 
+            print("Scanning applications...")
+
             scanner = ApplicationScanner()
 
             scanner.scan()
 
-            scanner.close()
+            if self.should_stop():
+                return
 
-            # --------------------------
+            print("Application scan completed.")
+
+            # ------------------------------------------
+            # Preparing
+            # ------------------------------------------
+
+            self.progress_changed.emit(40)
+
+            self.status_changed.emit(
+                "Preparing File Index..."
+            )
+
+            if self.should_stop():
+                return
+
+            # ------------------------------------------
             # File Indexing
-            # --------------------------
+            # ------------------------------------------
+
+            self.progress_changed.emit(55)
 
             self.status_changed.emit(
                 "Indexing Files..."
             )
 
+            print("Indexing files...")
+
             indexer = FileIndexer()
 
             indexer.index_files()
 
-            indexer.close()
+            if self.should_stop():
+                return
 
-            # --------------------------
-            # Whisper Model Loading
-            # --------------------------
+            print("File indexing completed.")
 
-            self.status_changed.emit(
-                "Loading Whisper Model..."
-            )
+            # ------------------------------------------
+            # Preparing ASTRA
+            # ------------------------------------------
 
-            self.recognizer.load_model()
-
-            # --------------------------
-            # Initialization Completed
-            # --------------------------
+            self.progress_changed.emit(90)
 
             self.status_changed.emit(
-                "Initialization Completed."
+                "Preparing ASTRA..."
             )
+
+            print("Initialization worker completed.")
+
+            if self.should_stop():
+                return
+
+            # ------------------------------------------
+            # Completed
+            # ------------------------------------------
+
+            print("Initialization completed.")
+
+            self.status_changed.emit(
+                "Initialization Complete"
+            )
+
+            self.progress_changed.emit(100)
+
+            print("====================================\n")
 
             self.finished_success.emit()
 
         except Exception as error:
 
-            self.finished_error.emit(
-                str(error)
-            )
+            import traceback
+
+            traceback.print_exc()
+
+            if not self.should_stop():
+
+                self.finished_error.emit(
+                    str(error)
+                )
+
+        finally:
+
+            try:
+
+                if scanner:
+
+                    scanner.close()
+
+            except Exception:
+                pass
+
+            try:
+
+                if indexer:
+
+                    indexer.close()
+
+            except Exception:
+                pass

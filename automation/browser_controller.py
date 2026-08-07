@@ -46,12 +46,10 @@ class BrowserController:
 
         if PlaywrightController:
 
-            # Personal Chrome
             self.playwright = PlaywrightController(
                 profile="Default"
             )
 
-            # Automation Chrome (Guest / ASTRA)
             self.playwright_guest = PlaywrightController(
                 profile="Default",
                 user_data_dir=r"C:\ASTRA_AI_BROWSER"
@@ -61,6 +59,9 @@ class BrowserController:
 
             self.playwright = None
             self.playwright_guest = None
+
+        # Prevent duplicate shutdown
+        self._closed = False
 
         # ---------------------------------
         # Chrome Profiles
@@ -780,13 +781,46 @@ class BrowserController:
 
     def close(self):
         """
-        Close database.
+        Cleanup browser resources safely.
         """
 
-        if self.playwright:
-            self.playwright.close()
+        if self._closed:
+            return
 
-        if self.playwright_guest:
-            self.playwright_guest.close()
+        self._closed = True
 
-        self.database.close()
+        try:
+
+            if self.playwright:
+
+                self.playwright.close()
+
+                self.playwright = None
+
+        except Exception as error:
+
+            print(f"Playwright Cleanup Error : {error}")
+
+        try:
+
+            if self.playwright_guest:
+
+                self.playwright_guest.close()
+
+                self.playwright_guest = None
+
+        except Exception as error:
+
+            print(f"Guest Playwright Cleanup Error : {error}")
+
+        try:
+
+            if self.database:
+
+                self.database.close()
+
+                self.database = None
+
+        except Exception as error:
+
+            print(f"Database Cleanup Error : {error}")

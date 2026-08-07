@@ -28,6 +28,20 @@ class FileFinder:
 
         self.database = DatabaseManager()
 
+        # ---------------------------------
+        # Cache Indexed Files
+        # ---------------------------------
+
+        self.files = self.database.get_all_files()
+
+        self.file_names = [
+
+            file[0].lower()
+
+            for file in self.files
+
+        ]
+
     # --------------------------------------------------
     # Find File
     # --------------------------------------------------
@@ -169,19 +183,13 @@ class FileFinder:
         RapidFuzz.
         """
 
-        files = self.database.get_all_files()
+        files = self.files
 
         if not files:
 
             return None
 
-        file_names = [
-
-            file[0].lower()
-
-            for file in files
-
-        ]
+        file_names = self.file_names
 
         match = process.extractOne(
 
@@ -450,3 +458,22 @@ class FileFinder:
         """
 
         self.database.close()
+
+    # --------------------------------------------------
+    # Refresh Cache
+    # --------------------------------------------------
+
+    def refresh_cache(self):
+        """
+        Reload indexed files from database.
+        """
+
+        self.files = self.database.get_all_files()
+
+        self.file_names = [
+
+            file[0].lower()
+
+            for file in self.files
+
+        ]

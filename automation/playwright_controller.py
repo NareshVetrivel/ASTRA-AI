@@ -52,6 +52,9 @@ class PlaywrightController:
 
         self.keyboard = KeyboardController()
 
+        # Prevent duplicate cleanup
+        self._closed = False
+
     # --------------------------------------------------
     # Reset Browser State
     # --------------------------------------------------
@@ -171,6 +174,10 @@ class PlaywrightController:
         except Exception:
 
             self._reset_browser()
+
+        if self._closed:
+
+            self._closed = False
 
         self._start_playwright()
 
@@ -560,12 +567,22 @@ class PlaywrightController:
         Gracefully shutdown Playwright.
         """
 
+        if self._closed:
+
+            return
+
+        self._closed = True
+
         try:
 
             if (
+
                 self.page
+
                 and
+
                 not self.page.is_closed()
+
             ):
 
                 self.page.close()
@@ -607,6 +624,12 @@ class PlaywrightController:
         self._reset_browser()
 
         self.playwright = None
+
+        self.context = None
+
+        self.browser = None
+
+        self.page = None
 
         print(
             "Playwright shutdown completed."

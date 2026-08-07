@@ -128,6 +128,17 @@ class DatabaseManager:
         self.connection.commit()
 
     # --------------------------------------------------
+    # Batch Commit
+    # --------------------------------------------------
+
+    def batch_commit(self):
+        """
+        Commit pending bulk inserts.
+        """
+
+        self.connection.commit()
+
+    # --------------------------------------------------
     # Insert Application
     # --------------------------------------------------
 
@@ -231,7 +242,8 @@ class DatabaseManager:
         extension,
         full_path,
         file_size,
-        last_modified
+        last_modified,
+        commit=True
     ):
         """
         Store indexed file.
@@ -263,7 +275,9 @@ class DatabaseManager:
                 )
             )
 
-            self.commit()
+            if commit:
+
+                self.commit()
 
             return True
 

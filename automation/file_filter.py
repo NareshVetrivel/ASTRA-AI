@@ -168,179 +168,154 @@ class FileFilter:
 
     IGNORE_FOLDER_KEYWORDS = {
 
+        # -----------------------------
+        # Windows System
+        # -----------------------------
+
         "windows",
-
         "program files",
-
+        "program files (x86)",
         "programdata",
+        "$recycle.bin",
+        "system volume information",
+        "recovery",
+        "boot",
 
-        "steam",
-
-        "steamapps",
-
-        "epic",
-
-        "riot",
-
-        "valorant",
-
-        "minecraft",
-
-        "origin",
-
-        "ubisoft",
-
-        "rockstar",
-
-        "fitgirl",
-
-        "dodi",
-
-        "repack",
-
-        "game",
-
-        "games",
-
-        "assets",
-
-        "resource",
-
-        "resources",
-
-        "cache",
-
-        "temp",
-
-        "tmp",
-
-        "node_modules",
+        # -----------------------------
+        # Python
+        # -----------------------------
 
         ".venv",
-
+        "venv",
         "__pycache__",
+        "site-packages",
+        ".pytest_cache",
+        ".mypy_cache",
+
+        # -----------------------------
+        # Git / IDE
+        # -----------------------------
 
         ".git",
-
+        ".github",
         ".idea",
-
         ".vscode",
+        ".vs",
 
-        # Game Engines
+        # -----------------------------
+        # Build
+        # -----------------------------
 
-        "age of empires",
-        "ageofempires",
+        "build",
+        "dist",
+        "debug",
+        "release",
+        "obj",
+        "bin",
+        "target",
 
-        "gta",
-        "counter strike",
-        "csgo",
-        "dota",
-        "pubg",
+        # -----------------------------
+        # Node
+        # -----------------------------
 
-        # Installers
+        "node_modules",
+        ".next",
+        ".nuxt",
 
-        "crack",
-        "trainer",
-        "mods",
-        "mod",
+        # -----------------------------
+        # Cache
+        # -----------------------------
 
-        # Assets
+        "cache",
+        "temp",
+        "tmp",
+        "logs",
+        "log",
+        "shadercache",
 
-        "audio",
-        "video",
-        "movies",
-        "movie",
+        # -----------------------------
+        # NVIDIA / AMD
+        # -----------------------------
 
-        "voice",
-        "voices",
+        "nvidia",
+        "amd",
+        "intel",
 
-        "cutscene",
-        "cutscenes",
+        # -----------------------------
+        # Game Launchers
+        # -----------------------------
 
-        "soundtrack",
-        "soundtracks",
+        "steam",
+        "steamapps",
+        "epic",
+        "epic games",
+        "riot",
+        "riot games",
+        "origin",
+        "ubisoft",
+        "rockstar",
+        "ea games",
+        "battle.net",
 
-        "sfx",
-
-        "wav",
-
-        "bgm",
-
-        "textures",
-
-        "sprites",
-
-        "models",
-
-        "movies",
-
-        # IDE
+        # -----------------------------
+        # Android
+        # -----------------------------
 
         "android",
         "gradle",
         ".gradle",
 
-        # Python
+        # -----------------------------
+        # Unreal / Unity
+        # -----------------------------
 
-        "site-packages",
+        "unity",
+        "unityhub",
+        "unreal",
+        "unreal engine",
 
-        "eula",
+        # -----------------------------
+        # Assets
+        # -----------------------------
 
-        "intro",
-
-        "outro",
-
-        "theme",
-
+        "assets",
+        "resource",
+        "resources",
+        "textures",
+        "texture",
+        "sprites",
+        "models",
+        "animations",
+        "animation",
+        "movies",
+        "movie",
+        "cutscene",
+        "cutscenes",
+        "soundtrack",
+        "music",
+        "voice",
+        "voices",
+        "audio",
+        "video",
+        "videos",
+        "shader",
+        "shaders",
+        "effects",
+        "effect",
         "ambient",
 
-        "battle",
+        # -----------------------------
+        # Large Game Content
+        # -----------------------------
 
-        "wind",
-
-        "rain",
-
-        "thunder",
-
-        "missile",
-
-        "tank",
-
-        "heli",
-
-        "helicopter",
-
-        "train",
-
-        "truck",
-
-        "plane",
-
-        "bird",
-
-        "machinery",
-
-        "base",
-
-        "engine",
-
-        "voice",
-
-        "sound",
-
-        "effect",
-
-        "texture",
-
-        "sprite",
-
-        "shader",
-
-        "movie",
-
-        "cut",
-
-        "menu"
+        "games",
+        "game",
+        "mods",
+        "mod",
+        "crack",
+        "trainer",
+        "fitgirl",
+        "dodi"
 
     }
 
@@ -351,6 +326,30 @@ class FileFilter:
     MINIMUM_SIZE = 20 * 1024
 
     MAXIMUM_SIZE = 2 * 1024 * 1024 * 1024
+
+    # ----------------------------------
+    # Skip Directory
+    # ----------------------------------
+
+    @classmethod
+    def should_skip_directory(
+        cls,
+        directory
+    ):
+        """
+        Return True if an entire directory
+        should be skipped.
+        """
+
+        directory = str(directory).lower()
+
+        return any(
+
+            keyword in directory
+
+            for keyword in cls.IGNORE_FOLDER_KEYWORDS
+
+        )
 
     # ----------------------------------
     # Check Valid File
@@ -429,14 +428,8 @@ class FileFilter:
         # Ignore Folder Keywords
         # -----------------------------
 
-        if any(
-
-            folder in parent_folder
-
-            for folder
-
-            in cls.IGNORE_FOLDER_KEYWORDS
-
+        if cls.should_skip_directory(
+            parent_folder
         ):
 
             return False

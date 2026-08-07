@@ -45,6 +45,89 @@ class CommandDispatcher:
         self.whisper = whisper
         
 
+    # --------------------------------------------------
+    # Helper : Standard Response
+    # --------------------------------------------------
+
+    def response(
+        self,
+        success: bool,
+        success_status: str,
+        failed_status: str,
+        assistant_reply: str = ""
+    ):
+
+        return {
+
+            "success": success,
+
+            "status": (
+
+                success_status
+                if success
+                else failed_status
+
+            ),
+
+            # Used by MainWindow
+            "message": assistant_reply,
+
+            # Optional backward compatibility
+            "assistant_reply": assistant_reply
+
+        }
+
+    # --------------------------------------------------
+    # Helper : Speak + Return Message
+    # --------------------------------------------------
+
+    def speak(
+        self,
+        message: str
+    ):
+
+        self.tts.speak(message)
+
+        return message
+
+    # --------------------------------------------------
+    # Helper : Confirmation
+    # --------------------------------------------------
+
+    def confirm_action(
+        self,
+        message: str
+    ) -> bool:
+
+        self.speak(message)
+
+        confirm = self.whisper.listen_confirmation()
+
+        if not confirm:
+
+            return False
+
+        confirm = confirm.lower().strip()
+
+        return confirm in {
+
+            "yes",
+            "yeah",
+            "yep",
+            "ya",
+            "yas",
+            "yes.",
+            "yes!",
+            "ok",
+            "okay",
+            "sure"
+
+        }
+
+    # --------------------------------------------------
+    # Dispatcher
+    # --------------------------------------------------
+
     def dispatch(
         self,
         intent,
@@ -77,51 +160,54 @@ class CommandDispatcher:
                 # Website takes priority
                 if website:
 
-                    self.tts.speak(
+                    reply = self.speak(
                         f"Opening {website}"
                     )
 
-                    return {
+                    success = self.browser.open_website(
 
-                        "success": self.browser.open_website(
-                            website,
-                            browser or entity
-                        ),
+                        website,
 
-                        "status": "Status : Website Opened"
+                        browser or entity
 
-                    }
+                    )
+
+                    return self.response(
+
+                        success,
+
+                        "Status : Website Opened",
+
+                        "Status : Website Failed",
+
+                        reply
+
+                    )
 
                 app_name = entity.replace(
                     ".exe",
                     ""
                 )
 
-                self.tts.speak(
+                reply = self.speak(
                     f"Opening {app_name}"
                 )
 
-                success = (
-                    self.app_launcher
-                    .launch_application(entity)
+                success = self.app_launcher.launch_application(
+                    entity
                 )
 
-                # Application launcher already waits
-                # until the app is ready.
+                return self.response(
 
-                return {
+                    success,
 
-                    "success": success,
+                    "Status : Application Opened",
 
-                    "status":
-                    (
-                        "Status : Application Opened"
-                        if success
-                        else
-                        "Status : Launch Failed"
-                    )
+                    "Status : Launch Failed",
 
-                }
+                    reply
+
+                )
 
             # -------------------------
             # Close Application
@@ -137,7 +223,7 @@ class CommandDispatcher:
                     ""
                 )
 
-                self.tts.speak(
+                reply = self.speak(
                     f"Closing {app_name}"
                 )
 
@@ -146,19 +232,17 @@ class CommandDispatcher:
                     .close_application(entity)
                 )
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status":
-                    (
-                        "Status : Application Closed"
-                        if success
-                        else
-                        "Status : Application Not Running"
-                    )
+                    "Status : Application Closed",
 
-                }
+                    "Status : Application Not Running",
+
+                    reply
+
+                )
 
             # -------------------------
             # Type Text
@@ -169,7 +253,7 @@ class CommandDispatcher:
                 and typed_text
             ):
 
-                self.tts.speak(
+                reply = self.speak(
                     "Typing your text."
                 )
 
@@ -177,19 +261,17 @@ class CommandDispatcher:
                     typed_text
                 )
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status":
-                    (
-                        "Status : Typing Completed"
-                        if success
-                        else
-                        "Status : Typing Failed"
-                    )
+                    "Status : Typing Completed",
 
-                }
+                    "Status : Typing Failed",
+
+                    reply
+
+                )
 
             # -------------------------
             # Copy
@@ -197,23 +279,21 @@ class CommandDispatcher:
 
             elif intent == "copy":
 
-                self.tts.speak("Copying.")
+                reply = self.speak("Copying.")
 
                 success = self.keyboard.copy()
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status":
-                    (
-                        "Status : Copy Completed"
-                        if success
-                        else
-                        "Status : Copy Failed"
-                    )
+                    "Status : Copy Completed",
 
-                }
+                    "Status : Copy Failed",
+
+                    reply
+
+                )
 
             # -------------------------
             # Paste
@@ -221,23 +301,21 @@ class CommandDispatcher:
 
             elif intent == "paste":
 
-                self.tts.speak("Pasting.")
+                reply = self.speak("Pasting.")
 
                 success = self.keyboard.paste()
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status":
-                    (
-                        "Status : Paste Completed"
-                        if success
-                        else
-                        "Status : Paste Failed"
-                    )
+                    "Status : Paste Completed",
 
-                }
+                    "Status : Paste Failed",
+
+                    reply
+
+                )
 
             # -------------------------
             # Cut
@@ -245,23 +323,21 @@ class CommandDispatcher:
 
             elif intent == "cut":
 
-                self.tts.speak("Cutting.")
+                reply = self.speak("Cutting.")
 
                 success = self.keyboard.cut()
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status":
-                    (
-                        "Status : Cut Completed"
-                        if success
-                        else
-                        "Status : Cut Failed"
-                    )
+                    "Status : Cut Completed",
 
-                }
+                    "Status : Cut Failed",
+
+                    reply
+
+                )
 
             # -------------------------
             # Undo
@@ -269,23 +345,21 @@ class CommandDispatcher:
 
             elif intent == "undo":
 
-                self.tts.speak("Undoing.")
+                reply = self.speak("Undoing.")
 
                 success = self.keyboard.undo()
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status":
-                    (
-                        "Status : Undo Completed"
-                        if success
-                        else
-                        "Status : Undo Failed"
-                    )
+                    "Status : Undo Completed",
 
-                }
+                    "Status : Undo Failed",
+
+                    reply
+
+                )
 
             # -------------------------
             # Redo
@@ -293,23 +367,21 @@ class CommandDispatcher:
 
             elif intent == "redo":
 
-                self.tts.speak("Redoing.")
+                reply = self.speak("Redoing.")
 
                 success = self.keyboard.redo()
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status":
-                    (
-                        "Status : Redo Completed"
-                        if success
-                        else
-                        "Status : Redo Failed"
-                    )
+                    "Status : Redo Completed",
 
-                }
+                    "Status : Redo Failed",
+
+                    reply
+
+                )
 
             # -------------------------
             # Enter
@@ -317,7 +389,7 @@ class CommandDispatcher:
 
             elif intent == "press_enter":
 
-                self.tts.speak(
+                reply = self.speak(
                     "Pressing Enter."
                 )
 
@@ -325,19 +397,17 @@ class CommandDispatcher:
                     "enter"
                 )
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status":
-                    (
-                        "Status : Enter Pressed"
-                        if success
-                        else
-                        "Status : Enter Failed"
-                    )
+                    "Status : Enter Pressed",
 
-                }
+                    "Status : Enter Failed",
+
+                    reply
+
+                )
 
             # -------------------------
             # Tab
@@ -345,7 +415,7 @@ class CommandDispatcher:
 
             elif intent == "press_tab":
 
-                self.tts.speak(
+                reply = self.speak(
                     "Pressing Tab."
                 )
 
@@ -353,19 +423,17 @@ class CommandDispatcher:
                     "tab"
                 )
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status":
-                    (
-                        "Status : Tab Pressed"
-                        if success
-                        else
-                        "Status : Tab Failed"
-                    )
+                    "Status : Tab Pressed",
 
-                }
+                    "Status : Tab Failed",
+
+                    reply
+
+                )
 
             # -------------------------
             # Arrow Up
@@ -373,25 +441,23 @@ class CommandDispatcher:
 
             elif intent == "arrow_up":
 
-                self.tts.speak(
+                reply = self.speak(
                     "Moving up."
                 )
 
                 success = self.keyboard.arrow_up()
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status":
-                    (
-                        "Status : Arrow Up Pressed"
-                        if success
-                        else
-                        "Status : Arrow Up Failed"
-                    )
+                    "Status : Arrow Up Pressed",
 
-                }
+                    "Status : Arrow Up Failed",
+
+                    reply
+
+                )
 
             # -------------------------
             # Arrow Down
@@ -399,25 +465,23 @@ class CommandDispatcher:
 
             elif intent == "arrow_down":
 
-                self.tts.speak(
+                reply = self.speak(
                     "Moving down."
                 )
 
                 success = self.keyboard.arrow_down()
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status":
-                    (
-                        "Status : Arrow Down Pressed"
-                        if success
-                        else
-                        "Status : Arrow Down Failed"
-                    )
+                    "Status : Arrow Down Pressed",
 
-                }
+                    "Status : Arrow Down Failed",
+
+                    reply
+
+                )
 
             # -------------------------
             # Arrow Left
@@ -425,25 +489,23 @@ class CommandDispatcher:
 
             elif intent == "arrow_left":
 
-                self.tts.speak(
+                reply = self.speak(
                     "Moving left."
                 )
 
                 success = self.keyboard.arrow_left()
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status":
-                    (
-                        "Status : Arrow Left Pressed"
-                        if success
-                        else
-                        "Status : Arrow Left Failed"
-                    )
+                    "Status : Arrow Left Pressed",
 
-                }
+                    "Status : Arrow Left Failed",
+
+                    reply
+
+                )
 
             # -------------------------
             # Arrow Right
@@ -451,25 +513,23 @@ class CommandDispatcher:
 
             elif intent == "arrow_right":
 
-                self.tts.speak(
+                reply = self.speak(
                     "Moving right."
                 )
 
                 success = self.keyboard.arrow_right()
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status":
-                    (
-                        "Status : Arrow Right Pressed"
-                        if success
-                        else
-                        "Status : Arrow Right Failed"
-                    )
+                    "Status : Arrow Right Pressed",
 
-                }
+                    "Status : Arrow Right Failed",
+
+                    reply
+
+                )
 
             # -------------------------
             # Backspace
@@ -477,25 +537,23 @@ class CommandDispatcher:
 
             elif intent == "backspace":
 
-                self.tts.speak(
+                reply = self.speak(
                     "Pressing Backspace."
                 )
 
                 success = self.keyboard.backspace()
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status":
-                    (
-                        "Status : Backspace Pressed"
-                        if success
-                        else
-                        "Status : Backspace Failed"
-                    )
+                    "Status : Backspace Pressed",
 
-                }
+                    "Status : Backspace Failed",
+
+                    reply
+
+                )
 
 
             # -------------------------
@@ -504,25 +562,23 @@ class CommandDispatcher:
 
             elif intent == "delete":
 
-                self.tts.speak(
+                reply = self.speak(
                     "Pressing Delete."
                 )
 
                 success = self.keyboard.delete()
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status":
-                    (
-                        "Status : Delete Pressed"
-                        if success
-                        else
-                        "Status : Delete Failed"
-                    )
+                    "Status : Delete Pressed",
 
-                }
+                    "Status : Delete Failed",
+
+                    reply
+
+                )
 
             # -------------------------
             # Home
@@ -530,25 +586,23 @@ class CommandDispatcher:
 
             elif intent == "home":
 
-                self.tts.speak(
+                reply = self.speak(
                     "Pressing Home."
                 )
 
                 success = self.keyboard.home()
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status":
-                    (
-                        "Status : Home Pressed"
-                        if success
-                        else
-                        "Status : Home Failed"
-                    )
+                    "Status : Home Pressed",
 
-                }
+                    "Status : Home Failed",
+
+                    reply
+
+                )
 
             # -------------------------
             # End
@@ -556,25 +610,23 @@ class CommandDispatcher:
 
             elif intent == "end":
 
-                self.tts.speak(
+                reply = self.speak(
                     "Pressing End."
                 )
 
                 success = self.keyboard.end()
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status":
-                    (
-                        "Status : End Pressed"
-                        if success
-                        else
-                        "Status : End Failed"
-                    )
+                    "Status : End Pressed",
 
-                }
+                    "Status : End Failed",
+
+                    reply
+
+                )
 
             # -------------------------
             # Page Up
@@ -582,25 +634,23 @@ class CommandDispatcher:
 
             elif intent == "page_up":
 
-                self.tts.speak(
+                reply = self.speak(
                     "Pressing Page Up."
                 )
 
                 success = self.keyboard.page_up()
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status":
-                    (
-                        "Status : Page Up Pressed"
-                        if success
-                        else
-                        "Status : Page Up Failed"
-                    )
+                    "Status : Page Up Pressed",
 
-                }
+                    "Status : Page Up Failed",
+
+                    reply
+
+                )
 
             # -------------------------
             # Page Down
@@ -608,25 +658,23 @@ class CommandDispatcher:
 
             elif intent == "page_down":
 
-                self.tts.speak(
+                reply = self.speak(
                     "Pressing Page Down."
                 )
 
                 success = self.keyboard.page_down()
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status":
-                    (
-                        "Status : Page Down Pressed"
-                        if success
-                        else
-                        "Status : Page Down Failed"
-                    )
+                    "Status : Page Down Pressed",
 
-                }
+                    "Status : Page Down Failed",
+
+                    reply
+
+                )
 
             # -------------------------
             # Escape
@@ -634,25 +682,23 @@ class CommandDispatcher:
 
             elif intent == "escape":
 
-                self.tts.speak(
+                reply = self.speak(
                     "Pressing Escape."
                 )
 
                 success = self.keyboard.escape()
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status":
-                    (
-                        "Status : Escape Pressed"
-                        if success
-                        else
-                        "Status : Escape Failed"
-                    )
+                    "Status : Escape Pressed",
 
-                }
+                    "Status : Escape Failed",
+
+                    reply
+
+                )
 
             # -------------------------
             # Space
@@ -660,25 +706,23 @@ class CommandDispatcher:
 
             elif intent == "space":
 
-                self.tts.speak(
+                reply = self.speak(
                     "Pressing Space."
                 )
 
                 success = self.keyboard.space()
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status":
-                    (
-                        "Status : Space Pressed"
-                        if success
-                        else
-                        "Status : Space Failed"
-                    )
+                    "Status : Space Pressed",
 
-                }
+                    "Status : Space Failed",
+
+                    reply
+
+                )
 
             # -------------------------
             # Select All
@@ -686,7 +730,7 @@ class CommandDispatcher:
 
             elif intent == "select_all":
 
-                self.tts.speak(
+                reply = self.speak(
                     "Selecting all."
                 )
 
@@ -695,19 +739,17 @@ class CommandDispatcher:
                     "a"
                 )
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status":
-                    (
-                        "Status : Select All Completed"
-                        if success
-                        else
-                        "Status : Select All Failed"
-                    )
+                    "Status : Select All Completed",
 
-                }
+                    "Status : Select All Failed",
+
+                    reply
+
+                )
 
             # -------------------------
             # Save
@@ -715,7 +757,7 @@ class CommandDispatcher:
 
             elif intent == "save_file":
 
-                self.tts.speak(
+                reply = self.speak(
                     "Saving file."
                 )
 
@@ -724,19 +766,17 @@ class CommandDispatcher:
                     "s"
                 )
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status":
-                    (
-                        "Status : File Saved"
-                        if success
-                        else
-                        "Status : Save Failed"
-                    )
+                    "Status : File Saved",
 
-                }
+                    "Status : Save Failed",
+
+                    reply
+
+                )
 
             # -------------------------
             # Print
@@ -744,7 +784,7 @@ class CommandDispatcher:
 
             elif intent == "print_file":
 
-                self.tts.speak(
+                reply = self.speak(
                     "Opening print dialog."
                 )
 
@@ -753,45 +793,40 @@ class CommandDispatcher:
                     "p"
                 )
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status":
-                    (
-                        "Status : Print Dialog Opened"
-                        if success
-                        else
-                        "Status : Print Failed"
-                    )
+                    "Status : Print Dialog Opened",
 
-                }
+                    "Status : Print Failed",
 
+                    reply
+
+                )
             # -------------------------
             # Left Click
             # -------------------------
 
             elif intent == "left_click":
 
-                self.tts.speak(
+                reply = self.speak(
                     "Left clicking."
                 )
 
                 success = self.mouse.left_click()
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status":
-                    (
-                        "Status : Left Click Completed"
-                        if success
-                        else
-                        "Status : Left Click Failed"
-                    )
+                    "Status : Left Click Completed",
 
-                }
+                    "Status : Left Click Failed",
+
+                    reply
+
+                )
 
             # -------------------------
             # Right Click
@@ -799,25 +834,23 @@ class CommandDispatcher:
 
             elif intent == "right_click":
 
-                self.tts.speak(
+                reply = self.speak(
                     "Right clicking."
                 )
 
                 success = self.mouse.right_click()
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status":
-                    (
-                        "Status : Right Click Completed"
-                        if success
-                        else
-                        "Status : Right Click Failed"
-                    )
+                    "Status : Right Click Completed",
 
-                }
+                    "Status : Right Click Failed",
+
+                    reply
+
+                )
 
             # -------------------------
             # Double Click
@@ -825,25 +858,23 @@ class CommandDispatcher:
 
             elif intent == "double_click":
 
-                self.tts.speak(
+                reply = self.speak(
                     "Double clicking."
                 )
 
                 success = self.mouse.double_click()
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status":
-                    (
-                        "Status : Double Click Completed"
-                        if success
-                        else
-                        "Status : Double Click Failed"
-                    )
+                    "Status : Double Click Completed",
 
-                }
+                    "Status : Double Click Failed",
+
+                    reply
+
+                )
 
             # -------------------------
             # Scroll Up
@@ -851,25 +882,23 @@ class CommandDispatcher:
 
             elif intent == "scroll_up":
 
-                self.tts.speak(
+                reply = self.speak(
                     "Scrolling up."
                 )
 
                 success = self.mouse.scroll_up()
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status":
-                    (
-                        "Status : Scroll Up Completed"
-                        if success
-                        else
-                        "Status : Scroll Up Failed"
-                    )
+                    "Status : Scroll Up Completed",
 
-                }
+                    "Status : Scroll Up Failed",
+
+                    reply
+
+                )
 
             # -------------------------
             # Scroll Down
@@ -877,25 +906,23 @@ class CommandDispatcher:
 
             elif intent == "scroll_down":
 
-                self.tts.speak(
+                reply = self.speak(
                     "Scrolling down."
                 )
 
                 success = self.mouse.scroll_down()
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status":
-                    (
-                        "Status : Scroll Down Completed"
-                        if success
-                        else
-                        "Status : Scroll Down Failed"
-                    )
+                    "Status : Scroll Down Completed",
 
-                }
+                    "Status : Scroll Down Failed",
+
+                    reply
+
+                )
 
             # -------------------------
             # Minimize Window
@@ -903,26 +930,23 @@ class CommandDispatcher:
 
             elif intent == "minimize_window":
 
-                self.tts.speak(
+                reply = self.speak(
                     "Minimizing window."
                 )
 
                 success = self.window.minimize_window()
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status":
-                    (
-                        "Status : Window Minimized"
-                        if success
-                        else
-                        "Status : Minimize Failed"
-                    )
+                    "Status : Window Minimized",
 
-                }
+                    "Status : Minimize Failed",
 
+                    reply
+
+                )
 
             # -------------------------
             # Maximize Window
@@ -930,26 +954,23 @@ class CommandDispatcher:
 
             elif intent == "maximize_window":
 
-                self.tts.speak(
+                reply = self.speak(
                     "Maximizing window."
                 )
 
                 success = self.window.maximize_window()
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status":
-                    (
-                        "Status : Window Maximized"
-                        if success
-                        else
-                        "Status : Maximize Failed"
-                    )
+                    "Status : Window Maximized",
 
-                }
+                    "Status : Maximize Failed",
 
+                    reply
+
+                )
 
             # -------------------------
             # Restore Window
@@ -957,25 +978,23 @@ class CommandDispatcher:
 
             elif intent == "restore_window":
 
-                self.tts.speak(
+                reply = self.speak(
                     "Restoring window."
                 )
 
                 success = self.window.restore_window()
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status":
-                    (
-                        "Status : Window Restored"
-                        if success
-                        else
-                        "Status : Restore Failed"
-                    )
+                    "Status : Window Restored",
 
-                }
+                    "Status : Restore Failed",
+
+                    reply
+
+                )
 
 
             # -------------------------
@@ -984,25 +1003,23 @@ class CommandDispatcher:
 
             elif intent == "close_window":
 
-                self.tts.speak(
+                reply = self.speak(
                     "Closing window."
                 )
 
                 success = self.window.close_window()
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status":
-                    (
-                        "Status : Window Closed"
-                        if success
-                        else
-                        "Status : Close Failed"
-                    )
+                    "Status : Window Closed",
 
-                }
+                    "Status : Close Failed",
+
+                    reply
+
+                )
 
             # -------------------------
             # Volume Up
@@ -1010,25 +1027,23 @@ class CommandDispatcher:
 
             elif intent == "volume_up":
 
-                self.tts.speak(
+                reply = self.speak(
                     "Increasing volume."
                 )
 
                 success = self.system.volume_up()
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status":
-                    (
-                        "Status : Volume Increased"
-                        if success
-                        else
-                        "Status : Volume Up Failed"
-                    )
+                    "Status : Volume Increased",
 
-                }
+                    "Status : Volume Up Failed",
+
+                    reply
+
+                )
 
             # -------------------------
             # Volume Down
@@ -1036,25 +1051,23 @@ class CommandDispatcher:
 
             elif intent == "volume_down":
 
-                self.tts.speak(
+                reply = self.speak(
                     "Decreasing volume."
                 )
 
                 success = self.system.volume_down()
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status":
-                    (
-                        "Status : Volume Decreased"
-                        if success
-                        else
-                        "Status : Volume Down Failed"
-                    )
+                    "Status : Volume Decreased",
 
-                }
+                    "Status : Volume Down Failed",
+
+                    reply
+
+                )
 
             # -------------------------
             # Mute
@@ -1062,25 +1075,23 @@ class CommandDispatcher:
 
             elif intent == "mute":
 
-                self.tts.speak(
+                reply = self.speak(
                     "Muting audio."
                 )
 
                 success = self.system.mute()
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status":
-                    (
-                        "Status : Audio Toggled"
-                        if success
-                        else
-                        "Status : Mute Failed"
-                    )
+                    "Status : Audio Toggled",
 
-                }
+                    "Status : Mute Failed",
+
+                    reply
+
+                )
 
             # -------------------------
             # Lock Screen
@@ -1088,25 +1099,23 @@ class CommandDispatcher:
 
             elif intent == "lock_screen":
 
-                self.tts.speak(
+                reply = self.speak(
                     "Locking computer."
                 )
 
                 success = self.system.lock_screen()
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status":
-                    (
-                        "Status : System Locked"
-                        if success
-                        else
-                        "Status : Lock Failed"
-                    )
+                    "Status : System Locked",
 
-                }
+                    "Status : Lock Failed",
+
+                    reply
+
+                )
 
             # -------------------------
             # Screenshot
@@ -1114,25 +1123,23 @@ class CommandDispatcher:
 
             elif intent == "take_screenshot":
 
-                self.tts.speak(
+                reply = self.speak(
                     "Taking screenshot."
                 )
 
                 success = self.system.take_screenshot()
 
-                return {
+                return self.response(
 
-                    "success": bool(success),
+                    bool(success),
 
-                    "status":
-                    (
-                        "Status : Screenshot Saved"
-                        if success
-                        else
-                        "Status : Screenshot Failed"
-                    )
+                    "Status : Screenshot Saved",
 
-                }
+                    "Status : Screenshot Failed",
+
+                    reply
+
+                )
 
             # -------------------------
             # Task Manager
@@ -1140,25 +1147,23 @@ class CommandDispatcher:
 
             elif intent == "open_task_manager":
 
-                self.tts.speak(
+                reply = self.speak(
                     "Opening Task Manager."
                 )
 
                 success = self.system.open_task_manager()
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status":
-                    (
-                        "Status : Task Manager Opened"
-                        if success
-                        else
-                        "Status : Task Manager Failed"
-                    )
+                    "Status : Task Manager Opened",
 
-                }
+                    "Status : Task Manager Failed",
+
+                    reply
+
+                )
 
             # -------------------------
             # File Explorer
@@ -1166,25 +1171,23 @@ class CommandDispatcher:
 
             elif intent == "open_file_explorer":
 
-                self.tts.speak(
+                reply = self.speak(
                     "Opening File Explorer."
                 )
 
                 success = self.system.open_file_explorer()
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status":
-                    (
-                        "Status : File Explorer Opened"
-                        if success
-                        else
-                        "Status : File Explorer Failed"
-                    )
+                    "Status : File Explorer Opened",
 
-                }
+                    "Status : File Explorer Failed",
+
+                    reply
+
+                )
 
             # -------------------------
             # Open File
@@ -1195,7 +1198,7 @@ class CommandDispatcher:
                 and entity
             ):
 
-                self.tts.speak(
+                reply = self.speak(
                     f"Opening {entity}"
                 )
 
@@ -1206,25 +1209,17 @@ class CommandDispatcher:
                 if success:
                     self.keyboard.activate_window()
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status":
+                    "Status : File Opened",
 
-                    (
+                    "Status : File Not Found",
 
-                        "Status : File Opened"
+                    reply
 
-                        if success
-
-                        else
-
-                        "Status : File Not Found"
-
-                    )
-
-                }
+                )
 
             # -------------------------
             # Open Folder
@@ -1238,10 +1233,8 @@ class CommandDispatcher:
 
             ):
 
-                self.tts.speak(
-
+                reply = self.speak(
                     f"Opening {entity}"
-
                 )
 
                 success = (
@@ -1252,25 +1245,17 @@ class CommandDispatcher:
                 if success:
                     self.keyboard.activate_window()
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status":
+                    "Status : Folder Opened",
 
-                    (
+                    "Status : Folder Not Found",
 
-                        "Status : Folder Opened"
+                    reply
 
-                        if success
-
-                        else
-
-                        "Status : Folder Not Found"
-
-                    )
-
-                }
+                )
 
             # -------------------------
             # Create File
@@ -1281,7 +1266,7 @@ class CommandDispatcher:
                 and entity
             ):
 
-                self.tts.speak(
+                reply = self.speak(
                     f"Creating {entity}"
                 )
 
@@ -1289,19 +1274,17 @@ class CommandDispatcher:
                     entity
                 )
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status":
-                    (
-                        "Status : File Created"
-                        if success
-                        else
-                        "Status : Create Failed"
-                    )
+                    "Status : File Created",
 
-                }
+                    "Status : Create Failed",
+
+                    reply
+
+                )
 
             # -------------------------
             # Delete File
@@ -1312,37 +1295,47 @@ class CommandDispatcher:
                 and entity
             ):
 
-                self.tts.speak(
+                reply = self.speak(
                     f"I found {entity}."
                 )
 
-                self.tts.speak(
-                    "Do you want to delete it?"
-                )
+                if not self.confirm_action(
+
+                    "Do you want to delete this file?"
+
+                ):
+
+                    reply = self.speak(
+                        "Deletion cancelled."
+                    )
+
+                    return self.response(
+
+                        False,
+
+                        "",
+
+                        "Status : Delete Cancelled",
+
+                        reply
+
+                    )
 
                 success = self.file_manager.delete_file(
                     entity
                 )
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status":
+                    "Status : File Deleted",
 
-                    (
+                    "Status : Delete Cancelled",
 
-                        "Status : File Deleted"
+                    "File deleted successfully." if success else "Unable to delete the file."
 
-                        if success
-
-                        else
-
-                        "Status : Delete Cancelled"
-
-                    )
-
-                }
+                )
 
             # -------------------------
             # Rename File
@@ -1371,49 +1364,27 @@ class CommandDispatcher:
 
                 print(entity["new_name"])
 
-                self.tts.speak(
+                if not self.confirm_action(
+
                     "Do you want to rename this file?"
-                )
 
-                confirm = self.whisper.listen_confirmation()
+                ):
 
-                confirm = confirm.lower().strip()
-
-                if confirm not in {
-
-                    "yes",
-
-                    "yeah",
-
-                    "yep",
-
-                    "ya",
-
-                    "yas",
-
-                    "yes.",
-
-                    "yes!",
-
-                    "ok",
-
-                    "okay",
-
-                    "sure"
-
-                }:
-
-                    self.tts.speak(
+                    reply = self.speak(
                         "Rename cancelled."
                     )
 
-                    return {
+                    return self.response(
 
-                        "success": False,
+                        False,
 
-                        "status": "Status : Cancelled"
+                        "",
 
-                    }
+                        "Status : Cancelled",
+
+                        reply
+
+                    )
 
                 success = self.file_manager.rename_file(
 
@@ -1425,35 +1396,27 @@ class CommandDispatcher:
 
                 if success:
 
-                    self.tts.speak(
+                    reply = self.speak(
                         "File renamed successfully."
                     )
 
                 else:
 
-                    self.tts.speak(
+                    reply = self.speak(
                         "Unable to rename the file."
                     )
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status":
+                    "Status : File Renamed",
 
-                    (
+                    "Status : Rename Failed",
 
-                        "Status : File Renamed"
+                    reply
 
-                        if success
-
-                        else
-
-                        "Status : Rename Failed"
-
-                    )
-
-                }
+                )
 
             # -------------------------
             # Copy File
@@ -1471,49 +1434,27 @@ class CommandDispatcher:
                 print(f"\nFile : {entity['filename']}")
                 print(f"\nDestination : {entity['destination']}")
 
-                self.tts.speak(
+                if not self.confirm_action(
+
                     "Do you want to copy this file?"
-                )
 
-                confirm = self.whisper.listen_confirmation()
+                ):
 
-                confirm = confirm.lower().strip()
-
-                if confirm not in {
-
-                    "yes",
-
-                    "yeah",
-
-                    "yep",
-
-                    "ya",
-
-                    "yas",
-
-                    "yes.",
-
-                    "yes!",
-
-                    "ok",
-
-                    "okay",
-
-                    "sure"
-
-                }:
-
-                    self.tts.speak(
+                    reply = self.speak(
                         "Copy cancelled."
                     )
 
-                    return {
+                    return self.response(
 
-                        "success": False,
+                        False,
 
-                        "status": "Status : Cancelled"
+                        "",
 
-                    }
+                        "Status : Cancelled",
+
+                        reply
+
+                    )
 
                 success = self.file_manager.copy_file(
 
@@ -1525,35 +1466,27 @@ class CommandDispatcher:
 
                 if success:
 
-                    self.tts.speak(
+                    reply = self.speak(
                         "File copied successfully."
                     )
 
                 else:
 
-                    self.tts.speak(
+                    reply = self.speak(
                         "Unable to copy the file."
                     )
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status":
+                    "Status : File Copied",
 
-                    (
+                    "Status : Copy Failed",
 
-                        "Status : File Copied"
+                    reply
 
-                        if success
-
-                        else
-
-                        "Status : Copy Failed"
-
-                    )
-
-                }
+                )
 
             # -------------------------
             # Move File
@@ -1571,49 +1504,27 @@ class CommandDispatcher:
                 print(f"\nFile : {entity['filename']}")
                 print(f"\nDestination : {entity['destination']}")
 
-                self.tts.speak(
+                if not self.confirm_action(
+
                     "Do you want to move this file?"
-                )
 
-                confirm = self.whisper.listen_confirmation()
+                ):
 
-                confirm = confirm.lower().strip()
-
-                if confirm not in {
-
-                    "yes",
-
-                    "yeah",
-
-                    "yep",
-
-                    "ya",
-
-                    "yas",
-
-                    "yes.",
-
-                    "yes!",
-
-                    "ok",
-
-                    "okay",
-
-                    "sure"
-
-                }:
-
-                    self.tts.speak(
+                    reply = self.speak(
                         "Move cancelled."
                     )
 
-                    return {
+                    return self.response(
 
-                        "success": False,
+                        False,
 
-                        "status": "Status : Cancelled"
+                        "",
 
-                    }
+                        "Status : Cancelled",
+
+                        reply
+
+                    )
 
                 success = self.file_manager.move_file(
 
@@ -1625,35 +1536,27 @@ class CommandDispatcher:
 
                 if success:
 
-                    self.tts.speak(
+                    reply = self.speak(
                         "File moved successfully."
                     )
 
                 else:
 
-                    self.tts.speak(
+                    reply = self.speak(
                         "Unable to move the file."
                     )
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status":
+                    "Status : File Moved",
 
-                    (
+                    "Status : Move Failed",
 
-                        "Status : File Moved"
+                    reply
 
-                        if success
-
-                        else
-
-                        "Status : Move Failed"
-
-                    )
-
-                }
+                )
 
             # -------------------------
             # Compress File
@@ -1670,45 +1573,27 @@ class CommandDispatcher:
 
                 print(f"\nFile : {entity}")
 
-                self.tts.speak(
+                if not self.confirm_action(
+
                     "Do you want to compress this file?"
-                )
 
-                confirm = self.whisper.listen_confirmation()
+                ):
 
-                confirm = confirm.lower().strip()
+                    reply = self.speak(
+                        "Compression cancelled."
+                    )
 
-                if confirm not in {
+                    return self.response(
 
-                    "yes",
+                        False,
 
-                    "yeah",
+                        "",
 
-                    "yep",
+                        "Status : Cancelled",
 
-                    "ya",
+                        reply
 
-                    "yas",
-
-                    "yes.",
-
-                    "yes!",
-
-                    "ok",
-
-                    "okay",
-
-                    "sure"
-
-                }:
-
-                    return {
-
-                        "success": False,
-
-                        "status": "Status : Cancelled"
-
-                    }
+                    )
 
                 success = self.file_manager.compress_file(
                     entity
@@ -1716,35 +1601,27 @@ class CommandDispatcher:
 
                 if success:
 
-                    self.tts.speak(
+                    reply = self.speak(
                         "ZIP archive created successfully."
                     )
 
                 else:
 
-                    self.tts.speak(
+                    reply = self.speak(
                         "Unable to compress the file."
                     )
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status":
+                    "Status : ZIP Created",
 
-                    (
+                    "Status : Compression Failed",
 
-                        "Status : ZIP Created"
+                    reply
 
-                        if success
-
-                        else
-
-                        "Status : Compression Failed"
-
-                    )
-
-                }
+                )
 
             # -------------------------
             # Extract ZIP
@@ -1761,45 +1638,27 @@ class CommandDispatcher:
 
                 print(f"\nZIP File : {entity}")
 
-                self.tts.speak(
+                if not self.confirm_action(
+
                     "Do you want to extract this archive?"
-                )
 
-                confirm = self.whisper.listen_confirmation()
+                ):
 
-                confirm = confirm.lower().strip()
+                    reply = self.speak(
+                        "Extraction cancelled."
+                    )
 
-                if confirm not in {
+                    return self.response(
 
-                    "yes",
+                        False,
 
-                    "yeah",
+                        "",
 
-                    "yep",
+                        "Status : Cancelled",
 
-                    "ya",
+                        reply
 
-                    "yas",
-
-                    "yes.",
-
-                    "yes!",
-
-                    "ok",
-
-                    "okay",
-
-                    "sure"
-
-                }:
-
-                    return {
-
-                        "success": False,
-
-                        "status": "Status : Cancelled"
-
-                    }
+                    )
 
                 success = self.file_manager.extract_zip(
                     entity
@@ -1807,35 +1666,27 @@ class CommandDispatcher:
 
                 if success:
 
-                    self.tts.speak(
+                    reply = self.speak(
                         "ZIP archive extracted successfully."
                     )
 
                 else:
 
-                    self.tts.speak(
+                    reply = self.speak(
                         "Unable to extract the ZIP archive."
                     )
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status":
+                    "Status : ZIP Extracted",
 
-                    (
+                    "Status : Extraction Failed",
 
-                        "Status : ZIP Extracted"
+                    reply
 
-                        if success
-
-                        else
-
-                        "Status : Extraction Failed"
-
-                    )
-
-                }
+                )
 
             # -------------------------
             # Create Folder
@@ -1849,6 +1700,10 @@ class CommandDispatcher:
 
             ):
 
+                reply = self.speak(
+                    f"Creating {entity} folder."
+                )
+
                 success = (
 
                     self.folder_manager
@@ -1857,25 +1712,29 @@ class CommandDispatcher:
 
                 )
 
-                return {
+                if success:
 
-                    "success": success,
-
-                    "status":
-
-                    (
-
-                        "Status : Folder Created"
-
-                        if success
-
-                        else
-
-                        "Status : Create Failed"
-
+                    reply = self.speak(
+                        "Folder created successfully."
                     )
 
-                }
+                else:
+
+                    reply = self.speak(
+                        "Unable to create the folder."
+                    )
+
+                return self.response(
+
+                    success,
+
+                    "Status : Folder Created",
+
+                    "Status : Create Failed",
+
+                    reply
+
+                )
             
             # -------------------------
             # Rename Folder
@@ -1883,15 +1742,15 @@ class CommandDispatcher:
 
             elif intent == "rename_folder":
 
-                return {
+                return self.response(
 
-                    "success": False,
+                    False,
 
-                    "status":
+                    "",
 
                     "Status : Pending"
 
-                }
+                )
             
             # -------------------------
             # Delete Folder
@@ -1904,6 +1763,27 @@ class CommandDispatcher:
                 and entity
 
             ):
+                if not self.confirm_action(
+
+                    "Do you want to delete this folder?"
+
+                ):
+                    
+                    reply = self.speak(
+                        "Deletion cancelled."
+                    )
+
+                    return self.response(
+
+                        False,
+
+                        "",
+
+                        "Status : Delete Cancelled",
+
+                        reply
+
+                    )
 
                 success = (
 
@@ -1913,25 +1793,29 @@ class CommandDispatcher:
 
                 )
 
-                return {
+                if success:
 
-                    "success": success,
-
-                    "status":
-
-                    (
-
-                        "Status : Folder Deleted"
-
-                        if success
-
-                        else
-
-                        "Status : Delete Failed"
-
+                    reply = self.speak(
+                        "Folder deleted successfully."
                     )
 
-                }
+                else:
+
+                    reply = self.speak(
+                        "Unable to delete the folder."
+                    )
+
+                return self.response(
+
+                    success,
+
+                    "Status : Folder Deleted",
+
+                    "Status : Delete Failed",
+
+                    reply
+
+                )
             
             # -------------------------
             # Move Folder
@@ -1939,15 +1823,15 @@ class CommandDispatcher:
 
             elif intent == "move_folder":
 
-                return {
+                return self.response(
 
-                    "success": False,
+                    False,
 
-                    "status":
+                    "",
 
                     "Status : Pending"
 
-                }
+                )
             
             # -------------------------
             # Copy Folder
@@ -1955,21 +1839,43 @@ class CommandDispatcher:
 
             elif intent == "copy_folder":
 
-                return {
+                return self.response(
 
-                    "success": False,
+                    False,
 
-                    "status":
+                    "",
 
                     "Status : Pending"
 
-                }
+                )
             
             # -------------------------
             # Empty Recycle Bin
             # -------------------------
 
             elif intent == "empty_recycle_bin":
+
+                if not self.confirm_action(
+
+                    "Do you want to empty the recycle bin?"
+
+                ):
+
+                    reply = self.speak(
+                        "Operation cancelled."
+                    )
+
+                    return self.response(
+
+                        False,
+
+                        "",
+
+                        "Status : Cancelled",
+
+                        reply
+
+                    )
 
                 success = (
 
@@ -1979,25 +1885,29 @@ class CommandDispatcher:
 
                 )
 
-                return {
+                if success:
 
-                    "success": success,
-
-                    "status":
-
-                    (
-
-                        "Status : Recycle Bin Emptied"
-
-                        if success
-
-                        else
-
-                        "Status : Failed"
-
+                    reply = self.speak(
+                        "Recycle Bin emptied successfully."
                     )
 
-                }
+                else:
+
+                    reply = self.speak(
+                        "Unable to empty the Recycle Bin."
+                    )
+
+                return self.response(
+
+                    success,
+
+                    "Status : Recycle Bin Emptied",
+
+                    "Status : Failed",
+
+                    reply
+
+                )
 
             # -------------------------
             # Search by Extension
@@ -2008,7 +1918,7 @@ class CommandDispatcher:
                 and entity
             ):
 
-                self.tts.speak(
+                reply = self.speak(
                     f"Searching for {entity} files."
                 )
 
@@ -2018,7 +1928,7 @@ class CommandDispatcher:
 
                 if results:
 
-                    self.tts.speak(
+                    reply = self.speak(
                         f"Showing {entity.upper()} files in File Explorer."
                     )
 
@@ -2047,29 +1957,21 @@ class CommandDispatcher:
 
                 else:
 
-                    self.tts.speak(
+                    reply = self.speak(
                         "No matching files found."
                     )
 
-                return {
+                return self.response(
 
-                    "success": bool(results),
+                    bool(results),
 
-                    "status":
+                    "Status : Explorer Search Opened",
 
-                    (
+                    "Status : No Files Found",
 
-                        "Status : Explorer Search Opened"
+                    reply
 
-                        if results
-
-                        else
-
-                        "Status : No Files Found"
-
-                    )
-
-                }
+                )
 
 
             # -------------------------
@@ -2081,7 +1983,7 @@ class CommandDispatcher:
                 and entity
             ):
 
-                self.tts.speak(
+                reply = self.speak(
                     "Searching files."
                 )
 
@@ -2091,7 +1993,7 @@ class CommandDispatcher:
 
                 if results:
 
-                    self.tts.speak(
+                    reply = self.speak(
                         "Showing search results in File Explorer."
                     )
 
@@ -2134,29 +2036,21 @@ class CommandDispatcher:
 
                 else:
 
-                    self.tts.speak(
+                    reply = self.speak(
                         "No matching files found."
                     )
 
-                return {
+                return self.response(
 
-                    "success": len(results) > 0,
+                    bool(results),
 
-                    "status":
+                    "Status : Explorer Search Opened",
 
-                    (
+                    "Status : No Files Found",
 
-                        "Status : Explorer Search Opened"
+                    reply
 
-                        if results
-
-                        else
-
-                        "Status : No Files Found"
-
-                    )
-
-                }
+                )
 
             # -------------------------
             # Open Website
@@ -2174,10 +2068,8 @@ class CommandDispatcher:
 
                     }
 
-                self.tts.speak(
-
+                reply = self.speak(
                     f"Opening {website}"
-
                 )
 
                 success = self.browser.open_website(
@@ -2188,25 +2080,17 @@ class CommandDispatcher:
 
                 )
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status":
+                    "Status : Website Opened",
 
-                    (
+                    "Status : Website Failed",
 
-                        "Status : Website Opened"
+                    reply
 
-                        if success
-
-                        else
-
-                        "Status : Website Failed"
-
-                    )
-
-                }
+                )
 
             # -------------------------
             # Google Home
@@ -2214,17 +2098,25 @@ class CommandDispatcher:
 
             elif intent == "open_google":
 
+                reply = self.speak(
+                    "Opening Google."
+                )
+
                 success = self.browser.open_google(
                     browser or "chrome"
                 )
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status": "Status : Google Opened"
+                    "Status : Google Opened",
 
-                }
+                    "Status : Google Failed",
+
+                    reply
+
+                )
 
             # -------------------------
             # Youtube Home
@@ -2232,17 +2124,25 @@ class CommandDispatcher:
 
             elif intent == "open_youtube":
 
+                reply = self.speak(
+                    "Opening YouTube."
+                )
+
                 success = self.browser.open_youtube(
                     browser or "chrome"
                 )
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status": "Status : YouTube Opened"
+                    "Status : YouTube Opened",
 
-                }
+                    "Status : YouTube Failed",
+
+                    reply
+
+                )
 
             # -------------------------
             # Google Search
@@ -2250,8 +2150,20 @@ class CommandDispatcher:
 
             elif intent == "google_search":
 
-                self.tts.speak(
-                    f"Searching {search_query}"
+                if not search_query:
+
+                    return self.response(
+
+                        False,
+
+                        "",
+
+                        "Status : Invalid Search"
+
+                    )
+
+                reply = self.speak(
+                    f"Searching Google for {search_query}."
                 )
 
                 success = self.browser.google_search(
@@ -2262,25 +2174,17 @@ class CommandDispatcher:
 
                 )
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status":
+                    "Status : Search Completed",
 
-                    (
+                    "Status : Search Failed",
 
-                        "Status : Search Completed"
+                    reply
 
-                        if success
-
-                        else
-
-                        "Status : Search Failed"
-
-                    )
-
-                }
+                )
 
             # -------------------------
             # YouTube Search
@@ -2288,10 +2192,20 @@ class CommandDispatcher:
 
             elif intent == "youtube_search":
 
-                self.tts.speak(
+                if not search_query:
 
-                    f"Searching YouTube for {search_query}"
+                    return self.response(
 
+                        False,
+
+                        "",
+
+                        "Status : Invalid Search"
+
+                    )
+
+                reply = self.speak(
+                    f"Searching YouTube for {search_query}."
                 )
 
                 success = self.browser.youtube_search(
@@ -2302,25 +2216,17 @@ class CommandDispatcher:
 
                 )
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status":
+                    "Status : YouTube Search",
 
-                    (
+                    "Status : Search Failed",
 
-                        "Status : YouTube Search"
+                    reply
 
-                        if success
-
-                        else
-
-                        "Status : Search Failed"
-
-                    )
-
-                }
+                )
 
             # -------------------------
             # Play YouTube
@@ -2330,7 +2236,19 @@ class CommandDispatcher:
 
                 query = search_query or entity
 
-                self.tts.speak(
+                if not query:
+
+                    return self.response(
+
+                        False,
+
+                        "",
+
+                        "Status : Invalid Video"
+
+                    )
+
+                reply = self.speak(
                     f"Playing {query} on YouTube."
                 )
 
@@ -2342,25 +2260,17 @@ class CommandDispatcher:
 
                 )
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status":
+                    "Status : Playing Video",
 
-                    (
+                    "Status : Play Failed",
 
-                        "Status : Playing Video"
+                    reply
 
-                        if success
-
-                        else
-
-                        "Status : Play Failed"
-
-                    )
-
-                }
+                )
 
             # -------------------------
             # New Tab
@@ -2368,12 +2278,23 @@ class CommandDispatcher:
 
             elif intent == "new_tab":
 
+                reply = self.speak(
+                    "Opening a new tab."
+                )
+
                 success = self.browser.new_tab()
 
-                return {
-                    "success": success,
-                    "status": "Status : New Tab"
-                }
+                return self.response(
+
+                    success,
+
+                    "Status : New Tab",
+
+                    "Status : New Tab Failed",
+
+                    reply
+
+                )
 
             # -------------------------
             # Close Tab
@@ -2381,12 +2302,23 @@ class CommandDispatcher:
 
             elif intent == "close_tab":
 
+                reply = self.speak(
+                    "Closing the current tab."
+                )
+
                 success = self.browser.close_tab()
 
-                return {
-                    "success": success,
-                    "status": "Status : Tab Closed"
-                }
+                return self.response(
+
+                    success,
+
+                    "Status : Tab Closed",
+
+                    "Status : Close Tab Failed",
+
+                    reply
+
+                )
 
             # -------------------------
             # Next Tab
@@ -2394,12 +2326,23 @@ class CommandDispatcher:
 
             elif intent == "next_tab":
 
+                reply = self.speak(
+                    "Switching to the next tab."
+                )
+
                 success = self.browser.next_tab()
 
-                return {
-                    "success": success,
-                    "status": "Status : Next Tab"
-                }
+                return self.response(
+
+                    success,
+
+                    "Status : Next Tab",
+
+                    "Status : Next Tab Failed",
+
+                    reply
+
+                )
 
             # -------------------------
             # Previous Tab
@@ -2407,12 +2350,23 @@ class CommandDispatcher:
 
             elif intent == "previous_tab":
 
+                reply = self.speak(
+                    "Switching to the previous tab."
+                )
+
                 success = self.browser.previous_tab()
 
-                return {
-                    "success": success,
-                    "status": "Status : Previous Tab"
-                }
+                return self.response(
+
+                    success,
+
+                    "Status : Previous Tab",
+
+                    "Status : Previous Tab Failed",
+
+                    reply
+
+                )
 
             # -------------------------
             # Refresh 
@@ -2420,12 +2374,23 @@ class CommandDispatcher:
 
             elif intent == "refresh":
 
+                reply = self.speak(
+                    "Refreshing the page."
+                )
+
                 success = self.browser.refresh()
 
-                return {
-                    "success": success,
-                    "status": "Status : Page Refreshed"
-                }
+                return self.response(
+
+                    success,
+
+                    "Status : Page Refreshed",
+
+                    "Status : Refresh Failed",
+
+                    reply
+
+                )
 
             # -------------------------
             # Downloads
@@ -2433,12 +2398,23 @@ class CommandDispatcher:
 
             elif intent == "browser_downloads":
 
+                reply = self.speak(
+                    "Opening Downloads."
+                )
+
                 success = self.browser.open_downloads()
 
-                return {
-                    "success": success,
-                    "status": "Status : Downloads Opened"
-                }
+                return self.response(
+
+                    success,
+
+                    "Status : Downloads Opened",
+
+                    "Status : Downloads Failed",
+
+                    reply
+
+                )
 
             # -------------------------
             # History
@@ -2446,12 +2422,23 @@ class CommandDispatcher:
 
             elif intent == "browser_history":
 
+                reply = self.speak(
+                    "Opening browsing history."
+                )
+
                 success = self.browser.open_history()
 
-                return {
-                    "success": success,
-                    "status": "Status : History Opened"
-                }
+                return self.response(
+
+                    success,
+
+                    "Status : History Opened",
+
+                    "Status : History Failed",
+
+                    reply
+
+                )
 
             # -------------------------
             # Bookmark Bar
@@ -2459,12 +2446,23 @@ class CommandDispatcher:
 
             elif intent == "browser_bookmarks":
 
+                reply = self.speak(
+                    "Opening the bookmarks bar."
+                )
+
                 success = self.browser.show_bookmarks()
 
-                return {
-                    "success": success,
-                    "status": "Status : Bookmark Bar"
-                }
+                return self.response(
+
+                    success,
+
+                    "Status : Bookmark Bar",
+
+                    "Status : Bookmark Bar Failed",
+
+                    reply
+
+                )
 
             # -------------------------
             # Bookmark Page
@@ -2472,12 +2470,23 @@ class CommandDispatcher:
 
             elif intent == "bookmark_page":
 
+                reply = self.speak(
+                    "Bookmarking this page."
+                )
+
                 success = self.browser.bookmark_page()
 
-                return {
-                    "success": success,
-                    "status": "Status : Page Bookmarked"
-                }
+                return self.response(
+
+                    success,
+
+                    "Status : Page Bookmarked",
+
+                    "Status : Bookmark Failed",
+
+                    reply
+
+                )
 
             # -------------------------
             # Address Bar
@@ -2485,12 +2494,23 @@ class CommandDispatcher:
 
             elif intent == "address_bar":
 
+                reply = self.speak(
+                    "Focusing the address bar."
+                )
+
                 success = self.browser.focus_address_bar()
 
-                return {
-                    "success": success,
-                    "status": "Status : Address Bar"
-                }
+                return self.response(
+
+                    success,
+
+                    "Status : Address Bar",
+
+                    "Status : Address Bar Failed",
+
+                    reply
+
+                )
 
             # -------------------------
             # Browser Back
@@ -2498,12 +2518,23 @@ class CommandDispatcher:
 
             elif intent == "browser_back":
 
+                reply = self.speak(
+                    "Going back."
+                )
+
                 success = self.browser.back()
 
-                return {
-                    "success": success,
-                    "status": "Status : Back"
-                }
+                return self.response(
+
+                    success,
+
+                    "Status : Back",
+
+                    "Status : Back Failed",
+
+                    reply
+
+                )
 
             # -------------------------
             # Browser Forward
@@ -2511,12 +2542,23 @@ class CommandDispatcher:
 
             elif intent == "browser_forward":
 
+                reply = self.speak(
+                    "Going forward."
+                )
+
                 success = self.browser.forward()
 
-                return {
-                    "success": success,
-                    "status": "Status : Forward"
-                }
+                return self.response(
+
+                    success,
+
+                    "Status : Forward",
+
+                    "Status : Forward Failed",
+
+                    reply
+
+                )
 
             # -------------------------
             # Private Window
@@ -2524,12 +2566,23 @@ class CommandDispatcher:
 
             elif intent == "private_window":
 
+                reply = self.speak(
+                    "Opening a private window."
+                )
+
                 success = self.browser.private_window()
 
-                return {
-                    "success": success,
-                    "status": "Status : Private Window"
-                }
+                return self.response(
+
+                    success,
+
+                    "Status : Private Window",
+
+                    "Status : Private Window Failed",
+
+                    reply
+
+                )
 
             # -------------------------
             # Open Chrome Profile
@@ -2537,7 +2590,7 @@ class CommandDispatcher:
 
             elif intent == "open_chrome_profile":
 
-                self.tts.speak(
+                reply = self.speak(
                     f"Opening {profile} profile."
                 )
 
@@ -2546,19 +2599,17 @@ class CommandDispatcher:
                     website
                 )
 
-                return {
+                return self.response(
 
-                    "success": success,
+                    success,
 
-                    "status":
-                    (
-                        "Status : Chrome Profile Opened"
-                        if success
-                        else
-                        "Status : Profile Failed"
-                    )
+                    "Status : Chrome Profile Opened",
 
-                }
+                    "Status : Profile Failed",
+
+                    reply
+
+                )
 
             # -------------------------
             # Search by Size
@@ -2569,7 +2620,7 @@ class CommandDispatcher:
                 and entity
             ):
 
-                self.tts.speak(
+                reply = self.speak(
                     f"Searching files larger than {entity} megabytes."
                 )
 
@@ -2579,11 +2630,11 @@ class CommandDispatcher:
 
                 if results:
 
-                    self.tts.speak(
+                    reply = self.speak(
                         f"I found {len(results)} files."
                     )
 
-                    self.tts.speak(
+                    reply = self.speak(
                         "Opening File Explorer."
                     )
 
@@ -2608,58 +2659,60 @@ class CommandDispatcher:
 
                 else:
 
-                    self.tts.speak(
+                    reply = self.speak(
                         "No matching files found."
                     )
 
-                return {
+                return self.response(
 
-                    "success": len(results) > 0,
+                    bool(results),
 
-                    "status":
+                    f"Status : {len(results) if results else 0} Files Found",
 
-                    (
+                    "Status : No Files Found",
 
-                        f"Status : {len(results)} Files Found"
+                    reply
 
-                        if results
+                )
 
-                        else
-
-                        "Status : No Files Found"
-
-                    )
-
-                }
-
-            self.tts.speak(
+            reply = self.speak(
                 "I could not understand your command."
             )
 
-            return {
+            return self.response(
 
-                "success": False,
+                False,
 
-                "status":
-                "Status : No Action"
+                "",
 
-            }
+                "Status : No Action",
+
+                reply
+
+            )
 
         except Exception as error:
+
+            import traceback
+
+            traceback.print_exc()
 
             print(
                 f"Dispatcher Error : {error}"
             )
 
-            self.tts.speak(
+            reply = self.speak(
                 "Sorry. Something went wrong."
             )
 
-            return {
+            return self.response(
 
-                "success": False,
+                False,
 
-                "status":
-                "Status : Dispatcher Error"
+                "",
 
-            }
+                "Status : Dispatcher Error",
+
+                reply
+
+            )

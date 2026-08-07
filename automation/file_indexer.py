@@ -38,6 +38,18 @@ class FileIndexer:
 
         self.scan_folders = self.get_scan_folders()
 
+        # ---------------------------------
+        # Cache Existing Indexed Files
+        # ---------------------------------
+
+        self.indexed_paths = {
+
+            file[2]
+
+            for file in self.database.get_all_files()
+
+        }
+
     # --------------------------------------------------
     # Scan Folder List
     # --------------------------------------------------
@@ -51,7 +63,8 @@ class FileIndexer:
 
         • User folders
 
-        • Local Disk E (if available)
+        • Entire Local Disk E
+        (if available)
         """
 
         folders = [
@@ -71,14 +84,22 @@ class FileIndexer:
         ]
 
         # ---------------------------------
-        # Scan Local Disk E
+        # Entire Local Disk E
         # ---------------------------------
 
         e_drive = Path("E:/")
 
         if e_drive.exists():
 
-            folders.append(e_drive)
+            print("\nDetected Local Disk E")
+
+            folders.append(
+                e_drive
+            )
+
+        # ---------------------------------
+        # Keep Existing Folders Only
+        # ---------------------------------
 
         folders = [
 
@@ -90,13 +111,25 @@ class FileIndexer:
 
         ]
 
-        # Remove duplicates
+        # ---------------------------------
+        # Remove Duplicates
+        # ---------------------------------
 
-        return list(
+        unique_folders = []
 
-            dict.fromkeys(folders)
+        visited = set()
 
-        )
+        for folder in folders:
+
+            folder = folder.resolve()
+
+            if folder not in visited:
+
+                visited.add(folder)
+
+                unique_folders.append(folder)
+
+        return unique_folders
 
     # --------------------------------------------------
     # Index Files
@@ -131,6 +164,14 @@ class FileIndexer:
 
             total_files += count
 
+            # ---------------------------------
+            # Commit once per folder
+            # (Much faster than committing
+            # every single file.)
+            # ---------------------------------
+
+            self.database.batch_commit()
+
             print(f"Indexed : {count} files\n")
 
         print("--------------------------------")
@@ -161,7 +202,37 @@ class FileIndexer:
 
         indexed_files = 0
 
+        MAX_DEPTH = 2
+
         for root, dirs, files in os.walk(folder):
+
+            # ---------------------------------
+            # Skip unwanted directories before
+            # entering them (huge speed boost)
+            # ---------------------------------
+
+            dirs[:] = [
+
+                directory
+
+                for directory in dirs
+
+                if not FileFilter.should_skip_directory(
+
+                    os.path.join(
+                        root,
+                        directory
+                    )
+
+                )
+
+            ]
+
+            relative = Path(root).relative_to(folder)
+
+            if len(relative.parts) >= MAX_DEPTH:
+
+                dirs[:] = []
 
             for file in files:
 
@@ -183,12 +254,10 @@ class FileIndexer:
                         continue
 
                     # -------------------------
-                    # Skip Duplicates
+                    # Skip Duplicates (Memory Cache)
                     # -------------------------
 
-                    if self.database.file_exists(
-                        full_path
-                    ):
+                    if full_path in self.indexed_paths:
 
                         continue
 
@@ -220,13 +289,19 @@ class FileIndexer:
 
                         file_size=file_size,
 
-                        last_modified=last_modified
+                        last_modified=last_modified,
 
+                        commit=False
+
+                    )
+
+                    self.indexed_paths.add(
+                        full_path
                     )
 
                     indexed_files += 1
 
-                    if indexed_files % 50 == 0:
+                    if False:
 
                         print(
 

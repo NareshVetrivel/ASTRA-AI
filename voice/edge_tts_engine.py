@@ -1,5 +1,17 @@
 """
-Microsoft Edge Text To Speech Engine
+voice/edge_tts_engine.py
+
+ASTRA-AI
+Premium Microsoft Edge Neural TTS Engine
+
+Features
+--------
+✓ Microsoft Edge Neural Voice
+✓ Non-blocking
+✓ Thread Safe
+✓ Stop Current Speech
+✓ Queue Safe
+✓ Auto Cleanup
 """
 
 import asyncio
@@ -12,54 +24,77 @@ import pygame
 
 
 class EdgeTTSEngine:
-    """
-    Microsoft Edge Neural Text To Speech Engine
-    """
 
     def __init__(self):
 
         self.voice = "en-IN-NeerjaNeural"
 
+        self.lock = threading.Lock()
+
+        self.current_thread = None
+
+        self.stop_event = threading.Event()
+
+        self.is_speaking = False
+
         if not pygame.mixer.get_init():
+
             pygame.mixer.init()
 
-    async def _generate_speech(self, text, file_path):
-        """
-        Generate speech using Microsoft Edge TTS.
-        """
+    # --------------------------------------------------
+    # Generate Speech
+    # --------------------------------------------------
+
+    async def _generate(self, text, filename):
 
         communicate = edge_tts.Communicate(
+
             text=text,
+
             voice=self.voice
+
         )
 
-        await communicate.save(file_path)
+        await communicate.save(filename)
 
-    def _speak_sync(self, text):
-        """
-        Generate and play speech inside
-        a dedicated thread.
-        """
+    # --------------------------------------------------
+    # Internal Speaker
+    # --------------------------------------------------
 
-        temp_file = tempfile.NamedTemporaryFile(
+    def _worker(self, text):
+
+        self.stop_event.clear()
+
+        self.is_speaking = True
+
+        temp = tempfile.NamedTemporaryFile(
+
             delete=False,
+
             suffix=".mp3"
+
         )
 
-        temp_path = temp_file.name
-        temp_file.close()
+        filename = temp.name
+
+        temp.close()
 
         loop = asyncio.new_event_loop()
 
+        asyncio.set_event_loop(loop)
+
         try:
 
-            asyncio.set_event_loop(loop)
-
             loop.run_until_complete(
-                self._generate_speech(
+
+                self._generate(
+
                     text,
-                    temp_path
+
+                    filename
+
                 )
+
             )
 
         finally:
@@ -68,33 +103,152 @@ class EdgeTTSEngine:
 
         try:
 
-            pygame.mixer.music.load(temp_path)
+            pygame.mixer.music.load(
+
+                filename
+
+            )
 
             pygame.mixer.music.play()
 
             while pygame.mixer.music.get_busy():
-                pygame.time.Clock().tick(10)
+
+                if self.stop_event.is_set():
+
+                    pygame.mixer.music.stop()
+
+                    break
+
+                pygame.time.wait(50)
 
         finally:
 
             try:
-                pygame.mixer.music.unload()
+
+                pygame.mixer.music.stop()
+
             except Exception:
+
                 pass
 
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
+            try:
+
+                pygame.mixer.music.unload()
+
+            except Exception:
+
+                pass
+
+            if os.path.exists(filename):
+
+                os.remove(filename)
+
+            self.is_speaking = False
+
+    # --------------------------------------------------
+    # Speak
+    # --------------------------------------------------
 
     def speak(self, text):
-        """
-        Speak text asynchronously.
-        """
 
         if not text:
+
             return
 
-        threading.Thread(
-            target=self._speak_sync,
-            args=(text,),
-            daemon=True
-        ).start()
+        text = str(text).strip()
+
+        if not text:
+
+            return
+
+        with self.lock:
+
+            self.stop()
+
+            if (
+
+                self.current_thread
+
+                and
+
+                self.current_thread.is_alive()
+
+            ):
+
+                self.current_thread.join(timeout=2)
+
+            self.current_thread = threading.Thread(
+
+                target=self._worker,
+
+                args=(text,),
+
+                daemon=True
+
+            )
+
+            self.current_thread.start()
+
+    # --------------------------------------------------
+    # Stop
+    # --------------------------------------------------
+
+    def stop(self):
+
+        self.stop_event.set()
+
+        try:
+
+            pygame.mixer.music.stop()
+
+        except Exception:
+
+            pass
+
+        if (
+
+            self.current_thread
+
+            and
+
+            self.current_thread.is_alive()
+
+        ):
+
+            self.current_thread.join(timeout=2)
+
+        self.current_thread = None
+
+        self.is_speaking = False
+
+    # --------------------------------------------------
+    # Voice
+    # --------------------------------------------------
+
+    def set_voice(self, voice):
+
+        self.voice = voice
+
+    # --------------------------------------------------
+    # Status
+    # --------------------------------------------------
+
+    def speaking(self):
+
+        return self.is_speaking
+
+    # --------------------------------------------------
+    # Cleanup
+    # --------------------------------------------------
+
+    def close(self):
+
+        self.stop()
+
+        try:
+
+            pygame.mixer.quit()
+
+        except Exception:
+
+            pass
