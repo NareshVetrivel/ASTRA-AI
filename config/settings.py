@@ -6,34 +6,46 @@ import os
 
 from dotenv import load_dotenv
 
+
 # ==========================================================
 # Load Environment Variables
 # ==========================================================
 
 load_dotenv()
 
+
 # ==========================================================
 # Application Information
 # ==========================================================
 
 APP_NAME = "ASTRA-AI"
+
 APP_VERSION = "0.1.0"
+
 APP_AUTHOR = "Naresh"
+
 
 # ==========================================================
 # Window Settings
 # ==========================================================
 
 WINDOW_WIDTH = 700
+
 WINDOW_HEIGHT = 500
+
 WINDOW_TITLE = APP_NAME
+
 
 # ==========================================================
 # UI Settings
 # ==========================================================
 
 DEFAULT_STATUS = "Ready"
-WELCOME_MESSAGE = "Welcome to ASTRA-AI"
+
+WELCOME_MESSAGE = (
+    "Welcome to ASTRA-AI"
+)
+
 
 # ==========================================================
 # File Indexing Settings
@@ -51,23 +63,27 @@ INDEX_USER_FOLDERS = [
 
     "Videos",
 
-    "Music"
+    "Music",
 
 ]
 
+
 # ==========================================================
-# Custom folders outside user profile
+# Custom Folders Outside User Profile
 # ==========================================================
 
 # Example:
 #
 # r"E:\College"
+#
 # r"E:\Projects"
+#
 # r"E:\TANCET"
 
 INDEX_CUSTOM_FOLDERS = [
 
 ]
+
 
 # ==========================================================
 # Microphone
@@ -75,30 +91,72 @@ INDEX_CUSTOM_FOLDERS = [
 
 MIC_BUTTON_TEXT = "🎤"
 
+
 # ==========================================================
-# Gemini API
+# Gemini API Configuration
 # ==========================================================
+
+# ----------------------------------------------------------
+# Gemini API Key 1
+# ----------------------------------------------------------
 
 GEMINI_API_KEY_1 = os.getenv(
     "GEMINI_API_KEY_1",
     ""
 ).strip()
 
+
+# ----------------------------------------------------------
+# Gemini API Key 2
+# ----------------------------------------------------------
+
 GEMINI_API_KEY_2 = os.getenv(
     "GEMINI_API_KEY_2",
     ""
 ).strip()
+
+
+# ----------------------------------------------------------
+# Gemini API Key 3
+# ----------------------------------------------------------
+
+GEMINI_API_KEY_3 = os.getenv(
+    "GEMINI_API_KEY_3",
+    ""
+).strip()
+
+
+# ----------------------------------------------------------
+# Gemini API Key 4
+# ----------------------------------------------------------
+
+GEMINI_API_KEY_4 = os.getenv(
+    "GEMINI_API_KEY_4",
+    ""
+).strip()
+
+
+# ----------------------------------------------------------
+# Gemini Model
+# ----------------------------------------------------------
 
 GEMINI_MODEL = os.getenv(
     "GEMINI_MODEL",
     "models/gemini-3.5-flash"
 ).strip()
 
+
 # ==========================================================
-# Debug
+# Debug Configuration
 # ==========================================================
 
-DEBUG = os.getenv(
-    "DEBUG",
-    "False"
-).lower() == "true"
+DEBUG = (
+
+    os.getenv(
+        "DEBUG",
+        "False"
+    ).strip().lower()
+
+    == "true"
+
+)
