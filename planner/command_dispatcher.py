@@ -6,6 +6,7 @@ to the appropriate controller.
 """
 
 from ai.gemini_client import GeminiClient
+from automation.screen_recorder import ScreenRecorder
 
 class CommandDispatcher:
 
@@ -48,6 +49,8 @@ class CommandDispatcher:
         self.whisper = whisper
 
         self.gemini = gemini_client
+
+        self.screen_recorder = ScreenRecorder()
         
 
     # --------------------------------------------------
@@ -251,16 +254,67 @@ class CommandDispatcher:
                 app_name = entity.replace(
                     ".exe",
                     ""
+                ).strip()
+
+                # ---------------------------------
+                # Check Application First
+                # ---------------------------------
+
+                is_running = (
+                    self.app_closer
+                    .is_running(entity)
                 )
 
+                if not is_running:
+
+                    reply = self.speak(
+                        f"{app_name} is not running."
+                    )
+
+                    return self.response(
+
+                        False,
+
+                        "",
+
+                        "Status : Application Not Running",
+
+                        reply
+
+                    )
+
+                # ---------------------------------
+                # Application Is Running
+                # ---------------------------------
+
                 reply = self.speak(
-                    f"Closing {app_name}"
+                    f"Closing {app_name}."
                 )
+
+                # ---------------------------------
+                # Close Application
+                # ---------------------------------
 
                 success = (
                     self.app_closer
                     .close_application(entity)
                 )
+
+                # ---------------------------------
+                # Final Response
+                # ---------------------------------
+
+                if success:
+
+                    reply = self.speak(
+                        f"{app_name} closed successfully."
+                    )
+
+                else:
+
+                    reply = self.speak(
+                        f"Unable to close {app_name}."
+                    )
 
                 return self.response(
 
@@ -268,7 +322,7 @@ class CommandDispatcher:
 
                     "Status : Application Closed",
 
-                    "Status : Application Not Running",
+                    "Status : Application Close Failed",
 
                     reply
 
@@ -1100,6 +1154,138 @@ class CommandDispatcher:
                 )
 
             # -------------------------
+            # Set Exact Volume
+            # -------------------------
+
+            elif intent == "set_volume":
+
+                if entity is None:
+
+                    message = (
+                        "Please specify the volume percentage."
+                    )
+
+                    self.tts.speak(message)
+
+                    return self.response(
+                        False,
+                        "",
+                        "Status : Volume Value Missing",
+                        message
+                    )
+
+                try:
+
+                    volume = int(entity)
+
+                except (TypeError, ValueError):
+
+                    message = (
+                        "I could not understand the volume value."
+                    )
+
+                    self.tts.speak(message)
+
+                    return self.response(
+                        False,
+                        "",
+                        "Status : Invalid Volume",
+                        message
+                    )
+
+                if not 0 <= volume <= 100:
+
+                    message = (
+                        "Volume must be between 0 and 100 percent."
+                    )
+
+                    self.tts.speak(message)
+
+                    return self.response(
+                        False,
+                        "",
+                        "Status : Invalid Volume",
+                        message
+                    )
+
+                # ---------------------------------
+                # Read Current Volume
+                # ---------------------------------
+
+                current_volume = self.system.get_volume()
+
+                if current_volume is None:
+
+                    message = (
+                        "I could not read the current volume."
+                    )
+
+                    self.tts.speak(message)
+
+                    return self.response(
+                        False,
+                        "",
+                        "Status : Volume Read Failed",
+                        message
+                    )
+
+                # ---------------------------------
+                # Determine Message
+                # ---------------------------------
+
+                if volume > current_volume:
+
+                    message = (
+                        f"Increasing volume to {volume} percent."
+                    )
+
+                elif volume < current_volume:
+
+                    message = (
+                        f"Decreasing volume to {volume} percent."
+                    )
+
+                else:
+
+                    message = (
+                        f"Volume is already at {volume} percent."
+                    )
+
+                # ---------------------------------
+                # Apply Volume
+                # ---------------------------------
+
+                success = self.system.set_volume(volume)
+
+                # ---------------------------------
+                # Final Response
+                # ---------------------------------
+
+                if success:
+
+                    self.tts.speak(message)
+
+                else:
+
+                    message = (
+                        "Unable to set the volume."
+                    )
+
+                    self.tts.speak(message)
+
+                return self.response(
+
+                    success,
+
+                    "Status : Volume Set",
+
+                    "Status : Volume Set Failed",
+
+                    message
+
+                )
+
+            # -------------------------
             # Mute
             # -------------------------
 
@@ -1124,6 +1310,193 @@ class CommandDispatcher:
                 )
 
             # -------------------------
+            # Brightness Up
+            # -------------------------
+
+            elif intent == "brightness_up":
+
+                reply = self.speak(
+                    "Increasing brightness."
+                )
+
+                success = self.system.brightness_up()
+
+                return self.response(
+
+                    success,
+
+                    "Status : Brightness Increased",
+
+                    "Status : Brightness Up Failed",
+
+                    reply
+
+                )
+
+            # -------------------------
+            # Brightness Down
+            # -------------------------
+
+            elif intent == "brightness_down":
+
+                reply = self.speak(
+                    "Decreasing brightness."
+                )
+
+                success = self.system.brightness_down()
+
+                return self.response(
+
+                    success,
+
+                    "Status : Brightness Decreased",
+
+                    "Status : Brightness Down Failed",
+
+                    reply
+
+                )
+
+            # -------------------------
+            # Set Exact Brightness
+            # -------------------------
+
+            elif intent == "set_brightness":
+
+                if entity is None:
+
+                    message = (
+                        "Please specify the brightness percentage."
+                    )
+
+                    self.tts.speak(message)
+
+                    return self.response(
+                        False,
+                        "",
+                        "Status : Brightness Value Missing",
+                        message
+                    )
+
+                try:
+
+                    brightness = int(entity)
+
+                except (TypeError, ValueError):
+
+                    message = (
+                        "I could not understand the brightness value."
+                    )
+
+                    self.tts.speak(message)
+
+                    return self.response(
+                        False,
+                        "",
+                        "Status : Invalid Brightness",
+                        message
+                    )
+
+                if not 0 <= brightness <= 100:
+
+                    message = (
+                        "Brightness must be between 0 and 100 percent."
+                    )
+
+                    self.tts.speak(message)
+
+                    return self.response(
+                        False,
+                        "",
+                        "Status : Invalid Brightness",
+                        message
+                    )
+
+                # ---------------------------------
+                # Read Current Brightness
+                # ---------------------------------
+
+                current_brightness = (
+                    self.system.get_brightness()
+                )
+
+                if current_brightness is None:
+
+                    message = (
+                        "I could not read the current brightness."
+                    )
+
+                    self.tts.speak(message)
+
+                    return self.response(
+                        False,
+                        "",
+                        "Status : Brightness Read Failed",
+                        message
+                    )
+
+                # ---------------------------------
+                # Determine Message
+                # ---------------------------------
+
+                if brightness > current_brightness:
+
+                    message = (
+                        f"Increasing brightness to "
+                        f"{brightness} percent."
+                    )
+
+                elif brightness < current_brightness:
+
+                    message = (
+                        f"Decreasing brightness to "
+                        f"{brightness} percent."
+                    )
+
+                else:
+
+                    message = (
+                        f"Brightness is already at "
+                        f"{brightness} percent."
+                    )
+
+                # ---------------------------------
+                # Apply Brightness
+                # ---------------------------------
+
+                success = self.system.set_brightness(
+                    brightness
+                )
+
+                # ---------------------------------
+                # Final Response
+                # ---------------------------------
+
+                if success:
+
+                    self.tts.speak(message)
+
+                else:
+
+                    message = (
+                        "Unable to set the brightness."
+                    )
+
+                    self.tts.speak(message)
+
+                return self.response(
+
+                    success,
+
+                    "Status : Brightness Set",
+
+                    "Status : Brightness Set Failed",
+
+                    message
+
+                )
+
+            # -------------------------
             # Lock Screen
             # -------------------------
 
@@ -1142,6 +1515,462 @@ class CommandDispatcher:
                     "Status : System Locked",
 
                     "Status : Lock Failed",
+
+                    reply
+
+                )
+
+            # -------------------------
+            # Shutdown
+            # -------------------------
+
+            elif intent == "shutdown":
+
+                if not self.confirm_action(
+                    "Are you sure you want to shut down the computer?"
+                ):
+
+                    reply = self.speak(
+                        "Shutdown cancelled."
+                    )
+
+                    return self.response(
+
+                        False,
+
+                        "",
+
+                        "Status : Shutdown Cancelled",
+
+                        reply
+
+                    )
+
+                reply = self.speak(
+                    "Shutting down the computer."
+                )
+
+                success = self.system.shutdown()
+
+                return self.response(
+
+                    success,
+
+                    "Status : System Shutdown",
+
+                    "Status : Shutdown Failed",
+
+                    reply
+
+                )
+
+            # -------------------------
+            # Restart
+            # -------------------------
+
+            elif intent == "restart":
+
+                if not self.confirm_action(
+                    "Are you sure you want to restart the computer?"
+                ):
+
+                    reply = self.speak(
+                        "Restart cancelled."
+                    )
+
+                    return self.response(
+
+                        False,
+
+                        "",
+
+                        "Status : Restart Cancelled",
+
+                        reply
+
+                    )
+
+                reply = self.speak(
+                    "Restarting the computer."
+                )
+
+                success = self.system.restart()
+
+                return self.response(
+
+                    success,
+
+                    "Status : System Restarting",
+
+                    "Status : Restart Failed",
+
+                    reply
+
+                )
+
+            # -------------------------
+            # Sleep
+            # -------------------------
+
+            elif intent == "sleep":
+
+                if not self.confirm_action(
+                    "Do you want to put the computer to sleep?"
+                ):
+
+                    reply = self.speak(
+                        "Sleep cancelled."
+                    )
+
+                    return self.response(
+
+                        False,
+
+                        "",
+
+                        "Status : Sleep Cancelled",
+
+                        reply
+
+                    )
+
+                reply = self.speak(
+                    "Putting the computer to sleep."
+                )
+
+                success = self.system.sleep()
+
+                return self.response(
+
+                    success,
+
+                    "Status : System Sleeping",
+
+                    "Status : Sleep Failed",
+
+                    reply
+
+                )
+
+            # -------------------------
+            # Sign Out
+            # -------------------------
+
+            elif intent == "sign_out":
+
+                if not self.confirm_action(
+                    "Are you sure you want to sign out?"
+                ):
+
+                    reply = self.speak(
+                        "Sign out cancelled."
+                    )
+
+                    return self.response(
+
+                        False,
+
+                        "",
+
+                        "Status : Sign Out Cancelled",
+
+                        reply
+
+                    )
+
+                reply = self.speak(
+                    "Signing out."
+                )
+
+                success = self.system.sign_out()
+
+                return self.response(
+
+                    success,
+
+                    "Status : Signing Out",
+
+                    "Status : Sign Out Failed",
+
+                    reply
+
+                )
+
+            # -------------------------
+            # Open Windows Settings
+            # -------------------------
+
+            elif intent == "open_settings":
+
+                reply = self.speak(
+                    "Opening Windows Settings."
+                )
+
+                success = self.system.open_settings()
+
+                return self.response(
+
+                    success,
+
+                    "Status : Settings Opened",
+
+                    "Status : Settings Failed",
+
+                    reply
+
+                )
+
+            # -------------------------
+            # Open Command Prompt
+            # -------------------------
+
+            elif intent == "open_cmd":
+
+                reply = self.speak(
+                    "Opening Command Prompt."
+                )
+
+                success = self.system.open_cmd()
+
+                return self.response(
+
+                    success,
+
+                    "Status : Command Prompt Opened",
+
+                    "Status : Command Prompt Failed",
+
+                    reply
+
+                )
+
+            # -------------------------
+            # Open PowerShell
+            # -------------------------
+
+            elif intent == "open_powershell":
+
+                reply = self.speak(
+                    "Opening PowerShell."
+                )
+
+                success = self.system.open_powershell()
+
+                return self.response(
+
+                    success,
+
+                    "Status : PowerShell Opened",
+
+                    "Status : PowerShell Failed",
+
+                    reply
+
+                )
+
+            # -------------------------
+            # Open Control Panel
+            # -------------------------
+
+            elif intent == "open_control_panel":
+
+                reply = self.speak(
+                    "Opening Control Panel."
+                )
+
+                success = self.system.open_control_panel()
+
+                return self.response(
+
+                    success,
+
+                    "Status : Control Panel Opened",
+
+                    "Status : Control Panel Failed",
+
+                    reply
+
+                )
+
+            # -------------------------
+            # Start Screen Recording
+            # -------------------------
+
+            elif intent == "start_screen_recording":
+
+                if self.screen_recorder.is_recording():
+
+                    reply = self.speak(
+                        "Screen recording is already running."
+                    )
+
+                    return self.response(
+
+                        False,
+
+                        "",
+
+                        "Status : Recording Already Active",
+
+                        reply
+
+                    )
+
+                success = (
+                    self.screen_recorder
+                    .start_recording()
+                )
+
+                if success:
+
+                    reply = self.speak(
+                        "Screen recording started."
+                    )
+
+                else:
+
+                    reply = self.speak(
+                        "Unable to start screen recording."
+                    )
+
+                return self.response(
+
+                    success,
+
+                    "Status : Screen Recording Started",
+
+                    "Status : Screen Recording Failed",
+
+                    reply
+
+                )
+
+            # -------------------------
+            # Stop Screen Recording
+            # -------------------------
+
+            elif intent == "stop_screen_recording":
+
+                if not self.screen_recorder.is_recording():
+
+                    reply = self.speak(
+                        "There is no active screen recording."
+                    )
+
+                    return self.response(
+
+                        False,
+
+                        "",
+
+                        "Status : No Active Recording",
+
+                        reply
+
+                    )
+
+                output_path = (
+                    self.screen_recorder
+                    .stop_recording()
+                )
+
+                if output_path:
+
+                    filename = (
+                        output_path
+                        .replace("\\", "/")
+                        .split("/")[-1]
+                    )
+
+                    reply = self.speak(
+                        f"Screen recording saved as {filename}."
+                    )
+
+                    return self.response(
+
+                        True,
+
+                        "Status : Screen Recording Saved",
+
+                        "Status : Screen Recording Save Failed",
+
+                        reply
+
+                    )
+
+                reply = self.speak(
+                    "Unable to save the screen recording."
+                )
+
+                return self.response(
+
+                    False,
+
+                    "",
+
+                    "Status : Screen Recording Save Failed",
+
+                    reply
+
+                )
+
+            # -------------------------
+            # Open Camera
+            # -------------------------
+
+            elif intent == "open_camera":
+
+                reply = self.speak(
+                    "Opening camera."
+                )
+
+                success = self.system.open_camera()
+
+                return self.response(
+
+                    success,
+
+                    "Status : Camera Opened",
+
+                    "Status : Camera Failed",
+
+                    reply
+
+                )
+
+            # -------------------------
+            # Capture Photo
+            # -------------------------
+
+            elif intent == "capture_photo":
+
+                reply = self.speak(
+                    "Capturing photo."
+                )
+
+                photo_path = self.system.capture_photo()
+
+                success = bool(photo_path)
+
+                if success:
+
+                    reply = self.speak(
+                        "Photo captured successfully."
+                    )
+
+                else:
+
+                    reply = self.speak(
+                        "Unable to capture photo."
+                    )
+
+                return self.response(
+
+                    success,
+
+                    "Status : Photo Captured",
+
+                    "Status : Photo Capture Failed",
 
                     reply
 
@@ -1218,7 +2047,7 @@ class CommandDispatcher:
                     reply
 
                 )
-
+            
             # -------------------------
             # Open File
             # -------------------------

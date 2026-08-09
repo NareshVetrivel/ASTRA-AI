@@ -303,10 +303,57 @@ class IntentDetector:
             # ---------------------------------
             # System Commands
             # ---------------------------------
+
+            # Audio
+
             "mute": "mute",
-            "screenshot": "take_screenshot",
+
+            "volume": "volume_up",
+
+            "volumeup": "volume_up",
+
+            "volumedown": "volume_down",
+
+            # Display
+
+            "brightness": "set_brightness",
+
+            # Power
+
+            "shutdown": "shutdown",
+
+            "restart": "restart",
+
+            "reboot": "restart",
+
+            "sleep": "sleep",
+
+            "logout": "sign_out",
+
+            "signout": "sign_out",
+
+            # Windows Utilities
+
+            "settings": "open_settings",
+
             "task": "open_task_manager",
+
             "explorer": "open_file_explorer",
+
+            "cmd": "open_cmd",
+
+            "powershell": "open_powershell",
+
+            "control": "open_control_panel",
+
+            # Camera
+
+            "camera": "open_camera",
+
+            "photo": "capture_photo",
+
+            "screenshot": "take_screenshot",
+
             "lock": "lock_screen",
 
             # ---------------------------------
@@ -322,7 +369,13 @@ class IntentDetector:
 
             # File
 
-            "file": "open_file"
+            "file": "open_file",
+
+            # Screen Recording
+
+            "record": "start_screen_recording",
+
+            "recording": "start_screen_recording",
         }
 
         self.tanglish_command_map = {
@@ -451,6 +504,288 @@ class IntentDetector:
             text = text.replace(old, new)
 
         # ---------------------------------
+        # System Automation Priority
+        # ---------------------------------
+
+        # Exact Volume Control
+
+        if (
+            "set volume" in text
+            or
+            "volume to" in text
+            or
+            "volume at" in text
+            or
+            "volume level" in text
+        ):
+
+            return "set_volume"
+
+        # Brightness Up
+
+        if (
+            "brightness up" in text
+            or
+            "increase brightness" in text
+            or
+            "raise brightness" in text
+            or
+            "brighten screen" in text
+            or
+            "brighten display" in text
+        ):
+
+            return "brightness_up"
+
+        # Brightness Down
+
+        if (
+            "brightness down" in text
+            or
+            "decrease brightness" in text
+            or
+            "lower brightness" in text
+            or
+            "dim screen" in text
+            or
+            "dim display" in text
+        ):
+
+            return "brightness_down"
+
+        # Exact Brightness Control
+
+        if (
+            "set brightness" in text
+            or
+            "brightness to" in text
+            or
+            "brightness at" in text
+            or
+            "brightness level" in text
+        ):
+
+            return "set_brightness"
+
+        # Shutdown
+
+        if (
+            "shutdown" in text
+            or
+            "shut down" in text
+            or
+            "turn off computer" in text
+            or
+            "turn off pc" in text
+            or
+            "power off computer" in text
+            or
+            "power off pc" in text
+        ):
+
+            return "shutdown"
+
+        # Restart
+
+        if (
+            "restart computer" in text
+            or
+            "restart pc" in text
+            or
+            "restart system" in text
+            or
+            "reboot computer" in text
+            or
+            "reboot pc" in text
+            or
+            "reboot system" in text
+        ):
+
+            return "restart"
+
+        # Sleep
+
+        if (
+            "sleep computer" in text
+            or
+            "sleep pc" in text
+            or
+            "sleep system" in text
+            or
+            "put computer to sleep" in text
+            or
+            "put pc to sleep" in text
+            or
+            "go to sleep" in text
+        ):
+
+            return "sleep"
+
+        # Sign Out
+
+        if (
+            "sign out" in text
+            or
+            "signout" in text
+            or
+            "log out" in text
+            or
+            "logout" in text
+        ):
+
+            return "sign_out"
+
+        # Open Settings
+
+        if (
+            "open settings" in text
+            or
+            "open windows settings" in text
+            or
+            "windows settings" in text
+            or
+            "system settings" in text
+        ):
+
+            return "open_settings"
+
+        # Open CMD
+
+        if (
+            "open cmd" in text
+            or
+            "launch cmd" in text
+            or
+            "start cmd" in text
+            or
+            "open command prompt" in text
+            or
+            "launch command prompt" in text
+            or
+            "start command prompt" in text
+        ):
+
+            return "open_cmd"
+
+        # Open PowerShell
+
+        if (
+            "open powershell" in text
+            or
+            "launch powershell" in text
+            or
+            "start powershell" in text
+            or
+            "open power shell" in text
+            or
+            "launch power shell" in text
+            or
+            "start power shell" in text
+        ):
+
+            return "open_powershell"
+
+        # Open Control Panel
+
+        if (
+            "open control panel" in text
+            or
+            "launch control panel" in text
+            or
+            "start control panel" in text
+        ):
+
+            return "open_control_panel"
+
+        # ---------------------------------
+        # Start Screen Recording
+        # ---------------------------------
+
+        if (
+            "start screen recording" in text
+            or
+            "start screen record" in text
+            or
+            "begin screen recording" in text
+            or
+            "begin screen record" in text
+            or
+            "record screen" in text
+            or
+            "record my screen" in text
+            or
+            "start recording screen" in text
+            or
+            "start screen capture" in text
+        ):
+
+            return "start_screen_recording"
+
+        # ---------------------------------
+        # Stop Screen Recording
+        # ---------------------------------
+
+        if (
+            "stop screen recording" in text
+            or
+            "stop screen record" in text
+            or
+            "end screen recording" in text
+            or
+            "end screen record" in text
+            or
+            "finish screen recording" in text
+            or
+            "stop recording screen" in text
+            or
+            "stop screen capture" in text
+        ):
+
+            return "stop_screen_recording"
+
+        # Open Camera
+
+        if (
+            "open camera" in text
+            or
+            "launch camera" in text
+            or
+            "start camera" in text
+            or
+            "open webcam" in text
+            or
+            "launch webcam" in text
+        ):
+
+            return "open_camera"
+
+        # Capture Photo
+
+        if (
+            "take photo" in text
+            or
+            "take a photo" in text
+            or
+            "capture photo" in text
+            or
+            "capture a photo" in text
+            or
+            "take picture" in text
+            or
+            "take a picture" in text
+            or
+            "capture picture" in text
+            or
+            "capture a picture" in text
+            or
+            "take selfie" in text
+            or
+            "capture selfie" in text
+        ):
+
+            return "capture_photo"
+
+        # ---------------------------------
         # Smart Open Detection
         # ---------------------------------
 
@@ -488,35 +823,24 @@ class IntentDetector:
             # Browser Website Detection
             # ---------------------------------
 
-            if any(site in text for site in [
-
-                "youtube",
-
-                "gmail",
-
-                "github",
-
-                "wikipedia",
-
-                "amazon",
-
-                "flipkart",
-
-                "linkedin",
-
-                "instagram",
-
-                "facebook",
-
-                "twitter",
-
-                "chatgpt",
-
-                "reddit",
-
-                "stackoverflow"
-
-            ]):
+            if any(
+                site in text
+                for site in [
+                    "youtube",
+                    "gmail",
+                    "github",
+                    "wikipedia",
+                    "amazon",
+                    "flipkart",
+                    "linkedin",
+                    "instagram",
+                    "facebook",
+                    "twitter",
+                    "chatgpt",
+                    "reddit",
+                    "stackoverflow"
+                ]
+            ):
 
                 return "open_website"
 
@@ -1348,32 +1672,48 @@ class IntentDetector:
         # System Commands
         # ---------------------------------
 
-        # Volume
+        # ---------------------------------
+        # Volume Up
+        # ---------------------------------
 
         if (
             "volume up" in text
             or "increase volume" in text
             or "raise volume" in text
         ):
+
             return "volume_up"
+
+
+        # ---------------------------------
+        # Volume Down
+        # ---------------------------------
 
         if (
             "volume down" in text
             or "decrease volume" in text
             or "lower volume" in text
         ):
+
             return "volume_down"
 
+
+        # ---------------------------------
         # Mute
+        # ---------------------------------
 
         if (
             "mute" in text
             or "mute audio" in text
             or "turn off sound" in text
         ):
+
             return "mute"
 
-        # Lock
+
+        # ---------------------------------
+        # Lock Screen
+        # ---------------------------------
 
         if (
             "lock screen" in text
@@ -1381,9 +1721,13 @@ class IntentDetector:
             or "lock my pc" in text
             or "lock system" in text
         ):
+
             return "lock_screen"
 
+
+        # ---------------------------------
         # Screenshot
+        # ---------------------------------
 
         if (
             "take screenshot" in text
@@ -1391,20 +1735,29 @@ class IntentDetector:
             or "capture screen" in text
             or "take screen shot" in text
         ):
+
             return "take_screenshot"
 
+
+        # ---------------------------------
         # Task Manager
+        # ---------------------------------
 
         if "task manager" in text:
+
             return "open_task_manager"
 
-        # Explorer
+
+        # ---------------------------------
+        # File Explorer
+        # ---------------------------------
 
         if (
             "file explorer" in text
             or "this pc" in text
             or "my computer" in text
         ):
+
             return "open_file_explorer"
 
         # Default Open Command

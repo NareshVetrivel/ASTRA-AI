@@ -12,3 +12,7 @@ __pycache__/
 *.env
 
 temp_audio.wav
+
+camera_photos
+screenshots
+screen_recordings

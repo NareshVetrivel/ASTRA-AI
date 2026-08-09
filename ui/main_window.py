@@ -906,10 +906,74 @@ class MainWindow(QMainWindow):
             return
         
         # ---------------------------------
-        # File Commands
+        # System Automation Commands
         # ---------------------------------
 
         if intent in {
+
+            "set_volume",
+
+            "set_brightness"
+
+        }:
+
+            entity = self.entity_extractor.extract_percentage(
+                text
+            )
+
+        elif intent in {
+
+            "volume_up",
+
+            "volume_down",
+
+            "mute",
+
+            "lock_screen",
+
+            "take_screenshot",
+
+            "open_task_manager",
+
+            "open_file_explorer",
+
+            "brightness_up",
+
+            "brightness_down",
+
+            "shutdown",
+
+            "restart",
+
+            "sleep",
+
+            "sign_out",
+
+            "open_settings",
+
+            "open_cmd",
+
+            "open_powershell",
+
+            "open_control_panel",
+
+            "open_camera",
+
+            "capture_photo",
+
+            "start_screen_recording",
+
+            "stop_screen_recording"
+
+        }:
+
+            entity = None
+
+        # ---------------------------------
+        # File Commands
+        # ---------------------------------
+
+        elif intent in {
 
             "open_file",
 

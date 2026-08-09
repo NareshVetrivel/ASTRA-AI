@@ -123,6 +123,36 @@ class EntityExtractor:
             "ragxii profile": "Profile 12"
         }
 
+        # ---------------------------------
+        # System Application Aliases
+        # ---------------------------------
+
+        self.system_applications = {
+
+            "camera": "WindowsCamera.exe",
+            "camera app": "WindowsCamera.exe",
+            "camera application": "WindowsCamera.exe",
+
+            "cmd": "cmd.exe",
+            "command prompt": "cmd.exe",
+            "command prompt application": "cmd.exe",
+
+            "powershell": "powershell.exe",
+            "power shell": "powershell.exe",
+            "windows powershell": "powershell.exe",
+
+            "task manager": "Taskmgr.exe",
+            "taskmanager": "Taskmgr.exe",
+
+            "file explorer": "explorer.exe",
+            "windows explorer": "explorer.exe",
+            "explorer": "explorer.exe",
+
+            "settings": "SystemSettings.exe",
+            "settings app": "SystemSettings.exe",
+
+        }
+
     def normalize_text(
         self,
         text
@@ -421,6 +451,9 @@ class EntityExtractor:
     ):
         """
         Extract application name.
+
+        Supports both database applications
+        and Windows system applications.
         """
 
         if not text:
@@ -430,8 +463,13 @@ class EntityExtractor:
         text = self.normalize_text(text)
 
         # ---------------------------------
-        # Remove Command Words
+        # System Application Aliases
         # ---------------------------------
+
+        system_text = text
+
+        # Remove common command words
+        # before checking system aliases.
 
         command_words = {
 
@@ -440,16 +478,48 @@ class EntityExtractor:
             "launch",
             "start",
             "run",
-            "search",
-            "show",
-            "find",
-            "create",
-            "delete",
-            "copy",
-            "move",
-            "rename",
-            "play",
+            "stop",
+            "kill",
+            "terminate",
+            "exit",
+
         }
+
+        words = [
+
+            word
+
+            for word in system_text.split()
+
+            if word not in command_words
+
+        ]
+
+        system_text = " ".join(words).strip()
+
+        # ---------------------------------
+        # Direct System Application Match
+        # ---------------------------------
+
+        for alias, executable in (
+            self.system_applications.items()
+        ):
+
+            if (
+                system_text == alias
+                or alias in system_text
+            ):
+
+                print(
+                    f"System Application Match : "
+                    f"{alias} -> {executable}"
+                )
+
+                return executable
+
+        # ---------------------------------
+        # Remove Command Words
+        # ---------------------------------
 
         words = [
 
@@ -457,11 +527,32 @@ class EntityExtractor:
 
             for word in text.split()
 
-            if word not in command_words
+            if word not in {
+
+                "open",
+                "close",
+                "launch",
+                "start",
+                "run",
+                "search",
+                "show",
+                "find",
+                "create",
+                "delete",
+                "copy",
+                "move",
+                "rename",
+                "play",
+
+            }
 
         ]
 
-        text = " ".join(words)
+        text = " ".join(words).strip()
+
+        # ---------------------------------
+        # Load Database Applications
+        # ---------------------------------
 
         applications = self.load_applications()
 
@@ -469,9 +560,9 @@ class EntityExtractor:
 
             return None
 
-        # -------------------------
+        # ---------------------------------
         # Exact Match
-        # -------------------------
+        # ---------------------------------
 
         for app_name in applications:
 
@@ -486,13 +577,9 @@ class EntityExtractor:
                     for word in (
 
                         "find",
-
                         "search",
-
                         "show",
-
                         "locate",
-
                         "filter"
 
                     )
@@ -503,9 +590,9 @@ class EntityExtractor:
 
                 return applications[app_name]
 
-        # -------------------------
+        # ---------------------------------
         # Alias Match
-        # -------------------------
+        # ---------------------------------
 
         words = text.split()
 
@@ -527,9 +614,9 @@ class EntityExtractor:
 
                     return application[1]
 
-        # -------------------------
+        # ---------------------------------
         # Fuzzy Match
-        # -------------------------
+        # ---------------------------------
 
         best_match = process.extractOne(
 
@@ -1870,6 +1957,130 @@ class EntityExtractor:
             if word.isdigit():
 
                 return int(word)
+
+        return None
+
+    # --------------------------------------------------
+    # Extract Percentage
+    # --------------------------------------------------
+
+    def extract_percentage(
+        self,
+        text
+    ):
+        """
+        Extract volume or brightness percentage.
+
+        Supports commands such as:
+
+        set volume to 50
+        set volume 50
+        volume at 50
+        volume 50 percent
+        volume 50%
+
+        set brightness to 70
+        set brightness 70
+        brightness at 70
+        brightness 70 percent
+        brightness 70%
+
+        Returns
+        -------
+        int | None
+            Value from 0 to 100.
+        """
+
+        if not text:
+
+            return None
+
+        import re
+
+        text = self.normalize_text(text)
+
+        # ---------------------------------
+        # Explicit Percentage
+        # ---------------------------------
+
+        match = re.search(
+
+            r"\b(\d{1,3})\s*"
+            r"(?:%|percent|percentage)\b",
+
+            text
+
+        )
+
+        if match:
+
+            value = int(
+                match.group(1)
+            )
+
+            if 0 <= value <= 100:
+
+                return value
+
+            return None
+
+        # ---------------------------------
+        # "to 50"
+        # "at 50"
+        # "level 50"
+        # ---------------------------------
+
+        match = re.search(
+
+            r"\b(?:to|at|level)\s+"
+            r"(\d{1,3})\b",
+
+            text
+
+        )
+
+        if match:
+
+            value = int(
+                match.group(1)
+            )
+
+            if 0 <= value <= 100:
+
+                return value
+
+            return None
+
+        # ---------------------------------
+        # Direct Value
+        #
+        # "set volume 50"
+        # "set brightness 10"
+        # "volume 70"
+        # "brightness 80"
+        # ---------------------------------
+
+        match = re.search(
+
+            r"\b(?:volume|brightness)"
+            r"(?:\s+(?:to|at|level))?"
+            r"\s+(\d{1,3})\b",
+
+            text
+
+        )
+
+        if match:
+
+            value = int(
+                match.group(1)
+            )
+
+            if 0 <= value <= 100:
+
+                return value
+
+            return None
 
         return None
 
