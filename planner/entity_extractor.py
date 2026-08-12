@@ -11,6 +11,8 @@ for File Finder.
 ASTRA-AI V1
 """
 
+import re
+
 from rapidfuzz import process, fuzz
 
 from database.database_manager import DatabaseManager
@@ -390,7 +392,17 @@ class EntityExtractor:
 
         for old, new in replacements.items():
 
-            text = text.replace(old, new)
+            pattern = (
+                r"(?<!\w)"
+                + re.escape(old)
+                + r"(?!\w)"
+            )
+
+            text = re.sub(
+                pattern,
+                new,
+                text
+            )
 
         text = " ".join(text.split()).strip()
 

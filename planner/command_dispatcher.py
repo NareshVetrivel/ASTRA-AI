@@ -145,7 +145,8 @@ class CommandDispatcher:
         website=None,
         search_query=None,
         profile=None,
-        user_text=None
+        user_text=None,
+        multi_command=False
     ):
         """
         Execute the detected intent.
@@ -226,9 +227,59 @@ class CommandDispatcher:
                     f"Opening {app_name}"
                 )
 
-                success = self.app_launcher.launch_application(
-                    entity
-                )
+                # --------------------------------------------------
+                # Chrome must use the existing ASTRA Playwright
+                # browser session on CDP port 9222.
+                #
+                # This avoids launching another Chrome process
+                # through AppLauncher and prevents the Chrome
+                # profile chooser / session conflict.
+                # --------------------------------------------------
+
+                if app_name.lower() in {
+                    "chrome",
+                    "google chrome",
+                    "googlechrome"
+                }:
+
+                    # --------------------------------------------------
+                    # Chrome is handled by the ASTRA Playwright session.
+                    #
+                    # Playwright uses the existing Chrome Default profile
+                    # through CDP port 9222.
+                    #
+                    # Do NOT use AppLauncher for Chrome here.
+                    # --------------------------------------------------
+
+                    success = self.browser.open_browser(
+                        "chrome"
+                    )
+
+                    if success:
+
+                        reply = self.speak(
+                            "Chrome is ready."
+                        )
+
+                    else:
+
+                        reply = self.speak(
+                            "Unable to open Chrome."
+                        )
+
+                else:
+
+                    # --------------------------------------------------
+                    # All other applications keep the existing
+                    # AppLauncher behavior.
+                    # --------------------------------------------------
+
+                    success = (
+                        self.app_launcher
+                        .launch_application(
+                            entity
+                        )
+                    )
 
                 return self.response(
 
@@ -3029,7 +3080,9 @@ class CommandDispatcher:
 
                     search_query,
 
-                    browser or "chrome"
+                    browser or "chrome",
+
+                    new_tab=not multi_command
 
                 )
 
@@ -3071,7 +3124,9 @@ class CommandDispatcher:
 
                     search_query,
 
-                    browser or "chrome"
+                    browser or "chrome",
+
+                    new_tab=not multi_command
 
                 )
 
@@ -3115,7 +3170,9 @@ class CommandDispatcher:
 
                     query,
 
-                    browser or "chrome"
+                    browser or "chrome",
+
+                    new_tab=not multi_command
 
                 )
 
@@ -3126,6 +3183,91 @@ class CommandDispatcher:
                     "Status : Playing Video",
 
                     "Status : Play Failed",
+
+                    reply
+
+                )
+
+            # -------------------------
+            # Click Google Search Result
+            # -------------------------
+
+            elif intent == "click_search_result":
+
+                # ---------------------------------
+                # Default to first result
+                # ---------------------------------
+
+                result_index = 0
+
+                # ---------------------------------
+                # Multi-command planner sends the
+                # result index through entity.
+                # ---------------------------------
+
+                if entity is not None:
+
+                    try:
+
+                        result_index = int(
+                            entity
+                        )
+
+                    except (
+                        TypeError,
+                        ValueError
+                    ):
+
+                        result_index = 0
+
+                # ---------------------------------
+                # Convert zero-based index into
+                # human-readable result number.
+                # ---------------------------------
+
+                result_number = (
+                    result_index + 1
+                )
+
+                reply = self.speak(
+                    f"Opening search result {result_number}."
+                )
+
+                # ---------------------------------
+                # Playwright performs the actual
+                # browser interaction.
+                # ---------------------------------
+
+                success = (
+                    self.browser
+                    .click_search_result(
+                        result_index
+                    )
+                )
+
+                # ---------------------------------
+                # Final Response
+                # ---------------------------------
+
+                if success:
+
+                    reply = self.speak(
+                        f"Search result {result_number} opened successfully."
+                    )
+
+                else:
+
+                    reply = self.speak(
+                        f"Unable to open search result {result_number}."
+                    )
+
+                return self.response(
+
+                    success,
+
+                    "Status : Search Result Opened",
+
+                    "Status : Search Result Failed",
 
                     reply
 

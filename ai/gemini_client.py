@@ -903,6 +903,194 @@ Always maintain DHEEPTHI identity.
         )
 
     # ------------------------------------------------------
+    # Generate Structured Action Plan
+    # ------------------------------------------------------
+
+    def generate_structured_plan(
+        self,
+        prompt: str
+    ) -> str:
+        """
+        Generate a structured JSON action plan for ASTRA-AI
+        multi-command execution.
+
+        This method is intentionally separate from
+        generate_response() because multi-command planning
+        requires machine-readable JSON instead of a normal
+        conversational response.
+
+        The existing Gemini API-key rotation and fallback
+        mechanism is preserved.
+        """
+
+        if self._closing:
+
+            return ""
+
+        prompt = str(
+            prompt
+        ).strip()
+
+        if not prompt:
+
+            return ""
+
+        # ------------------------------------------
+        # API Attempts
+        # ------------------------------------------
+
+        with self.lock:
+
+            total_keys = len(
+                self.api_keys
+            )
+
+            attempted_keys = set()
+
+            for _ in range(total_keys):
+
+                if self._closing:
+
+                    return ""
+
+                current_index = (
+                    self.current_key_index
+                )
+
+                if current_index in attempted_keys:
+
+                    break
+
+                attempted_keys.add(
+                    current_index
+                )
+
+                try:
+
+                    print(
+                        f"Using Gemini Planner Key "
+                        f"{current_index + 1}/"
+                        f"{total_keys}"
+                    )
+
+                    print(
+                        f"Using Model : "
+                        f"{self.model}"
+                    )
+
+                    response = (
+                        self.client.models.generate_content(
+
+                            model=self.model,
+
+                            contents=prompt,
+
+                            config=types.GenerateContentConfig(
+
+                                temperature=0.10,
+
+                                top_p=0.90,
+
+                                top_k=20,
+
+                                max_output_tokens=4096,
+
+                                candidate_count=1,
+
+                                response_mime_type="application/json"
+
+                            )
+
+                        )
+                    )
+
+                    # ----------------------------------
+                    # Extract Response
+                    # ----------------------------------
+
+                    text = ""
+
+                    if response is not None:
+
+                        if hasattr(
+                            response,
+                            "text"
+                        ):
+
+                            text = (
+                                response.text
+                                or ""
+                            ).strip()
+
+                    if not text:
+
+                        raise RuntimeError(
+                            "Gemini returned an empty "
+                            "structured-plan response."
+                        )
+
+                    print(
+                        "\n========== GEMINI ACTION PLAN =========="
+                    )
+
+                    print(
+                        text
+                    )
+
+                    print(
+                        "Length :",
+                        len(text)
+                    )
+
+                    print(
+                        "Key Used :",
+                        current_index + 1
+                    )
+
+                    print(
+                        "========================================\n"
+                    )
+
+                    return text
+
+                except Exception as error:
+
+                    print(
+                        "\nGemini Planner Error :",
+                        error
+                    )
+
+                    # ----------------------------------
+                    # Retry With Next API Key
+                    # ----------------------------------
+
+                    if self._is_retryable_error(
+                        error
+                    ):
+
+                        print(
+                            "Current Gemini API key "
+                            "is unavailable for planning."
+                        )
+
+                        if self.rotate_api_key():
+
+                            continue
+
+                    # ----------------------------------
+                    # Non-retryable Error
+                    # ----------------------------------
+
+                    print(
+                        "Gemini structured planning "
+                        "request failed."
+                    )
+
+                    return ""
+
+        return ""
+
+    # ------------------------------------------------------
     # Current API Key
     # ------------------------------------------------------
 

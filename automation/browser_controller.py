@@ -46,19 +46,29 @@ class BrowserController:
 
         if PlaywrightController:
 
+            # --------------------------------------------------
+            # ASTRA Main Browser Session
+            #
+            # Uses the user's real Chrome User Data directory
+            # and the professional Default profile.
+            #
+            # CDP Port:
+            #     9222
+            #
+            # This single controller is reused for:
+            #     - YouTube
+            #     - Google Search
+            #     - Search Result Click
+            #     - Multi-command browser automation
+            # --------------------------------------------------
+
             self.playwright = PlaywrightController(
                 profile="Default"
-            )
-
-            self.playwright_guest = PlaywrightController(
-                profile="Default",
-                user_data_dir=r"C:\ASTRA_AI_BROWSER"
             )
 
         else:
 
             self.playwright = None
-            self.playwright_guest = None
 
         # Prevent duplicate shutdown
         self._closed = False
@@ -170,10 +180,21 @@ class BrowserController:
         browser="chrome"
     ):
         """
-        Launch browser.
+        Open or attach to a browser.
+
+        Chrome:
+            Uses the ASTRA Playwright session on CDP 9222
+            with the user's Default professional profile.
+
+        Other browsers:
+            Keep the existing subprocess launch behavior.
         """
 
-        browser = browser.lower()
+        if not browser:
+
+            browser = "chrome"
+
+        browser = browser.lower().strip()
 
         if not self.browser_exists(browser):
 
@@ -183,6 +204,75 @@ class BrowserController:
 
             return False
 
+        # --------------------------------------------------
+        # Chrome → Existing ASTRA Playwright Session
+        # --------------------------------------------------
+
+        if (
+            browser == "chrome"
+            and
+            self.playwright
+        ):
+
+            try:
+
+                # Connect to existing Chrome :9222.
+                # If unavailable, PlaywrightController will
+                # launch the configured Default profile.
+
+                success = self.playwright._connect()
+
+                if success:
+
+                    print(
+                        "Chrome ready through "
+                        "Playwright CDP : 9222"
+                    )
+
+                    # --------------------------------------------------
+                    # Bring the connected Chrome page to the front.
+                    # --------------------------------------------------
+
+                    try:
+
+                        if (
+                            self.playwright.page
+                            and
+                            not self.playwright.page.is_closed()
+                        ):
+
+                            self.playwright.page.bring_to_front()
+
+                            print(
+                                "Chrome page brought to front."
+                            )
+
+                    except Exception as error:
+
+                        print(
+                            f"Chrome foreground warning : {error}"
+                        )
+
+                    return True
+
+                print(
+                    "Unable to connect to ASTRA Chrome."
+                )
+
+                return False
+
+            except Exception as error:
+
+                print(
+                    f"Playwright Chrome Error : {error}"
+                )
+
+                return False
+
+        # --------------------------------------------------
+        # Non-Chrome browsers → Existing behavior
+        # --------------------------------------------------
+
         try:
 
             command = [
@@ -190,15 +280,12 @@ class BrowserController:
                 "--new-window"
             ]
 
-            if browser == "chrome":
-                command.append("--remote-debugging-port=9222")
-
-            subprocess.Popen(command)
+            subprocess.Popen(
+                command
+            )
 
             print(
-
                 f"{browser.title()} launched."
-
             )
 
             return True
@@ -206,9 +293,7 @@ class BrowserController:
         except Exception as error:
 
             print(
-
                 f"Browser Launch Error : {error}"
-
             )
 
             return False
@@ -413,7 +498,8 @@ class BrowserController:
     def google_search(
         self,
         query,
-        browser="chrome"
+        browser="chrome",
+        new_tab=False
     ):
         """
         Search Google.
@@ -445,13 +531,38 @@ class BrowserController:
 
         try:
 
+            if self.playwright:
+
+                success = (
+                    self.playwright
+                    .google_search(
+                        query,
+                        new_tab=new_tab
+                    )
+                )
+
+                if success:
+
+                    print(
+                        f"Searching Google : {query}"
+                    )
+
+                return success
+
+            # ----------------------------------------------
+            # Fallback when Playwright is unavailable
+            # ----------------------------------------------
+
             success = self.open_chrome_profile(
                 "Default",
                 search_url
             )
 
             if success:
-                print(f"Searching Google : {query}")
+
+                print(
+                    f"Searching Google : {query}"
+                )
 
             return success
 
@@ -485,7 +596,8 @@ class BrowserController:
     def youtube_search(
         self,
         query,
-        browser="chrome"
+        browser="chrome",
+        new_tab=False
     ):
         """
         Search YouTube.
@@ -512,13 +624,38 @@ class BrowserController:
 
         try:
 
+            if self.playwright:
+
+                success = (
+                    self.playwright
+                    .youtube_search(
+                        query,
+                        new_tab=new_tab
+                    )
+                )
+
+                if success:
+
+                    print(
+                        f"YouTube Search : {query}"
+                    )
+
+                return success
+
+            # ----------------------------------------------
+            # Fallback
+            # ----------------------------------------------
+
             success = self.open_chrome_profile(
                 "Default",
                 search_url
             )
 
             if success:
-                print(f"YouTube Search : {query}")
+
+                print(
+                    f"YouTube Search : {query}"
+                )
 
             return success
 
@@ -548,26 +685,138 @@ class BrowserController:
     def play_youtube(
         self,
         query,
-        browser="chrome"
+        browser="chrome",
+        new_tab=False
     ):
         """
-        Play first YouTube result.
+        Play first YouTube result using the
+        main ASTRA Chrome session.
+
+        Uses:
+            Chrome Default profile
+            CDP port 9222
+
+        This keeps YouTube automation inside
+        the same browser session used by
+        other browser and multi-command tasks.
         """
+
+        if not query:
+
+            return False
 
         if self.playwright:
 
             try:
-                if not query:
-                    return False
 
-                return self.playwright_guest.play_youtube(query)
+                return (
+                    self.playwright
+                    .play_youtube(
+                        query,
+                        new_tab=new_tab
+                    )
+                )
 
             except Exception as error:
 
-                print(f"Playwright Failed : {error}")
+                print(
+                    f"Playwright Failed : {error}"
+                )
 
+        # --------------------------------------------------
         # Fallback
-        return self.youtube_search(query, browser)
+        # --------------------------------------------------
+
+        return self.youtube_search(
+            query,
+            browser,
+            new_tab=new_tab
+        )
+
+    # --------------------------------------------------
+    # Click Google Search Result
+    # --------------------------------------------------
+
+    def click_search_result(
+        self,
+        index=0,
+        browser="chrome"
+    ):
+        """
+        Click a Google search result using Playwright.
+
+        Parameters
+        ----------
+        index:
+            Zero-based search result index.
+
+            0 = first result
+            1 = second result
+            2 = third result
+
+        browser:
+            Browser name.
+
+        Returns
+        -------
+        bool
+            True when the result was clicked successfully.
+        """
+
+        try:
+
+            if index is None:
+
+                index = 0
+
+            try:
+
+                index = int(index)
+
+            except (
+                TypeError,
+                ValueError
+            ):
+
+                index = 0
+
+            if index < 0:
+
+                index = 0
+
+            # --------------------------------------------------
+            # Prefer the existing Playwright controller.
+            # --------------------------------------------------
+
+            if self.playwright:
+
+                return (
+                    self.playwright
+                    .click_search_result(index)
+                )
+
+            # --------------------------------------------------
+            # Fallback
+            #
+            # If Playwright is unavailable, do not perform a
+            # blind mouse click because we cannot reliably know
+            # which Google result is the requested result.
+            # --------------------------------------------------
+
+            print(
+                "Playwright is unavailable. "
+                "Cannot safely click search result."
+            )
+
+            return False
+
+        except Exception as error:
+
+            print(
+                f"Search Result Click Error : {error}"
+            )
+
+            return False
 
     # --------------------------------------------------
     # New Tab
@@ -575,9 +824,23 @@ class BrowserController:
 
     def new_tab(self):
         """
-        Open a new browser tab.
+        Open a new browser tab using the active
+        Playwright browser session.
         """
 
+        if self.playwright:
+
+            try:
+
+                return self.playwright.new_tab()
+
+            except Exception as error:
+
+                print(
+                    f"Playwright New Tab Error : {error}"
+                )
+
+        # Fallback
         return self.keyboard.new_tab()
 
     # --------------------------------------------------
@@ -799,19 +1062,9 @@ class BrowserController:
 
         except Exception as error:
 
-            print(f"Playwright Cleanup Error : {error}")
-
-        try:
-
-            if self.playwright_guest:
-
-                self.playwright_guest.close()
-
-                self.playwright_guest = None
-
-        except Exception as error:
-
-            print(f"Guest Playwright Cleanup Error : {error}")
+            print(
+                f"Playwright Cleanup Error : {error}"
+            )
 
         try:
 

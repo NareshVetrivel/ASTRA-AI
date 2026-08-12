@@ -47,8 +47,11 @@ from voice.text_to_speech import TextToSpeech
 from planner.intent_detector import IntentDetector
 from planner.entity_extractor import EntityExtractor
 from planner.text_extractor import TextExtractor
+from planner.command_normalizer import CommandNormalizer
 from planner.command_dispatcher import CommandDispatcher
 from ai.gemini_client import GeminiClient
+from planner.multi_command_planner import MultiCommandPlanner
+from planner.multi_command_executor import MultiCommandExecutor
 
 from automation.keyboard_controller import KeyboardController
 from automation.mouse_controller import MouseController
@@ -243,7 +246,13 @@ class MainWindow(QMainWindow):
 
         self.text_extractor = None
 
+        self.command_normalizer = None
+
         self.dispatcher = None
+
+        self.multi_command_planner = None
+
+        self.multi_command_executor = None
 
         self.app_launcher = None
 
@@ -795,6 +804,12 @@ class MainWindow(QMainWindow):
         self.text_extractor = TextExtractor()
 
         # ------------------------------------------
+        # Command Normalization
+        # ------------------------------------------
+
+        self.command_normalizer = CommandNormalizer()
+
+        # ------------------------------------------
         # Automation Modules
         # ------------------------------------------
 
@@ -825,6 +840,14 @@ class MainWindow(QMainWindow):
         # ------------------------------------------
 
         self.gemini = GeminiClient()
+
+        # ------------------------------------------
+        # Multi-Command Planning
+        # ------------------------------------------
+
+        self.multi_command_planner = MultiCommandPlanner(
+            gemini_client=self.gemini
+        )
 
         # ------------------------------------------
         # Dispatcher
@@ -858,6 +881,14 @@ class MainWindow(QMainWindow):
 
             gemini_client=self.gemini
 
+        )
+
+        # ------------------------------------------
+        # Multi-Command Executor
+        # ------------------------------------------
+
+        self.multi_command_executor = MultiCommandExecutor(
+            dispatcher=self.dispatcher
         )
 
         print("Backend Ready.")
@@ -898,6 +929,52 @@ class MainWindow(QMainWindow):
 
         text = text.strip()
 
+        if not text:
+
+            self.unlock_microphone()
+
+            return
+
+        # ------------------------------------------
+        # Command Normalization
+        # ------------------------------------------
+
+        original_text = text
+
+        if self.command_normalizer:
+
+            text = self.command_normalizer.normalize(
+                text
+            )
+
+            if text != original_text:
+
+                print(
+                    "\n========== COMMAND NORMALIZER =========="
+                )
+
+                print(
+                    f"Original   : {original_text}"
+                )
+
+                print(
+                    f"Normalized : {text}"
+                )
+
+                print(
+                    "========================================\n"
+                )
+
+        # ------------------------------------------
+        # Normalization Result Check
+        # ------------------------------------------
+
+        if not text:
+
+            self.unlock_microphone()
+
+            return
+
         # ------------------------------------------
         # Reset Conversation
         # ------------------------------------------
@@ -928,6 +1005,318 @@ class MainWindow(QMainWindow):
         except Exception:
 
             pass
+
+        # ------------------------------------------
+        # Multi-Command Detection
+        # ------------------------------------------
+
+        if (
+            self.multi_command_planner
+            and
+            self.multi_command_executor
+            and
+            self.multi_command_planner.is_multi_command(
+                text
+            )
+        ):
+
+            print(
+                "\n========== MULTI COMMAND =========="
+            )
+
+            print(
+                f"Command : {text}"
+            )
+
+            try:
+
+                self.status_label.setText(
+                    "Status : Planning..."
+                )
+
+                self.mic_widget.update_ai_message(
+                    "Planning your command..."
+                )
+
+                try:
+
+                    self.left_panel.set_listening(
+                        "Idle"
+                    )
+
+                    self.left_panel.set_thinking(
+                        "Planning"
+                    )
+
+                    self.left_panel.set_speaking(
+                        "Silent"
+                    )
+
+                except Exception:
+
+                    pass
+
+                # ----------------------------------
+                # Create Action Plan
+                # ----------------------------------
+
+                plan = (
+                    self.multi_command_planner
+                    .create_plan(
+                        text
+                    )
+                )
+
+                print(
+                    "\n---------- ACTION PLAN ----------"
+                )
+
+                print(
+                    self.multi_command_planner
+                    .plan_to_json(
+                        plan
+                    )
+                )
+
+                print(
+                    "---------------------------------\n"
+                )
+
+                # ----------------------------------
+                # Execute Action Plan
+                # ----------------------------------
+
+                self.status_label.setText(
+                    "Status : Executing..."
+                )
+
+                result = (
+                    self.multi_command_executor
+                    .execute(
+                        plan
+                    )
+                )
+
+                print(
+                    "\n---------- EXECUTION RESULT ----------"
+                )
+
+                print(
+                    result
+                )
+
+                print(
+                    "--------------------------------------\n"
+                )
+
+                # ----------------------------------
+                # Success
+                # ----------------------------------
+
+                if result.get(
+                    "success",
+                    False
+                ):
+
+                    completed_steps = result.get(
+                        "completed_steps",
+                        0
+                    )
+
+                    total_steps = result.get(
+                        "total_steps",
+                        plan.total_steps
+                    )
+
+                    reply = (
+                        f"Completed all "
+                        f"{completed_steps} "
+                        f"steps successfully."
+                    )
+
+                    self.mic_widget.update_ai_message(
+                        reply
+                    )
+
+                    self.status_label.setText(
+                        "Status : Multi-Command Completed"
+                    )
+
+                    self.conversation_label.setText(
+                        f"Multi-Command Completed\n\n"
+                        f"{text}\n\n"
+                        f"Steps : "
+                        f"{completed_steps}/{total_steps}"
+                    )
+
+                    try:
+
+                        self.left_panel.set_listening(
+                            "Idle"
+                        )
+
+                        self.left_panel.set_thinking(
+                            "Inactive"
+                        )
+
+                        self.left_panel.set_speaking(
+                            "Speaking"
+                        )
+
+                        self.right_panel.update_system_metrics()
+
+                    except Exception:
+
+                        pass
+
+                    self.tts.speak(
+                        reply
+                    )
+
+                    self.tts.wait_until_done()
+
+                    QTimer.singleShot(
+                        1400,
+                        lambda: (
+                            self.left_panel
+                            .set_speaking(
+                                "Silent"
+                            )
+                        )
+                    )
+
+                    self.unlock_microphone()
+
+                    return
+
+                # ----------------------------------
+                # Multi-command Failed
+                # ----------------------------------
+
+                failed_step = result.get(
+                    "failed_step"
+                )
+
+                if failed_step:
+
+                    failed_action = failed_step.get(
+                        "action",
+                        "unknown action"
+                    )
+
+                    failure_message = (
+                        f"I completed "
+                        f"{result.get('completed_steps', 0)} "
+                        f"step(s), but failed at "
+                        f"{failed_action}."
+                    )
+
+                else:
+
+                    failure_message = (
+                        "I could not complete "
+                        "the multi-step command."
+                    )
+
+                self.mic_widget.update_ai_message(
+                    failure_message
+                )
+
+                self.status_label.setText(
+                    "Status : Multi-Command Failed"
+                )
+
+                self.conversation_label.setText(
+                    f"Multi-Command Failed\n\n"
+                    f"{text}\n\n"
+                    f"{result.get('status', '')}"
+                )
+
+                try:
+
+                    self.left_panel.set_listening(
+                        "Idle"
+                    )
+
+                    self.left_panel.set_thinking(
+                        "Inactive"
+                    )
+
+                    self.left_panel.set_speaking(
+                        "Speaking"
+                    )
+
+                except Exception:
+
+                    pass
+
+                self.tts.speak(
+                    failure_message
+                )
+
+                self.tts.wait_until_done()
+
+                QTimer.singleShot(
+                    1400,
+                    lambda: (
+                        self.left_panel
+                        .set_speaking(
+                            "Silent"
+                        )
+                    )
+                )
+
+                self.unlock_microphone()
+
+                return
+
+            except Exception as error:
+
+                print(
+                    "\nMulti-Command Error :",
+                    error
+                )
+
+                error_message = (
+                    "I could not plan or "
+                    "execute that multi-step command."
+                )
+
+                self.mic_widget.update_ai_message(
+                    error_message
+                )
+
+                self.status_label.setText(
+                    "Status : Multi-Command Error"
+                )
+
+                try:
+
+                    self.left_panel.set_listening(
+                        "Idle"
+                    )
+
+                    self.left_panel.set_thinking(
+                        "Inactive"
+                    )
+
+                    self.left_panel.set_speaking(
+                        "Speaking"
+                    )
+
+                except Exception:
+
+                    pass
+
+                self.tts.speak(
+                    error_message
+                )
+
+                self.tts.wait_until_done()
+
+                self.unlock_microphone()
+
+                return
 
         # ------------------------------------------
         # Detect Intent
