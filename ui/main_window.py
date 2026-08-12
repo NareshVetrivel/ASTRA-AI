@@ -76,7 +76,12 @@ class VoiceWorker(QThread):
 
     audio_level = Signal(float)
 
-    def __init__(self, recognizer, tts):
+    def __init__(
+        self,
+        recognizer,
+        tts,
+        wake_word_mode=False
+    ):
 
         super().__init__()
 
@@ -86,56 +91,130 @@ class VoiceWorker(QThread):
 
         self.tts = tts
 
-        self.recognizer.level_callback = self.audio_level.emit
+        self.wake_word_mode = wake_word_mode
+
+        self.recognizer.level_callback = (
+            self.audio_level.emit
+        )
 
     def run(self):
 
         try:
 
-            if self._stop or self.isInterruptionRequested():
-                return
-
-            # Show listening prompt
-
-            self.tts.speak("Listening.")
-
-            # Don't wait for full speech completion.
-            # Start listening immediately after a short delay.
-
-            self.msleep(180)
-
-            if self._stop or self.isInterruptionRequested():
-                return
-
-            text = self.recognizer.listen(
-                retries=2
-            )
-
-            if self._stop or self.isInterruptionRequested():
+            if (
+                self._stop
+                or self.isInterruptionRequested()
+            ):
 
                 return
 
-            if text:
+            # ---------------------------------
+            # DHEEPTHI Wake Word Mode
+            # ---------------------------------
 
-                self.command_ready.emit(text)
+            if self.wake_word_mode:
+
+                print(
+                    "\n========== DHEEPTHI =========="
+                )
+
+                print(
+                    "DHEEPTHI is waiting for wake word..."
+                )
+
+                command = (
+                    self.recognizer.listen_for_wake_command(
+                        retries=1
+                    )
+                )
+
+            # ---------------------------------
+            # Manual Microphone Mode
+            # ---------------------------------
+
+            else:
+
+                self.tts.speak(
+                    "Listening."
+                )
+
+                self.msleep(180)
+
+                if (
+                    self._stop
+                    or self.isInterruptionRequested()
+                ):
+
+                    return
+
+                command = self.recognizer.listen(
+                    retries=2
+                )
+
+            # ---------------------------------
+            # Stop Check
+            # ---------------------------------
+
+            if (
+                self._stop
+                or self.isInterruptionRequested()
+            ):
+
+                return
+
+            # ---------------------------------
+            # Command Ready
+            # ---------------------------------
+
+            if command:
+
+                print(
+                    f"Command Ready : {command}"
+                )
+
+                self.command_ready.emit(
+                    command
+                )
 
         finally:
 
             self.finished.emit()
 
     def stop(self):
+        """
+        Request the voice worker to stop safely.
+
+        The recognizer is asked to stop first so that
+        any active wake-word/audio operation can return.
+        """
 
         self._stop = True
 
         self.requestInterruption()
 
+        # ---------------------------------
+        # Stop recognizer operations
+        # ---------------------------------
+
+        try:
+
+            self.recognizer.stop_wake_word()
+
+        except Exception as error:
+
+            print(
+                f"Recognizer Wake Stop Error : {error}"
+            )
+
         try:
 
             self.recognizer.stop_audio_meter()
 
-        except Exception:
+        except Exception as error:
 
-            pass
+            print(
+                f"Recognizer Meter Stop Error : {error}"
+            )
 
 # =====================================================
 # Main Window
@@ -200,6 +279,25 @@ class MainWindow(QMainWindow):
 
         self.voice_worker = None
         self.worker = None
+
+        # ----------------------------------
+        # Voice Worker State
+        # ----------------------------------
+
+        self.current_voice_mode = None
+
+        # "wake"   -> DHEEPTHI standby listener
+        # "manual" -> microphone button listener
+
+        self.manual_listening_requested = False
+
+        # ----------------------------------
+        # DHEEPTHI Wake Word Mode
+        # ----------------------------------
+
+        self.wake_word_enabled = True
+
+        self.wake_word_running = False
 
         # Prevent multiple mic clicks
         self.processing_voice = False
@@ -776,7 +874,27 @@ class MainWindow(QMainWindow):
     ):
         """
         Process the recognized voice command.
+
+        Once a command is received, the microphone is
+        immediately locked so the user cannot trigger
+        another microphone action while ASTRA is processing.
         """
+
+        # ------------------------------------------
+        # Lock microphone immediately
+        # ------------------------------------------
+
+        self.lock_microphone()
+
+        # ------------------------------------------
+        # Normalize text
+        # ------------------------------------------
+
+        if not text:
+
+            self.unlock_microphone()
+
+            return
 
         text = text.strip()
 
@@ -841,6 +959,8 @@ class MainWindow(QMainWindow):
                 "Typed successfully."
             )
 
+            self.tts.wait_until_done()
+
             self.status_label.setText(
                 "Status : Typed"
             )
@@ -848,6 +968,30 @@ class MainWindow(QMainWindow):
             self.mic_widget.update_ai_message(
                 "Typed successfully."
             )
+
+            # ---------------------------------
+            # Command completed
+            # ---------------------------------
+
+            self.unlock_microphone()
+
+            try:
+
+                self.left_panel.set_listening(
+                    "Idle"
+                )
+
+                self.left_panel.set_thinking(
+                    "Inactive"
+                )
+
+                self.left_panel.set_speaking(
+                    "Silent"
+                )
+
+            except Exception:
+
+                pass
 
             return
 
@@ -1743,7 +1887,7 @@ class MainWindow(QMainWindow):
             self.mic_widget.set_enabled(True)
 
             self.left_panel.set_listening(
-                "Idle"
+                "Waiting for DHEEPTHI"
             )
 
             self.left_panel.set_thinking(
@@ -1757,6 +1901,17 @@ class MainWindow(QMainWindow):
         except Exception:
 
             pass
+
+        # ----------------------------------
+        # Start DHEEPTHI Wake Word Mode
+        # ----------------------------------
+
+        if self.wake_word_enabled:
+
+            QTimer.singleShot(
+                500,
+                self.start_wake_word_worker
+            )
 
     # --------------------------------------------------
     # Initialization Failed
@@ -1808,30 +1963,98 @@ class MainWindow(QMainWindow):
     # Lock Microphone
     # --------------------------------------------------
 
-    def lock_microphone(self):
+    def lock_microphone(
+        self
+    ):
+        """
+        Lock the microphone button while ASTRA
+        is listening or processing a command.
+        """
 
         self.processing_voice = True
 
-        self.microphone_button.setEnabled(False)
+        # ---------------------------------
+        # Disable button
+        # ---------------------------------
+
+        self.microphone_button.setEnabled(
+            False
+        )
+
+        # ---------------------------------
+        # Explicit blocked cursor
+        # ---------------------------------
 
         self.microphone_button.setCursor(
             Qt.ForbiddenCursor
         )
+
+        # ---------------------------------
+        # Keep MicWidget disabled state
+        # ---------------------------------
+
+        try:
+
+            self.mic_widget.setEnabled(
+                False
+            )
+
+        except Exception:
+
+            pass
+
+        QApplication.processEvents()
 
 
     # --------------------------------------------------
     # Unlock Microphone
     # --------------------------------------------------
 
-    def unlock_microphone(self):
+    def unlock_microphone(
+        self
+    ):
+        """
+        Unlock the microphone button after the
+        current voice operation is completely finished.
+        """
 
         self.processing_voice = False
 
-        self.microphone_button.setEnabled(True)
+        # ---------------------------------
+        # Enable button
+        # ---------------------------------
+
+        self.microphone_button.setEnabled(
+            True
+        )
+
+        # ---------------------------------
+        # Normal cursor
+        # ---------------------------------
 
         self.microphone_button.setCursor(
             Qt.PointingHandCursor
         )
+
+        # ---------------------------------
+        # Restore MicWidget state
+        # ---------------------------------
+
+        try:
+
+            self.mic_widget.setEnabled(
+                True
+            )
+
+            self.mic_widget._listening = False
+
+            self.mic_widget.update()
+
+        except Exception:
+
+            pass
+
+        QApplication.processEvents()
 
     # --------------------------------------------------
     # Start Listening
@@ -1839,16 +2062,76 @@ class MainWindow(QMainWindow):
 
     def start_listening(self):
         """
-        Start voice recognition.
+        Start manual voice recognition.
+
+        If DHEEPTHI wake-word listener is currently
+        using the microphone, stop it first and then
+        start manual microphone listening.
         """
 
+        # ---------------------------------
+        # Already processing
+        # ---------------------------------
+
         if self.processing_voice:
+
             return
 
-        if self.voice_worker:
+        # ---------------------------------
+        # Manual listening already requested
+        # ---------------------------------
+
+        if self.manual_listening_requested:
+
+            return
+
+        # ---------------------------------
+        # Request Manual Mode
+        # ---------------------------------
+
+        self.manual_listening_requested = True
+
+        # ---------------------------------
+        # Stop DHEEPTHI Wake Worker
+        # ---------------------------------
+
+        if self.voice_worker is not None:
 
             if self.voice_worker.isRunning():
-                return
+
+                if self.current_voice_mode == "wake":
+
+                    print(
+                        "Stopping DHEEPTHI listener for manual microphone..."
+                    )
+
+                    try:
+
+                        self.voice_worker.stop()
+
+                    except Exception as error:
+
+                        print(
+                            f"Wake Worker Stop Error : {error}"
+                        )
+
+                    # ---------------------------------
+                    # Wait for microphone to release
+                    # ---------------------------------
+
+                    self.voice_worker.wait(3000)
+
+                else:
+
+                    # Manual worker already running
+
+                    self.manual_listening_requested = False
+
+                    return
+
+        # ---------------------------------
+        # Lock Microphone
+        # ---------------------------------
 
         self.lock_microphone()
 
@@ -1860,54 +2143,12 @@ class MainWindow(QMainWindow):
 
         try:
 
-            self.mic_widget.set_listening(True)
+            self.mic_widget.set_listening(
+                True
+            )
 
             self.left_panel.set_listening(
                 "Listening"
-            )
-
-        except Exception:
-
-            pass
-
-        QApplication.processEvents()
-
-        QTimer.singleShot(
-
-            10,
-
-            self.start_voice_worker
-
-        )
-
-    # --------------------------------------------------
-    # Listening Finished
-    # --------------------------------------------------
-
-    def listening_finished(self):
-
-        self.status_label.setText(
-            "Status : Ready"
-        )
-
-        QTimer.singleShot(
-
-            120,
-
-            self.unlock_microphone
-
-        )
-
-        try:
-
-            self.mic_widget.update_audio_level(
-                0.0
-            )
-
-            self.mic_widget.set_listening(False)
-
-            self.left_panel.set_listening(
-                "Idle"
             )
 
             self.left_panel.set_thinking(
@@ -1922,27 +2163,299 @@ class MainWindow(QMainWindow):
 
             pass
 
-        if self.voice_worker:
+        QApplication.processEvents()
 
-            self.voice_worker.wait()
+        # ---------------------------------
+        # Start Manual Worker
+        # ---------------------------------
 
-            self.voice_worker.deleteLater()
+        QTimer.singleShot(
 
-            self.voice_worker = None
+            100,
+
+            lambda: self.start_voice_worker(
+                wake_word_mode=False
+            )
+
+        )
+
+    # --------------------------------------------------
+    # Listening Finished
+    # --------------------------------------------------
+
+    def listening_finished(self):
+        """
+        Handle completion of both:
+
+        1. DHEEPTHI wake-word listening
+        2. Manual microphone listening
+        """
+
+        # ---------------------------------
+        # Remember which worker finished
+        # ---------------------------------
+
+        finished_mode = (
+            self.current_voice_mode
+        )
+
+        # ---------------------------------
+        # Clear Current Worker
+        # ---------------------------------
+
+        current_worker = self.voice_worker
+
+        self.voice_worker = None
+
+        self.current_voice_mode = None
+
+        # ---------------------------------
+        # Stop Audio UI
+        # ---------------------------------
+
+        try:
+
+            self.mic_widget.update_audio_level(
+                0.0
+            )
+
+            # ---------------------------------
+            # Only stop the visual listening
+            # animation here.
+            #
+            # Do NOT unlock the microphone here.
+            # Command processing still owns the lock.
+            # ---------------------------------
+
+            self.mic_widget._listening = False
+
+            self.mic_widget.update()
+
+        except Exception:
+
+            pass
+
+        # ---------------------------------
+        # Cleanup Worker
+        # ---------------------------------
+
+        if current_worker:
+
+            try:
+
+                if current_worker.isRunning():
+
+                    current_worker.wait(
+                        3000
+                    )
+
+                current_worker.deleteLater()
+
+            except Exception as error:
+
+                print(
+                    f"Voice Worker Cleanup Error : {error}"
+                )
+
+        # ==================================================
+        # MANUAL MICROPHONE MODE
+        # ==================================================
+
+        if finished_mode == "manual":
+
+            print(
+                "Manual microphone listening finished."
+            )
+
+            self.manual_listening_requested = False
+
+            self.wake_word_running = False
+
+            self.status_label.setText(
+                "Status : Ready"
+            )
+
+            try:
+
+                self.left_panel.set_listening(
+                    "Idle"
+                )
+
+                self.left_panel.set_thinking(
+                    "Inactive"
+                )
+
+                self.left_panel.set_speaking(
+                    "Silent"
+                )
+
+            except Exception:
+
+                pass
+
+            # ---------------------------------
+            # Unlock microphone
+            # ---------------------------------
+
+            QTimer.singleShot(
+
+                120,
+
+                self.unlock_microphone
+
+            )
+
+            # ---------------------------------
+            # Return to DHEEPTHI standby
+            # ---------------------------------
+
+            if self.wake_word_enabled:
+
+                QTimer.singleShot(
+
+                    500,
+
+                    self.start_wake_word_worker
+
+                )
+
+            return
+
+        # ==================================================
+        # DHEEPTHI WAKE WORD MODE
+        # ==================================================
+
+        if finished_mode == "wake":
+
+            self.wake_word_running = False
+
+            # ---------------------------------
+            # If manual listening was requested,
+            # DO NOT restart DHEEPTHI here.
+            # ---------------------------------
+
+            if self.manual_listening_requested:
+
+                print(
+                    "Wake listener stopped for manual microphone."
+                )
+
+                return
+
+            # ---------------------------------
+            # Normal Wake Word Loop
+            # ---------------------------------
+
+            if (
+                self.wake_word_enabled
+                and
+                not self.manual_listening_requested
+            ):
+
+                try:
+
+                    self.left_panel.set_listening(
+                        "Waiting for DHEEPTHI"
+                    )
+
+                    self.left_panel.set_thinking(
+                        "Inactive"
+                    )
+
+                    self.left_panel.set_speaking(
+                        "Silent"
+                    )
+
+                except Exception:
+
+                    pass
+
+                QTimer.singleShot(
+
+                    700,
+
+                    lambda: (
+                        self.start_wake_word_worker()
+                        if self.wake_word_enabled
+                        and not self.manual_listening_requested
+                        else None
+                    )
+
+                )
+
+            return
+
+        # ---------------------------------
+        # Unknown / Safety
+        # ---------------------------------
+
+        self.manual_listening_requested = False
+
+        QTimer.singleShot(
+
+            120,
+
+            self.unlock_microphone
+
+        )
 
     # --------------------------------------------------
     # Start Voice Worker
     # --------------------------------------------------
 
-    def start_voice_worker(self):
+    def start_voice_worker(
+        self,
+        wake_word_mode=False
+    ):
+        """
+        Start a voice worker in either:
+
+        wake_word_mode=True
+            -> DHEEPTHI standby
+
+        wake_word_mode=False
+            -> Manual microphone
+        """
+
+        # ---------------------------------
+        # Existing worker check
+        # ---------------------------------
+
+        if self.voice_worker is not None:
+
+            if self.voice_worker.isRunning():
+
+                return
+
+        # ---------------------------------
+        # Set Worker Mode
+        # ---------------------------------
+
+        if wake_word_mode:
+
+            self.current_voice_mode = "wake"
+
+        else:
+
+            self.current_voice_mode = "manual"
+
+        # ---------------------------------
+        # Create Worker
+        # ---------------------------------
 
         self.voice_worker = VoiceWorker(
 
             self.recognizer,
 
-            self.tts
+            self.tts,
+
+            wake_word_mode=wake_word_mode
 
         )
+
+        # ---------------------------------
+        # Signals
+        # ---------------------------------
 
         self.voice_worker.command_ready.connect(
             self.process_command
@@ -1956,7 +2469,91 @@ class MainWindow(QMainWindow):
             self.listening_finished
         )
 
+        # ---------------------------------
+        # Start
+        # ---------------------------------
+
         self.voice_worker.start()
+
+        if wake_word_mode:
+
+            self.wake_word_running = True
+
+            print(
+                "DHEEPTHI wake listener started."
+            )
+
+        else:
+
+            print(
+                "Manual microphone listener started."
+            )
+
+    # --------------------------------------------------
+    # Start DHEEPTHI Wake Word Worker
+    # --------------------------------------------------
+
+    def start_wake_word_worker(self):
+
+        if not self.wake_word_enabled:
+
+            return
+
+        # ---------------------------------
+        # Manual microphone has priority
+        # ---------------------------------
+
+        if self.manual_listening_requested:
+
+            return
+
+        if self.processing_voice:
+
+            return
+
+        # ---------------------------------
+        # Existing Worker
+        # ---------------------------------
+
+        if self.voice_worker is not None:
+
+            if self.voice_worker.isRunning():
+
+                return
+
+        # ---------------------------------
+        # Start Wake Mode
+        # ---------------------------------
+
+        self.wake_word_running = True
+
+        self.current_voice_mode = "wake"
+
+        self.status_label.setText(
+            "Status : Waiting for DHEEPTHI"
+        )
+
+        try:
+
+            self.left_panel.set_listening(
+                "Waiting for DHEEPTHI"
+            )
+
+            self.left_panel.set_thinking(
+                "Inactive"
+            )
+
+            self.left_panel.set_speaking(
+                "Silent"
+            )
+
+        except Exception:
+
+            pass
+
+        self.start_voice_worker(
+            wake_word_mode=True
+        )
 
     # --------------------------------------------------
     # Audio Wave Update
@@ -2041,42 +2638,132 @@ class MainWindow(QMainWindow):
         event
     ):
         """
-        Cleanup resources.
+        Safely shut down all background workers
+        and backend resources before destroying
+        the main window.
         """
 
+        print(
+            "\n========== ASTRA SHUTDOWN =========="
+        )
+
+        # ---------------------------------
+        # Disable future wake-word restarts
+        # ---------------------------------
+
+        self.manual_listening_requested = False
+
+        self.wake_word_enabled = False
+
+        self.wake_word_running = False
+
+        # ---------------------------------
+        # Stop pending Qt timers from
+        # starting another voice worker
+        # ---------------------------------
+
         try:
 
-            if self.voice_worker is not None:
+            QCoreApplication.processEvents()
 
-                if self.voice_worker.isRunning():
+        except Exception:
 
-                    self.voice_worker.stop()
+            pass
 
-                    self.voice_worker.wait(3000)
+        # ==================================================
+        # Voice Worker
+        # ==================================================
 
-        except Exception as error:
+        voice_worker = self.voice_worker
 
-            print(
-                f"VoiceWorker Cleanup Error : {error}"
-            )
+        if voice_worker is not None:
 
-        try:
+            try:
 
-            if self.worker is not None:
+                if voice_worker.isRunning():
 
-                if self.worker.isRunning():
+                    print(
+                        "Stopping VoiceWorker..."
+                    )
 
-                    self.worker.stop()
+                    voice_worker.stop()
 
-                    self.worker.requestInterruption()
+                    # ---------------------------------
+                    # Wait longer than recognizer's
+                    # phrase_time_limit (6 seconds)
+                    # ---------------------------------
 
-                    self.worker.wait(3000)
+                    if not voice_worker.wait(
+                        8000
+                    ):
 
-        except Exception as error:
+                        print(
+                            "VoiceWorker did not stop within 8 seconds."
+                        )
 
-            print(
-                f"InitializationWorker Cleanup Error : {error}"
-            )
+                    else:
+
+                        print(
+                            "VoiceWorker stopped successfully."
+                        )
+
+                # ---------------------------------
+                # Clear reference only after stop
+                # ---------------------------------
+
+                self.voice_worker = None
+
+            except Exception as error:
+
+                print(
+                    f"VoiceWorker Cleanup Error : {error}"
+                )
+
+        # ==================================================
+        # Initialization Worker
+        # ==================================================
+
+        initialization_worker = self.worker
+
+        if initialization_worker is not None:
+
+            try:
+
+                if initialization_worker.isRunning():
+
+                    print(
+                        "Stopping InitializationWorker..."
+                    )
+
+                    initialization_worker.stop()
+
+                    initialization_worker.requestInterruption()
+
+                    if not initialization_worker.wait(
+                        5000
+                    ):
+
+                        print(
+                            "InitializationWorker did not stop within 5 seconds."
+                        )
+
+                    else:
+
+                        print(
+                            "InitializationWorker stopped successfully."
+                        )
+
+                self.worker = None
+
+            except Exception as error:
+
+                print(
+                    f"InitializationWorker Cleanup Error : {error}"
+                )
+
+        # ==================================================
+        # Gemini
+        # ==================================================
 
         try:
 
@@ -2090,6 +2777,10 @@ class MainWindow(QMainWindow):
                 f"Gemini Cleanup Error : {error}"
             )
 
+        # ==================================================
+        # Text To Speech
+        # ==================================================
+
         try:
 
             if self.tts:
@@ -2101,6 +2792,10 @@ class MainWindow(QMainWindow):
             print(
                 f"TTS Cleanup Error : {error}"
             )
+
+        # ==================================================
+        # Browser
+        # ==================================================
 
         try:
 
@@ -2114,4 +2809,15 @@ class MainWindow(QMainWindow):
                 f"Browser Cleanup Error : {error}"
             )
 
-        super().closeEvent(event)
+        print(
+            "========== ASTRA SHUTDOWN COMPLETE ==========\n"
+        )
+
+        # ---------------------------------
+        # Destroy Main Window only after
+        # worker cleanup
+        # ---------------------------------
+
+        super().closeEvent(
+            event
+        )

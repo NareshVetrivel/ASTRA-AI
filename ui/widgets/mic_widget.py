@@ -282,33 +282,125 @@ class MicrophoneButton(QPushButton):
     # Hover Events
     # ------------------------------------------------------
 
-    def enterEvent(self, event):
+    def enterEvent(
+        self,
+        event
+    ):
+        """
+        Handle mouse hover.
+
+        Disabled button must remain visually blocked
+        and must not receive the normal hover glow.
+        """
+
+        if not self.isEnabled():
+
+            self.setCursor(
+                Qt.ForbiddenCursor
+            )
+
+            self.shadow.setBlurRadius(
+                18
+            )
+
+            self.shadow.setColor(
+                QColor(
+                    90,
+                    90,
+                    90,
+                    70
+                )
+            )
+
+            self.update()
+
+            super().enterEvent(
+                event
+            )
+
+            return
+
+        # ---------------------------------
+        # Enabled Hover
+        # ---------------------------------
 
         if not self._listening:
 
-            self.shadow.setBlurRadius(40)
+            self.setCursor(
+                Qt.PointingHandCursor
+            )
+
+            self.shadow.setBlurRadius(
+                40
+            )
 
             self.shadow.setColor(
-                QColor(124, 58, 237, 180)
+                QColor(
+                    124,
+                    58,
+                    237,
+                    180
+                )
             )
 
         self.update()
 
-        super().enterEvent(event)
+        super().enterEvent(
+            event
+        )
 
-    def leaveEvent(self, event):
+    def leaveEvent(
+        self,
+        event
+    ):
+        """
+        Reset hover state when mouse leaves
+        the microphone button.
+        """
 
-        if not self._listening:
+        if not self.isEnabled():
 
-            self.shadow.setBlurRadius(28)
+            self.setCursor(
+                Qt.ForbiddenCursor
+            )
+
+            self.shadow.setBlurRadius(
+                18
+            )
 
             self.shadow.setColor(
-                QColor(124, 58, 237, 0)
+                QColor(
+                    90,
+                    90,
+                    90,
+                    70
+                )
+            )
+
+        elif not self._listening:
+
+            self.setCursor(
+                Qt.PointingHandCursor
+            )
+
+            self.shadow.setBlurRadius(
+                28
+            )
+
+            self.shadow.setColor(
+                QColor(
+                    124,
+                    58,
+                    237,
+                    0
+                )
             )
 
         self.update()
 
-        super().leaveEvent(event)
+        super().leaveEvent(
+            event
+        )
 
     # ------------------------------------------------------
     # Listening State
@@ -321,12 +413,33 @@ class MicrophoneButton(QPushButton):
 
         self._listening = listening
 
+        # ---------------------------------
+        # Listening = Button Busy
+        # ---------------------------------
+
+        if listening:
+
+            self.setEnabled(
+                False
+            )
+
+        else:
+
+            self.setEnabled(
+                True
+            )
+
         if listening:
 
             self.shadow.setBlurRadius(60)
 
             self.shadow.setColor(
-                QColor(124, 58, 237, 220)
+                QColor(
+                    124,
+                    58,
+                    237,
+                    220
+                )
             )
 
             self.ripple_animation.start()
@@ -340,7 +453,12 @@ class MicrophoneButton(QPushButton):
             self.shadow.setBlurRadius(28)
 
             self.shadow.setColor(
-                QColor(124, 58, 237, 0)
+                QColor(
+                    124,
+                    58,
+                    237,
+                    0
+                )
             )
 
             self.audio_level = 0.0
@@ -487,29 +605,92 @@ class MicrophoneButton(QPushButton):
     # Enabled / Disabled State
     # ------------------------------------------------------
 
-    def setEnabled(self, enabled: bool):
+    def setEnabled(
+        self,
+        enabled: bool
+    ):
+        """
+        Enable or disable the microphone button.
 
-        super().setEnabled(enabled)
+        Enabled:
+            - Pointing-hand cursor
+            - Normal purple appearance
+            - Clickable
+
+        Disabled:
+            - Forbidden cursor
+            - Grey appearance
+            - No hover glow
+            - Cannot be clicked
+        """
+
+        super().setEnabled(
+            enabled
+        )
 
         if enabled:
+
+            # ---------------------------------
+            # Normal Cursor
+            # ---------------------------------
 
             self.setCursor(
                 Qt.PointingHandCursor
             )
 
+            # ---------------------------------
+            # Normal Appearance
+            # ---------------------------------
+
             self.shadow.setColor(
-                QColor(124, 58, 237, 0)
+                QColor(
+                    124,
+                    58,
+                    237,
+                    0
+                )
+            )
+
+            self.shadow.setBlurRadius(
+                28
             )
 
         else:
+
+            # ---------------------------------
+            # Blocked Cursor
+            # ---------------------------------
 
             self.setCursor(
                 Qt.ForbiddenCursor
             )
 
+            # ---------------------------------
+            # Disabled Appearance
+            # ---------------------------------
+
             self.shadow.setColor(
-                QColor(90, 90, 90, 70)
+                QColor(
+                    90,
+                    90,
+                    90,
+                    70
+                )
             )
+
+            self.shadow.setBlurRadius(
+                18
+            )
+
+            # ---------------------------------
+            # Stop Hover/Ripple Effects
+            # ---------------------------------
+
+            self.ripple_animation.stop()
+
+            self._ripple_radius = 0
+
+            self.glow_radius = 0
 
         self.update()
 
