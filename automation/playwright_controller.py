@@ -71,7 +71,11 @@ class PlaywrightController:
 
     def _reset_browser(self):
         """
-        Clear all browser references.
+        Clear stale browser/page references.
+
+        IMPORTANT:
+        This method does NOT start another CDP connection.
+        The Playwright driver lifecycle is managed separately.
         """
 
         self.browser = None
@@ -223,57 +227,94 @@ class PlaywrightController:
 
     def _connect(self):
         """
-        Ensure browser connection is alive.
+        Ensure one usable Playwright/CDP browser connection.
 
-        Priority:
-            1. Reuse an already connected Playwright page.
-            2. Connect to the existing Chrome instance on 9222.
-            3. If 9222 is unavailable, launch Chrome using
-               the configured Default profile.
-            4. Reconnect to the newly launched Chrome.
+        Strategy:
 
-        The same browser session is reused for:
-            - Google Search
-            - Search result clicks
-            - YouTube
-            - Multi-command browser actions
+            1. Reuse current live page.
+            2. Reuse current live context/browser.
+            3. Connect to Chrome CDP only when no usable connection exists.
+            4. Launch ASTRA-managed Chrome only when CDP is unavailable.
+
+        IMPORTANT:
+            Normal browser actions must not repeatedly create CDP
+            connections.
         """
 
         # --------------------------------------------------
-        # Existing Page Still Alive
+        # 1. Reuse existing live page
         # --------------------------------------------------
 
         try:
 
-            if (
-                self.page
-                and
-                not self.page.is_closed()
-            ):
+            if self.page and not self.page.is_closed():
 
                 return True
 
         except Exception:
 
-            self._reset_browser()
+            self.page = None
 
         # --------------------------------------------------
-        # Allow Reconnection After Manual Close
+        # 2. Reuse existing browser/context
         # --------------------------------------------------
 
-        if self._closed:
+        try:
 
-            self._closed = False
+            if self.browser:
+
+                contexts = self.browser.contexts
+
+                if contexts:
+
+                    self.context = contexts[-1]
+
+                    pages = self.context.pages
+
+                    for candidate in reversed(pages):
+
+                        try:
+
+                            if not candidate.is_closed():
+
+                                self.page = candidate
+
+                                return True
+
+                        except Exception:
+
+                            continue
+
+        except Exception as error:
+
+            print(
+                f"Existing browser reference unavailable : {error}"
+            )
+
+            # Clear only Python references.
+            # Do NOT restart Playwright here.
+            self.browser = None
+            self.context = None
+            self.page = None
 
         # --------------------------------------------------
-        # Start Playwright
+        # 3. Start Playwright if required
         # --------------------------------------------------
 
-        self._start_playwright()
+        try:
+
+            self._start_playwright()
+
+        except Exception as error:
+
+            print(
+                f"Playwright start error : {error}"
+            )
+
+            return False
 
         # --------------------------------------------------
-        # FIRST PRIORITY:
-        # Connect to existing Chrome :9222
+        # 4. Connect to existing Chrome CDP
         # --------------------------------------------------
 
         try:
@@ -291,22 +332,20 @@ class PlaywrightController:
 
         except Exception:
 
-            # ------------------------------------------------
-            # Existing Chrome is not exposing CDP.
-            #
-            # Only now launch managed Chrome.
-            # ------------------------------------------------
-
             print(
                 "Existing Chrome CDP unavailable."
             )
 
-            print(
-                "Launching managed Chrome "
-                f"with profile : {self.profile}"
-            )
+            # --------------------------------------------------
+            # Launch ASTRA managed Chrome
+            # --------------------------------------------------
 
             try:
+
+                print(
+                    "Launching managed Chrome "
+                    f"with profile : {self.profile}"
+                )
 
                 self._launch_chrome()
 
@@ -316,17 +355,19 @@ class PlaywrightController:
                     f"Chrome Launch Error : {error}"
                 )
 
-                self._reset_browser()
+                self.browser = None
+                self.context = None
+                self.page = None
 
                 return False
 
-            # ------------------------------------------------
-            # Wait for Chrome CDP
-            # ------------------------------------------------
+            # --------------------------------------------------
+            # Wait for CDP
+            # --------------------------------------------------
 
             connected = False
 
-            for attempt in range(30):
+            for _ in range(30):
 
                 try:
 
@@ -351,91 +392,30 @@ class PlaywrightController:
                     f"on port {self.DEBUG_PORT}."
                 )
 
-                self._reset_browser()
+                self.browser = None
+                self.context = None
+                self.page = None
 
                 return False
 
         # --------------------------------------------------
-        # Select Browser Context
+        # 5. Select browser context
         # --------------------------------------------------
 
         try:
 
-            if not self.browser.contexts:
+            contexts = self.browser.contexts
+
+            if not contexts:
 
                 print(
-                    "Chrome connected, but no "
-                    "browser context found."
+                    "Chrome connected, but no browser "
+                    "context was found."
                 )
-
-                self._reset_browser()
 
                 return False
 
-            # ------------------------------------------------
-            # Use the latest available context.
-            # ------------------------------------------------
-
-            self.context = (
-                self.browser.contexts[-1]
-            )
-
-            # ------------------------------------------------
-            # Reuse the latest existing tab.
-            #
-            # This is important for multi-command execution:
-            #
-            # Search → Click → Open Result
-            #
-            # should remain inside the same browser session.
-            # ------------------------------------------------
-
-            if self.context.pages:
-
-                self.page = self.context.pages[-1]
-
-                try:
-
-                    if self.page.is_closed():
-
-                        print(
-                            "Latest Chrome tab is closed."
-                        )
-
-                        self.page = None
-
-                        if not self._create_page():
-
-                            self._reset_browser()
-
-                            return False
-
-                except Exception as error:
-
-                    print(
-                        f"Page validation error : {error}"
-                    )
-
-                    self.page = None
-
-                    if not self._create_page():
-
-                        self._reset_browser()
-
-                        return False
-
-            else:
-
-                if not self._create_page():
-
-                    print(
-                        "Unable to create initial "
-                        "Chrome tab."
-                    )
-
-                    self._reset_browser()
-
-                    return False
+            self.context = contexts[-1]
 
         except Exception as error:
 
@@ -443,33 +423,81 @@ class PlaywrightController:
                 f"Browser Context Error : {error}"
             )
 
-            self._reset_browser()
+            self.browser = None
+            self.context = None
+            self.page = None
 
             return False
 
         # --------------------------------------------------
-        # Final Validation
+        # 6. Select existing page
         # --------------------------------------------------
 
         try:
 
-            if (
-                not self.page
-                or
-                self.page.is_closed()
-            ):
+            pages = self.context.pages
 
-                print(
-                    "Browser page is unavailable."
-                )
+            self.page = None
 
-                self._reset_browser()
+            for candidate in reversed(pages):
+
+                try:
+
+                    if not candidate.is_closed():
+
+                        self.page = candidate
+
+                        break
+
+                except Exception:
+
+                    continue
+
+            # --------------------------------------------------
+            # No usable page
+            # --------------------------------------------------
+
+            if self.page is None:
+
+                if not self._create_page():
+
+                    print(
+                        "Unable to create initial Chrome tab."
+                    )
+
+                    self.page = None
+
+                    return False
+
+        except Exception as error:
+
+            print(
+                f"Browser page selection error : {error}"
+            )
+
+            self.page = None
+
+            return False
+
+        # --------------------------------------------------
+        # 7. Final validation
+        # --------------------------------------------------
+
+        try:
+
+            if not self.page:
+
+                return False
+
+            if self.page.is_closed():
+
+                self.page = None
 
                 return False
 
         except Exception:
 
-            self._reset_browser()
+            self.page = None
 
             return False
 
@@ -493,13 +521,11 @@ class PlaywrightController:
 
     def _create_page(self):
         """
-        Safely create a new Playwright browser tab.
+        Safely create a new browser tab using the existing
+        Playwright browser context.
 
-        Important:
-        - Do not assume the browser/context is still alive.
-        - Do not force bring_to_front() during page creation.
-        - A closed target during tab creation should be handled
-        without recursively calling _connect().
+        This method NEVER reconnects CDP and NEVER restarts
+        the Playwright driver.
         """
 
         if not self.context:
@@ -513,35 +539,22 @@ class PlaywrightController:
         try:
 
             # --------------------------------------------------
-            # Verify browser context is still usable
+            # Verify context is still accessible
             # --------------------------------------------------
 
-            if not self.context.pages:
-
-                pass
+            pages = self.context.pages
 
             # --------------------------------------------------
-            # Create the new tab
+            # Create new page
             # --------------------------------------------------
 
             new_page = self.context.new_page()
-
-            # --------------------------------------------------
-            # Assign only after successful creation
-            # --------------------------------------------------
 
             self.page = new_page
 
             print(
                 "New Playwright page created."
             )
-
-            # --------------------------------------------------
-            # Do NOT call bring_to_front() here.
-            #
-            # Chrome/CDP can close or replace the target while
-            # multi-command execution is switching tabs.
-            # --------------------------------------------------
 
             return True
 
@@ -553,39 +566,27 @@ class PlaywrightController:
                 f"Page creation error : {message}"
             )
 
-            recoverable = (
-                "Target.createTarget" in message
-                or
-                "Failed to open a new tab" in message
-                or
+            # --------------------------------------------------
+            # IMPORTANT:
+            #
+            # Do NOT reconnect here.
+            # Do NOT restart Playwright here.
+            # Do NOT treat EPIPE as a normal retry.
+            # --------------------------------------------------
+
+            self.page = None
+
+            if (
                 "Target closed" in message
                 or
                 "Target page" in message
                 or
                 "context or browser has been closed" in message
-                or
-                "EPIPE" in message
-                or
-                "broken pipe" in message.lower()
-            )
+            ):
 
-            if not recoverable:
-
-                return False
-
-            print(
-                "Browser target became unavailable "
-                "during page creation."
-            )
-
-            # --------------------------------------------------
-            # Do NOT recursively call _connect() from here.
-            #
-            # _connect() itself can call _create_page(), which can
-            # otherwise create a recovery recursion.
-            # --------------------------------------------------
-
-            self._reset_browser()
+                print(
+                    "Browser target is no longer available."
+                )
 
             return False
 
@@ -670,16 +671,14 @@ class PlaywrightController:
 
     def _retry_action(self, action, *args):
         """
-        Execute a browser action.
+        Execute a browser action safely.
 
-        Automatically recover from:
+        IMPORTANT:
+            EPIPE / broken-pipe errors are NOT automatically
+            retried or followed by a CDP reconnect.
 
-            - Closed Playwright page
-            - Closed browser/context
-            - Broken Node.js Playwright pipe
-            - EPIPE transport errors
-
-        The action is retried only once after recovery.
+        Only normal Playwright target errors are allowed
+        one controlled retry.
         """
 
         try:
@@ -691,7 +690,40 @@ class PlaywrightController:
             message = str(error)
 
             # --------------------------------------------------
-            # Browser / Playwright transport failure detection
+            # EPIPE / broken pipe
+            #
+            # NEVER reconnect automatically.
+            #
+            # These errors belong to the Playwright Node
+            # transport and retrying immediately can create
+            # another CDP connection while the old transport
+            # is already broken.
+            # --------------------------------------------------
+
+            if (
+                "EPIPE" in message
+                or
+                "broken pipe" in message.lower()
+                or
+                "write after end" in message.lower()
+            ):
+
+                print(
+                    "Playwright transport error detected."
+                )
+
+                print(
+                    f"Playwright Transport Error : {message}"
+                )
+
+                print(
+                    "Automatic CDP reconnect skipped."
+                )
+
+                return False
+
+            # --------------------------------------------------
+            # Normal browser target errors
             # --------------------------------------------------
 
             recoverable_error = (
@@ -706,94 +738,94 @@ class PlaywrightController:
 
                 "context or browser has been closed" in message
 
-                or
-
-                "EPIPE" in message
-
-                or
-
-                "broken pipe" in message.lower()
-
-                or
-
-                "pipe" in message.lower()
-
             )
 
             if not recoverable_error:
 
-                raise error
+                raise
 
             print(
-                "Playwright browser connection lost."
+                "Playwright browser target became unavailable."
             )
 
             print(
-                f"Playwright Error : {message}"
+                f"Playwright Target Error : {message}"
             )
 
             # --------------------------------------------------
-            # EPIPE means the Node.js Playwright transport
-            # itself may have died.
+            # Clear stale page references only.
             #
-            # Restart the driver instead of only reconnecting
-            # the browser object.
+            # Do NOT restart Playwright.
+            # Do NOT create another CDP connection here.
             # --------------------------------------------------
 
-            if (
-                "EPIPE" in message
-                or
-                "broken pipe" in message.lower()
-            ):
+            self.page = None
+
+            # --------------------------------------------------
+            # Try to reuse an already existing context.
+            # --------------------------------------------------
+
+            try:
+
+                if self.context:
+
+                    pages = self.context.pages
+
+                    for candidate in reversed(pages):
+
+                        try:
+
+                            if not candidate.is_closed():
+
+                                self.page = candidate
+
+                                break
+
+                        except Exception:
+
+                            continue
+
+            except Exception as reconnect_error:
 
                 print(
-                    "Playwright transport appears broken."
+                    f"Browser target recovery failed : "
+                    f"{reconnect_error}"
                 )
 
-                # --------------------------------------------------
-                # Clear stale browser references first.
-                # --------------------------------------------------
-
-                self._reset_browser()
-
-                # --------------------------------------------------
-                # Restart the Playwright driver only after references
-                # have been cleared.
-                # --------------------------------------------------
-
-                if not self._restart_playwright():
-
-                    raise error
-
-            else:
-
-                self._reset_browser()
+                self.page = None
 
             # --------------------------------------------------
-            # Reconnect to Chrome
+            # If no usable page exists, fail safely.
+            # Do not create a second CDP connection.
+            # --------------------------------------------------
+
+            if self.page is None:
+
+                print(
+                    "No usable browser page available."
+                )
+
+                return False
+
+            # --------------------------------------------------
+            # Retry the browser action exactly once.
             # --------------------------------------------------
 
             print(
-                "Reconnecting to Chrome..."
+                "Retrying browser action on existing page..."
             )
 
-            if not self._connect():
+            try:
+
+                return action(*args)
+
+            except Exception as retry_error:
 
                 print(
-                    "Browser reconnection failed."
+                    f"Browser retry failed : {retry_error}"
                 )
 
-                raise error
-
-            # --------------------------------------------------
-            # Retry the original action once.
-            # --------------------------------------------------
-
-            print(
-                "Retrying browser action..."
-            )
-
-            return action(*args)
+                return False
 
     # --------------------------------------------------
     # Open Website
