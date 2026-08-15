@@ -9,6 +9,8 @@ Features
 ✓ Dynamic Greeting
 ✓ Live Clock
 ✓ Responsive Layout
+✓ Lavender Conversation SVG Icon
+✓ Conversation Callback
 ✓ Clean Architecture
 """
 
@@ -25,6 +27,7 @@ from PySide6.QtGui import (
     QColor,
     QFont,
     QPixmap,
+    QIcon,
 )
 
 from PySide6.QtWidgets import (
@@ -32,7 +35,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QSizePolicy,
-    QWidget,
     QHBoxLayout,
     QVBoxLayout,
     QGraphicsDropShadowEffect,
@@ -42,57 +44,92 @@ from PySide6.QtWidgets import (
 class HeaderWidget(QFrame):
 
     def __init__(self, parent=None):
+
         super().__init__(parent)
 
-        self.setObjectName("HeaderWidget")
+        self.setObjectName(
+            "HeaderWidget"
+        )
 
         self.username = "Naresh"
 
-        self.setFixedHeight(126)
+        # Keep callback reference.
+        # This avoids unsafe signal disconnect calls.
+        self._conversation_callback = None
+
+        self.setFixedHeight(
+            126
+        )
 
         self.setSizePolicy(
             QSizePolicy.Expanding,
             QSizePolicy.Fixed
         )
 
+        # ======================================================
+        # HEADER STYLE
+        # ======================================================
+
         self.setStyleSheet("""
 
-        QFrame#HeaderWidget{
+        QFrame#HeaderWidget {
 
-            background:qlineargradient(
+            background: qlineargradient(
 
-                x1:0,
-                y1:0,
-                x2:1,
-                y2:1,
+                x1: 0,
+                y1: 0,
+                x2: 1,
+                y2: 1,
 
-                stop:0   rgba(255,250,255,235),
-                stop:0.18 rgba(250,245,255,230),
-                stop:0.45 rgba(243,238,255,220),
-                stop:0.72 rgba(240,236,255,225),
-                stop:1   rgba(255,252,255,235)
+                stop: 0 rgba(255, 250, 255, 235),
+                stop: 0.18 rgba(250, 245, 255, 230),
+                stop: 0.45 rgba(243, 238, 255, 220),
+                stop: 0.72 rgba(240, 236, 255, 225),
+                stop: 1 rgba(255, 252, 255, 235)
 
             );
 
-            border:2px solid rgba(255,255,255,210);
+            border: 2px solid rgba(255, 255, 255, 210);
 
-            border-radius:32px;
+            border-radius: 32px;
 
         }
 
         """)
 
-        shadow = QGraphicsDropShadowEffect(self)
+        # ======================================================
+        # HEADER SHADOW
+        # ======================================================
 
-        shadow.setBlurRadius(40)
-
-        shadow.setOffset(0, 12)
-
-        shadow.setColor(
-            QColor(170, 155, 255, 60)
+        shadow = QGraphicsDropShadowEffect(
+            self
         )
 
-        self.setGraphicsEffect(shadow)
+        shadow.setBlurRadius(
+            40
+        )
+
+        shadow.setOffset(
+            0,
+            12
+        )
+
+        shadow.setColor(
+            QColor(
+                170,
+                155,
+                255,
+                60
+            )
+        )
+
+        self.setGraphicsEffect(
+            shadow
+        )
+
+        # ======================================================
+        # BUILD
+        # ======================================================
 
         self.build_ui()
 
@@ -104,7 +141,9 @@ class HeaderWidget(QFrame):
 
     def build_ui(self):
 
-        self.main_layout = QHBoxLayout(self)
+        self.main_layout = QHBoxLayout(
+            self
+        )
 
         self.main_layout.setContentsMargins(
             38,
@@ -113,7 +152,9 @@ class HeaderWidget(QFrame):
             14
         )
 
-        self.main_layout.setSpacing(34)
+        self.main_layout.setSpacing(
+            34
+        )
 
         self.build_left_section()
 
@@ -121,19 +162,33 @@ class HeaderWidget(QFrame):
 
         self.build_right_section()
 
+        # ------------------------------------------------------
+        # LEFT
+        # ------------------------------------------------------
+
         self.main_layout.addLayout(
             self.left_layout
         )
 
-        self.main_layout.addSpacing(40)
+        self.main_layout.addSpacing(
+            40
+        )
 
         self.main_layout.addStretch()
+
+        # ------------------------------------------------------
+        # CENTER
+        # ------------------------------------------------------
 
         self.main_layout.addLayout(
             self.center_layout
         )
 
         self.main_layout.addStretch()
+
+        # ------------------------------------------------------
+        # RIGHT
+        # ------------------------------------------------------
 
         self.main_layout.addLayout(
             self.right_layout
@@ -146,49 +201,81 @@ class HeaderWidget(QFrame):
     def build_left_section(self):
 
         self.left_layout = QHBoxLayout()
-        self.left_layout.setSpacing(14)
-        self.left_layout.setAlignment(Qt.AlignVCenter)
 
-        # ---------------- Logo ----------------
+        self.left_layout.setSpacing(
+            14
+        )
+
+        self.left_layout.setAlignment(
+            Qt.AlignVCenter
+        )
+
+        # ======================================================
+        # LOGO
+        # ======================================================
 
         self.logo = QLabel()
 
-        self.logo.setFixedSize(100, 100)
+        self.logo.setFixedSize(
+            100,
+            100
+        )
 
-        self.logo.setAlignment(Qt.AlignCenter)
+        self.logo.setAlignment(
+            Qt.AlignCenter
+        )
 
         self.logo.setStyleSheet("""
-        QLabel{
-            background:transparent;
+        QLabel {
+            background: transparent;
+            border: none;
         }
         """)
 
         glow = QGraphicsDropShadowEffect()
 
-        glow.setBlurRadius(90)
-
-        glow.setOffset(0,0)
-
-        glow.setColor(
-            QColor(146, 96, 255, 210)
+        glow.setBlurRadius(
+            90
         )
 
-        self.logo.setGraphicsEffect(glow)
+        glow.setOffset(
+            0,
+            0
+        )
+
+        glow.setColor(
+            QColor(
+                146,
+                96,
+                255,
+                210
+            )
+        )
+
+        self.logo.setGraphicsEffect(
+            glow
+        )
 
         self.load_logo()
 
-        # ---------------- Brand ----------------
+        # ======================================================
+        # BRAND
+        # ======================================================
 
         brand_layout = QVBoxLayout()
 
-        brand_layout.setSpacing(3)
+        brand_layout.setSpacing(
+            3
+        )
 
         brand_layout.setAlignment(
             Qt.AlignLeft |
             Qt.AlignVCenter
         )
 
-        self.title = QLabel("ASTRA-AI")
+        self.title = QLabel(
+            "ASTRA-AI"
+        )
 
         self.title.setFont(
             QFont(
@@ -199,8 +286,11 @@ class HeaderWidget(QFrame):
         )
 
         self.title.setStyleSheet("""
-        color:#1F2937;
-        background:transparent;
+        QLabel {
+            color: #1F2937;
+            background: transparent;
+            border: none;
+        }
         """)
 
         self.subtitle = QLabel(
@@ -215,17 +305,28 @@ class HeaderWidget(QFrame):
         )
 
         self.subtitle.setStyleSheet("""
-        color:#64748B;
-        background:transparent;
+        QLabel {
+            color: #64748B;
+            background: transparent;
+            border: none;
+        }
         """)
 
-        brand_layout.addWidget(self.title)
+        brand_layout.addWidget(
+            self.title
+        )
 
-        brand_layout.addWidget(self.subtitle)
+        brand_layout.addWidget(
+            self.subtitle
+        )
 
-        self.left_layout.addWidget(self.logo)
+        self.left_layout.addWidget(
+            self.logo
+        )
 
-        self.left_layout.addLayout(brand_layout)
+        self.left_layout.addLayout(
+            brand_layout
+        )
 
     # ==========================================================
     # CENTER SECTION
@@ -235,11 +336,15 @@ class HeaderWidget(QFrame):
 
         self.center_layout = QVBoxLayout()
 
-        self.center_layout.setAlignment(Qt.AlignCenter)
+        self.center_layout.setAlignment(
+            Qt.AlignCenter
+        )
 
         self.greeting_label = QLabel()
 
-        self.greeting_label.setAlignment(Qt.AlignCenter)
+        self.greeting_label.setAlignment(
+            Qt.AlignCenter
+        )
 
         self.greeting_label.setFont(
             QFont(
@@ -250,8 +355,11 @@ class HeaderWidget(QFrame):
         )
 
         self.greeting_label.setStyleSheet("""
-        color:#111827;
-        background:transparent;
+        QLabel {
+            color: #111827;
+            background: transparent;
+            border: none;
+        }
         """)
 
         self.center_layout.addWidget(
@@ -267,93 +375,140 @@ class HeaderWidget(QFrame):
 
         self.right_layout = QHBoxLayout()
 
-        self.right_layout.setSpacing(10)
+        self.right_layout.setSpacing(
+            10
+        )
 
         self.right_layout.setAlignment(
             Qt.AlignRight |
             Qt.AlignVCenter
         )
 
-        # ---------------- Time ----------------
+        # ======================================================
+        # TIME CARD
+        # ======================================================
 
         self.time_chip = QLabel()
 
-        # ---------------- Date ----------------
+        # ======================================================
+        # DATE CARD
+        # ======================================================
 
         self.date_chip = QLabel()
 
-        # ---------------- Day ----------------
+        # ======================================================
+        # DAY CARD
+        # ======================================================
 
         self.day_chip = QLabel()
 
         chips = [
             self.time_chip,
             self.date_chip,
-            self.day_chip
+            self.day_chip,
         ]
+
+        # ======================================================
+        # GLASS CARD STYLE
+        # ======================================================
+
+        chip_style = """
+
+        QLabel {
+
+            background: qlineargradient(
+
+                x1: 0,
+                y1: 0,
+                x2: 1,
+                y2: 1,
+
+                stop: 0 rgba(255, 255, 255, 245),
+                stop: 1 rgba(246, 243, 255, 225)
+
+            );
+
+            border: 1px solid rgba(255, 255, 255, 220);
+
+            border-radius: 18px;
+
+            color: #374151;
+
+            padding: 8px 18px;
+
+            font-size: 13px;
+
+            font-weight: 600;
+
+        }
+
+        """
+
+        # ======================================================
+        # APPLY CARD STYLE
+        # ======================================================
 
         for chip in chips:
 
-            chip.setMinimumHeight(42)
+            chip.setMinimumHeight(
+                42
+            )
 
-            chip.setMinimumWidth(120)
+            chip.setMinimumWidth(
+                120
+            )
 
-            chip.setAlignment(Qt.AlignCenter)
+            chip.setAlignment(
+                Qt.AlignCenter
+            )
 
-            chip.setStyleSheet("""
+            chip.setStyleSheet(
+                chip_style
+            )
 
-            QLabel{
+            chip_shadow = QGraphicsDropShadowEffect(
+                chip
+            )
 
-                background:qlineargradient(
+            chip_shadow.setBlurRadius(
+                20
+            )
 
-                    x1:0,
-                    y1:0,
-                    x2:1,
-                    y2:1,
-
-                    stop:0 rgba(255,255,255,245),
-
-                    stop:1 rgba(246,243,255,225)
-
-                );
-
-                border:1px solid rgba(255,255,255,220);
-
-                border-radius:18px;
-
-                color:#374151;
-
-                padding:8px 18px;
-
-                font-size:13px;
-
-                font-weight:600;
-
-            }
-
-            """)
-
-            chip_shadow = QGraphicsDropShadowEffect()
-
-            chip_shadow.setBlurRadius(20)
-
-            chip_shadow.setOffset(0,5)
+            chip_shadow.setOffset(
+                0,
+                5
+            )
 
             chip_shadow.setColor(
-
-                QColor(180,170,255,35)
-
+                QColor(
+                    180,
+                    170,
+                    255,
+                    35
+                )
             )
 
             chip.setGraphicsEffect(
                 chip_shadow
             )
 
-        self.day_chip.setMinimumWidth(95)
+        # ======================================================
+        # DAY CARD SMALLER
+        # ======================================================
 
-        # ---------------- Power Button ----------------
+        self.day_chip.setMinimumWidth(
+            95
+        )
 
-        self.power_button = QPushButton("⏻")
+        # ======================================================
+        # CONVERSATION BUTTON
+        # ======================================================
+
+        self.power_button = QPushButton()
+
+        self.power_button.setObjectName(
+            "ConversationButton"
+        )
 
         self.power_button.setCursor(
             Qt.PointingHandCursor
@@ -366,73 +521,173 @@ class HeaderWidget(QFrame):
             )
         )
 
+        self.power_button.setToolTip(
+            "Open Conversation"
+        )
+
+        self.power_button.setFocusPolicy(
+            Qt.NoFocus
+        )
+
+        # ======================================================
+        # LOAD LAVENDER CONVERSATION SVG
+        # ======================================================
+
+        conversation_icon_path = os.path.join(
+            "ui",
+            "assets",
+            "icons",
+            "conversation_icon.svg"
+        )
+
+        if os.path.exists(
+            conversation_icon_path
+        ):
+
+            self.power_button.setIcon(
+                QIcon(
+                    conversation_icon_path
+                )
+            )
+
+            self.power_button.setIconSize(
+                QSize(
+                    44,
+                    44
+                )
+            )
+
+        else:
+
+            self.power_button.setText(
+                ""
+            )
+
+        # ======================================================
+        # CONVERSATION BUTTON STYLE
+        # ======================================================
+
         self.power_button.setStyleSheet("""
 
-        QPushButton{
+        QPushButton#ConversationButton {
 
-            background:qlineargradient(
-                x1:0,
-                y1:0,
-                x2:1,
-                y2:1,
+            background: qlineargradient(
 
-                stop:0 white,
-                stop:1 #FFF6F7
+                x1: 0,
+                y1: 0,
+                x2: 1,
+                y2: 1,
+
+                stop: 0 #FFFFFF,
+                stop: 1 #F7F2FF
+
             );
 
-            border:2px solid rgba(255,80,80,.18);
+            border: 2px solid #DDD6FE;
 
-            border-radius:22px;
+            border-radius: 22px;
 
-            color:#EF4444;
-
-            font-size:24px;
-
-            font-weight:700;
+            padding: 6px;
 
         }
 
-        QPushButton:hover{
+        QPushButton#ConversationButton:hover {
 
-            border:2px solid #EF4444;
+            background: qlineargradient(
 
-            background:#FFF2F2;
+                x1: 0,
+                y1: 0,
+                x2: 1,
+                y2: 1,
+
+                stop: 0 #FFFFFF,
+                stop: 1 #F1EBFF
+
+            );
+
+            border: 2px solid #A78BFA;
 
         }
 
-        QPushButton:pressed{
+        QPushButton#ConversationButton:pressed {
 
-            background:#FFE5E5;
+            background: #EDE5FF;
+
+            border: 2px solid #7C3AED;
+
+        }
+
+        QPushButton#ConversationButton:disabled {
+
+            background: #F3F4F6;
+
+            border: 2px solid #E5E7EB;
 
         }
 
         """)
 
-        power_glow = QGraphicsDropShadowEffect()
+        # ======================================================
+        # LAVENDER GLOW
+        # ======================================================
 
-        power_glow.setBlurRadius(28)
+        conversation_glow = QGraphicsDropShadowEffect(
+            self.power_button
+        )
 
-        power_glow.setOffset(0,4)
+        conversation_glow.setBlurRadius(
+            28
+        )
 
-        power_glow.setColor(
+        conversation_glow.setOffset(
+            0,
+            4
+        )
 
-            QColor(255,120,140,70)
-
+        conversation_glow.setColor(
+            QColor(
+                139,
+                92,
+                246,
+                90
+            )
         )
 
         self.power_button.setGraphicsEffect(
-            power_glow
+            conversation_glow
         )
 
-        self.right_layout.addWidget(self.time_chip)
+        # ======================================================
+        # ADD TIME / DATE / DAY CARDS
+        # ======================================================
 
-        self.right_layout.addWidget(self.date_chip)
+        self.right_layout.addWidget(
+            self.time_chip
+        )
 
-        self.right_layout.addWidget(self.day_chip)
+        self.right_layout.addWidget(
+            self.date_chip
+        )
 
-        self.right_layout.addSpacing(8)
+        self.right_layout.addWidget(
+            self.day_chip
+        )
 
-        self.right_layout.addWidget(self.power_button)
+        # ======================================================
+        # GAP
+        # ======================================================
+
+        self.right_layout.addSpacing(
+            8
+        )
+
+        # ======================================================
+        # CONVERSATION BUTTON
+        # ======================================================
+
+        self.right_layout.addWidget(
+            self.power_button
+        )
 
     # ==========================================================
     # LOAD LOGO
@@ -448,15 +703,19 @@ class HeaderWidget(QFrame):
 
             "ui/assets/logo.png",
 
-            "assets/logo.png"
+            "assets/logo.png",
 
         ]
 
         for path in logo_paths:
 
-            if os.path.exists(path):
+            if os.path.exists(
+                path
+            ):
 
-                pix = QPixmap(path)
+                pix = QPixmap(
+                    path
+                )
 
                 pix = pix.scaled(
                     94,
@@ -465,7 +724,9 @@ class HeaderWidget(QFrame):
                     Qt.SmoothTransformation
                 )
 
-                self.logo.setPixmap(pix)
+                self.logo.setPixmap(
+                    pix
+                )
 
                 return
 
@@ -475,13 +736,17 @@ class HeaderWidget(QFrame):
 
     def start_clock(self):
 
-        self.timer = QTimer(self)
+        self.timer = QTimer(
+            self
+        )
 
         self.timer.timeout.connect(
             self.update_datetime
         )
 
-        self.timer.start(1000)
+        self.timer.start(
+            1000
+        )
 
         self.update_datetime()
 
@@ -516,25 +781,34 @@ class HeaderWidget(QFrame):
         )
 
         self.time_chip.setText(
-            "🕒 " +
-            now.strftime("%I:%M:%S %p")
+            "🕒 "
+            + now.strftime(
+                "%I:%M:%S %p"
+            )
         )
 
         self.date_chip.setText(
-            "📅 " +
-            now.strftime("%d %b %Y")
+            "📅 "
+            + now.strftime(
+                "%d %b %Y"
+            )
         )
 
         self.day_chip.setText(
-            "☀ " +
-            now.strftime("%A")
+            "☀ "
+            + now.strftime(
+                "%A"
+            )
         )
 
     # ==========================================================
     # PUBLIC API
     # ==========================================================
 
-    def set_username(self, username):
+    def set_username(
+        self,
+        username
+    ):
 
         self.username = username
 
@@ -542,17 +816,29 @@ class HeaderWidget(QFrame):
 
     # ----------------------------------------------------------
 
-    def set_tagline(self, text):
+    def set_tagline(
+        self,
+        text
+    ):
 
-        self.subtitle.setText(text)
+        self.subtitle.setText(
+            text
+        )
 
     # ----------------------------------------------------------
 
-    def set_logo(self, image_path):
+    def set_logo(
+        self,
+        image_path
+    ):
 
-        if os.path.exists(image_path):
+        if os.path.exists(
+            image_path
+        ):
 
-            pix = QPixmap(image_path)
+            pix = QPixmap(
+                image_path
+            )
 
             pix = pix.scaled(
                 94,
@@ -561,30 +847,108 @@ class HeaderWidget(QFrame):
                 Qt.SmoothTransformation
             )
 
-            self.logo.setPixmap(pix)
+            self.logo.setPixmap(
+                pix
+            )
 
-    # ----------------------------------------------------------
+    # ==========================================================
+    # CONVERSATION CALLBACK
+    # ==========================================================
 
-    def set_power_callback(self, callback):
+    def set_conversation_callback(
+        self,
+        callback
+    ):
 
-        self.power_button.clicked.connect(
+        # ------------------------------------------------------
+        # Disconnect ONLY the callback that this widget owns.
+        #
+        # This avoids:
+        #
+        # RuntimeWarning:
+        # Failed to disconnect (None) from signal clicked()
+        # ------------------------------------------------------
+
+        if (
+            self._conversation_callback is not None
+        ):
+
+            try:
+
+                self.power_button.clicked.disconnect(
+                    self._conversation_callback
+                )
+
+            except (
+                TypeError,
+                RuntimeError
+            ):
+
+                pass
+
+        self._conversation_callback = callback
+
+        if callback is not None:
+
+            self.power_button.clicked.connect(
+                callback
+            )
+
+    # ==========================================================
+    # LEGACY POWER CALLBACK
+    # ==========================================================
+
+    def set_power_callback(
+        self,
+        callback
+    ):
+
+        """
+        Compatibility method.
+
+        Existing MainWindow code can continue
+        using the old method name.
+        """
+
+        self.set_conversation_callback(
             callback
         )
 
-    # ----------------------------------------------------------
+    # ==========================================================
+    # ENABLE / DISABLE
+    # ==========================================================
 
-    def set_power_enabled(self, enabled=True):
+    def set_power_enabled(
+        self,
+        enabled=True
+    ):
 
-        self.power_button.setEnabled(enabled)
+        self.power_button.setEnabled(
+            enabled
+        )
 
-    # ----------------------------------------------------------
+    # ==========================================================
+    # TITLE
+    # ==========================================================
 
-    def set_title(self, title):
+    def set_title(
+        self,
+        title
+    ):
 
-        self.title.setText(title)
+        self.title.setText(
+            title
+        )
 
-    # ----------------------------------------------------------
+    # ==========================================================
+    # GREETING
+    # ==========================================================
 
-    def set_greeting(self, text):
+    def set_greeting(
+        self,
+        text
+    ):
 
-        self.greeting_label.setText(text)
+        self.greeting_label.setText(
+            text
+        )

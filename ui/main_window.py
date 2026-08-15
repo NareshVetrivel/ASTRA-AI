@@ -39,6 +39,7 @@ from ui.components.header import HeaderWidget
 from ui.components.left_panel import LeftPanelWidget
 from ui.components.center_panel import CenterPanelWidget
 from ui.components.right_panel import RightPanelWidget
+from ui.widgets.conversation_panel import ConversationPanel
 
 from ui.widgets.background_widget import BackgroundWidget
 from ui.widgets.mic_widget import MicWidget
@@ -334,6 +335,28 @@ class MainWindow(QMainWindow):
         self._loading_overlay_deleted = False
 
         # ----------------------------------
+        # Conversation Panel
+        # ----------------------------------
+
+        self.conversation_panel = None
+
+        self.conversation_panel_open = False
+
+        # Lightweight position animation.
+        # Only the panel position is animated instead of
+        # continuously animating the complete QRect geometry.
+        self.conversation_animation = None
+
+        # Prevent repeated clicks while the panel is moving.
+        self.conversation_animating = False
+
+        # Used to know whether the current animation is opening
+        # or closing the conversation panel.
+        self.conversation_animation_mode = None
+
+        self.conversation_overlay_effect = None
+
+        # ----------------------------------
         # Pending Confirmation
         # ----------------------------------
         # CommandDispatcher returns a non-blocking confirmation
@@ -434,8 +457,17 @@ class MainWindow(QMainWindow):
 
         self.header_widget = HeaderWidget()
 
-        self.header_widget.set_power_callback(
-            self.close
+        # --------------------------------------------------
+        # Conversation Button
+        # --------------------------------------------------
+        # Header-la irukkura existing right-side button
+        # ippo application close button illa.
+        #
+        # It opens / closes the Conversation Panel.
+        # --------------------------------------------------
+
+        self.header_widget.set_conversation_callback(
+            self.toggle_conversation_panel
         )
 
         self.root_layout.addWidget(
@@ -556,6 +588,29 @@ class MainWindow(QMainWindow):
             Qt.AlignTop
 
         )
+
+        # --------------------------------------------------
+        # Conversation Panel
+        # --------------------------------------------------
+        # The panel is created once and reused.
+        # It does NOT participate in body_layout.
+        #
+        # This is important because the panel must slide
+        # independently from the main UI.
+        # --------------------------------------------------
+
+        self.conversation_panel = ConversationPanel(
+            self
+        )
+
+        # Conversation header button -> open / close
+        self.conversation_panel.close_requested.connect(
+            self.close_conversation_panel
+        )
+
+        self.conversation_panel.hide()
+
+        self.conversation_panel_open = False
 
         self.root_layout.addLayout(
 
@@ -5233,6 +5288,514 @@ class MainWindow(QMainWindow):
             pass
 
     # --------------------------------------------------
+    # Conversation Panel Geometry
+    # --------------------------------------------------
+
+    def _position_conversation_panel(self):
+        """
+        Keep the ConversationPanel in the exact same
+        position and size as the existing RightPanel.
+
+        IMPORTANT:
+            This method only synchronizes the final geometry.
+            During animation we animate only the panel position,
+            which is much lighter than continuously animating
+            the complete geometry rectangle.
+        """
+
+        panel = getattr(
+            self,
+            "conversation_panel",
+            None
+        )
+
+        right_panel = getattr(
+            self,
+            "right_panel",
+            None
+        )
+
+        if panel is None or right_panel is None:
+            return
+
+        try:
+
+            # ----------------------------------------------
+            # Get RightPanel position in MainWindow coords
+            # ----------------------------------------------
+
+            top_left = right_panel.mapTo(
+                self,
+                right_panel.rect().topLeft()
+            )
+
+            geometry = right_panel.geometry()
+
+            geometry.moveTopLeft(
+                top_left
+            )
+
+            # ----------------------------------------------
+            # Exact same size + position
+            # ----------------------------------------------
+
+            panel.setGeometry(
+                geometry
+            )
+
+            panel.raise_()
+
+        except RuntimeError:
+
+            return
+
+        except Exception as error:
+
+            print(
+                "Conversation Panel Position Error:",
+                error
+            )
+
+    # --------------------------------------------------
+    # Open Conversation Panel
+    # --------------------------------------------------
+
+    def open_conversation_panel(self):
+        """
+        Open ConversationPanel over the existing RightPanel.
+
+        Lightweight animation:
+            RIGHT -> LEFT
+
+        The panel starts just outside the right edge and
+        slides into the exact RightPanel position.
+
+        Only the position is animated. This avoids the extra
+        repaint/layout work caused by animating QRect geometry.
+        """
+
+        if self._closing:
+            return
+
+        panel = getattr(
+            self,
+            "conversation_panel",
+            None
+        )
+
+        right_panel = getattr(
+            self,
+            "right_panel",
+            None
+        )
+
+        if panel is None or right_panel is None:
+            return
+
+        # ----------------------------------------------
+        # Already open / currently animating
+        # ----------------------------------------------
+
+        if self.conversation_panel_open:
+            return
+
+        if self.conversation_animating:
+            return
+
+        # ----------------------------------------------
+        # Stop previous animation safely
+        # ----------------------------------------------
+
+        if self.conversation_animation is not None:
+
+            try:
+                self.conversation_animation.stop()
+
+            except Exception:
+                pass
+
+            self.conversation_animation = None
+
+        # ----------------------------------------------
+        # Calculate exact final position
+        # ----------------------------------------------
+
+        try:
+
+            top_left = right_panel.mapTo(
+                self,
+                right_panel.rect().topLeft()
+            )
+
+            final_geometry = right_panel.geometry()
+
+            final_geometry.moveTopLeft(
+                top_left
+            )
+
+        except Exception as error:
+
+            print(
+                "Conversation Geometry Error:",
+                error
+            )
+
+            self._position_conversation_panel()
+
+            final_geometry = panel.geometry()
+
+        # ----------------------------------------------
+        # Start position
+        #
+        # Same Y position as RightPanel.
+        # Only X is outside the window.
+        # ----------------------------------------------
+
+        final_pos = final_geometry.topLeft()
+
+        start_pos = QPoint(
+            self.width() + 8,
+            final_pos.y()
+        )
+
+        # ----------------------------------------------
+        # Set exact size first
+        # ----------------------------------------------
+
+        panel.setGeometry(
+            final_geometry
+        )
+
+        panel.move(
+            start_pos
+        )
+
+        # ----------------------------------------------
+        # Show panel
+        # ----------------------------------------------
+
+        panel.show()
+
+        panel.raise_()
+
+        # ----------------------------------------------
+        # Hide existing RightPanel quickly
+        # ----------------------------------------------
+
+        try:
+
+            right_panel.fade_out(
+                duration=180
+            )
+
+        except Exception as error:
+
+            print(
+                "RightPanel Fade Out Error:",
+                error
+            )
+
+        # ----------------------------------------------
+        # Animation state
+        # ----------------------------------------------
+
+        self.conversation_animating = True
+
+        self.conversation_animation_mode = "open"
+
+        # ----------------------------------------------
+        # Lightweight POSITION animation
+        # ----------------------------------------------
+
+        animation = QPropertyAnimation(
+            panel,
+            b"pos",
+            self
+        )
+
+        animation.setDuration(
+            220
+        )
+
+        animation.setStartValue(
+            start_pos
+        )
+
+        animation.setEndValue(
+            final_pos
+        )
+
+        animation.setEasingCurve(
+            QEasingCurve.OutCubic
+        )
+
+        animation.finished.connect(
+            self._conversation_open_finished
+        )
+
+        self.conversation_animation = animation
+
+        self.conversation_panel_open = True
+
+        animation.start()
+
+    # --------------------------------------------------
+    # Conversation Open Finished
+    # --------------------------------------------------
+
+    def _conversation_open_finished(self):
+        """
+        Finalize conversation panel opening.
+
+        The final position is synchronized once after the
+        animation completes.
+        """
+
+        panel = getattr(
+            self,
+            "conversation_panel",
+            None
+        )
+
+        if panel is None:
+            return
+
+        try:
+
+            # ----------------------------------------------
+            # One final alignment pass
+            # ----------------------------------------------
+
+            self._position_conversation_panel()
+
+            panel.raise_()
+
+        except Exception as error:
+
+            print(
+                "Conversation Open Finish Error:",
+                error
+            )
+
+        finally:
+
+            self.conversation_animating = False
+
+            self.conversation_animation_mode = None
+
+            self.conversation_animation = None
+
+    # --------------------------------------------------
+    # Close Conversation Panel
+    # --------------------------------------------------
+
+    def close_conversation_panel(self):
+        """
+        Close the ConversationPanel.
+
+        Lightweight animation:
+            LEFT -> RIGHT
+
+        Only the panel position is animated.
+        """
+
+        if self._closing:
+            return
+
+        panel = getattr(
+            self,
+            "conversation_panel",
+            None
+        )
+
+        if panel is None:
+            return
+
+        if not self.conversation_panel_open:
+            return
+
+        # ----------------------------------------------
+        # Prevent repeated close clicks
+        # ----------------------------------------------
+
+        if self.conversation_animating:
+            return
+
+        # ----------------------------------------------
+        # Stop previous animation safely
+        # ----------------------------------------------
+
+        if self.conversation_animation is not None:
+
+            try:
+                self.conversation_animation.stop()
+
+            except Exception:
+                pass
+
+            self.conversation_animation = None
+
+        # ----------------------------------------------
+        # Current position
+        # ----------------------------------------------
+
+        current_pos = panel.pos()
+
+        # ----------------------------------------------
+        # Move only horizontally outside the window
+        # ----------------------------------------------
+
+        end_pos = QPoint(
+            self.width() + 8,
+            current_pos.y()
+        )
+
+        # ----------------------------------------------
+        # Animation state
+        # ----------------------------------------------
+
+        self.conversation_animating = True
+
+        self.conversation_animation_mode = "close"
+
+        # ----------------------------------------------
+        # Lightweight POSITION animation
+        # ----------------------------------------------
+
+        animation = QPropertyAnimation(
+            panel,
+            b"pos",
+            self
+        )
+
+        animation.setDuration(
+            220
+        )
+
+        animation.setStartValue(
+            current_pos
+        )
+
+        animation.setEndValue(
+            end_pos
+        )
+
+        animation.setEasingCurve(
+            QEasingCurve.InCubic
+        )
+
+        animation.finished.connect(
+            self._conversation_close_finished
+        )
+
+        self.conversation_animation = animation
+
+        # ----------------------------------------------
+        # Bring RightPanel back immediately but softly
+        # ----------------------------------------------
+
+        if self.right_panel is not None:
+
+            try:
+
+                self.right_panel.fade_in(
+                    duration=180
+                )
+
+            except Exception as error:
+
+                print(
+                    "RightPanel Fade In Error:",
+                    error
+                )
+
+        animation.start()
+
+    # --------------------------------------------------
+    # Conversation Close Finished
+    # --------------------------------------------------
+
+    def _conversation_close_finished(self):
+        """
+        Finalize conversation panel closing.
+        """
+
+        panel = getattr(
+            self,
+            "conversation_panel",
+            None
+        )
+
+        if panel is None:
+            return
+
+        try:
+
+            panel.hide()
+
+            # ----------------------------------------------
+            # Restore exact RightPanel alignment
+            # ----------------------------------------------
+
+            self._position_conversation_panel()
+
+        except Exception as error:
+
+            print(
+                "Conversation Close Finish Error:",
+                error
+            )
+
+        finally:
+
+            self.conversation_panel_open = False
+
+            self.conversation_animating = False
+
+            self.conversation_animation_mode = None
+
+            self.conversation_animation = None
+
+    # --------------------------------------------------
+    # Toggle Conversation Panel
+    # --------------------------------------------------
+
+    def toggle_conversation_panel(self):
+        """
+        Header conversation button callback.
+
+        Closed:
+            -> Open
+
+        Open:
+            -> Close
+
+        While animation is running:
+            -> Ignore additional clicks
+
+        This prevents animation stacking and keeps the UI
+        responsive on lower-spec systems.
+        """
+
+        if self._closing:
+            return
+
+        # ----------------------------------------------
+        # Ignore repeated clicks during animation
+        # ----------------------------------------------
+
+        if self.conversation_animating:
+            return
+
+        if self.conversation_panel_open:
+
+            self.close_conversation_panel()
+
+        else:
+
+            self.open_conversation_panel()
+
+    # --------------------------------------------------
     # Resize Event
     # --------------------------------------------------
 
@@ -5270,7 +5833,35 @@ class MainWindow(QMainWindow):
                 self.loading_overlay = None
 
         # --------------------------------------------------
-        # Keep file selection panel attached to microphone.
+        # Conversation Panel
+        # --------------------------------------------------
+
+        conversation_panel = getattr(
+            self,
+            "conversation_panel",
+            None
+        )
+
+        if conversation_panel is not None:
+
+            try:
+
+                if conversation_panel.isVisible():
+
+                    # ------------------------------------------
+                    # Never disturb an active animation.
+                    # ------------------------------------------
+
+                    if not self.conversation_animating:
+
+                        self._position_conversation_panel()
+
+            except RuntimeError:
+
+                pass
+
+        # --------------------------------------------------
+        # File Selection Panel
         # --------------------------------------------------
 
         panel = getattr(
@@ -5279,35 +5870,25 @@ class MainWindow(QMainWindow):
             None
         )
 
-        if panel is None:
-            return
+        if panel is not None:
 
-        try:
+            try:
 
-            if not panel.isVisible():
-                return
+                if panel.isVisible():
 
-            # --------------------------------------------------
-            # First pass after resize.
-            # --------------------------------------------------
+                    QTimer.singleShot(
+                        0,
+                        self._position_file_selection_panel
+                    )
 
-            QTimer.singleShot(
-                0,
-                self._position_file_selection_panel
-            )
+                    QTimer.singleShot(
+                        80,
+                        self._position_file_selection_panel
+                    )
 
-            # --------------------------------------------------
-            # Second pass after Qt completes the layout.
-            # --------------------------------------------------
+            except RuntimeError:
 
-            QTimer.singleShot(
-                80,
-                self._position_file_selection_panel
-            )
-
-        except RuntimeError:
-
-            pass
+                pass
 
     # --------------------------------------------------
     # Initialize Application
