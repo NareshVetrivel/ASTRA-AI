@@ -472,7 +472,65 @@ class EntityExtractor:
 
             return None
 
-        text = self.normalize_text(text)
+        # ==============================================================
+        # IMPORTANT FILE/FOLDER OPERATION GUARD
+        # ==============================================================
+        #
+        # File-management commands must NEVER be fuzzy-matched against
+        # installed applications.
+        #
+        # Example:
+        #     create file demo
+        #
+        # If the application database contains an application whose
+        # name happens to be similar to "demo" (for example V8), the
+        # old fuzzy matcher could incorrectly return that application.
+        # The dispatcher could then treat the command as an application
+        # operation and attempt to open it.
+        #
+        # For create-file/create-folder commands, application extraction
+        # must therefore return None. The dedicated file/folder extractor
+        # will handle the actual entity.
+        # ==============================================================
+
+        raw_text = str(text).lower().strip()
+
+        normalized_for_guard = self.normalize_text(raw_text)
+
+        file_folder_operation_patterns = (
+
+            # File creation
+            r"\\bcreate\\s+(?:a|an|the|my|your|new\\s+)?file\\b",
+            r"\\bmake\\s+(?:a|an|the|my|your|new\\s+)?file\\b",
+            r"\\bnew\\s+file\\b",
+
+            # Folder creation
+            r"\\bcreate\\s+(?:a|an|the|my|your|new\\s+)?folder\\b",
+            r"\\bmake\\s+(?:a|an|the|my|your|new\\s+)?folder\\b",
+            r"\\bnew\\s+folder\\b",
+
+            # Directory creation
+            r"\\bcreate\\s+(?:a|an|the|my|your|new\\s+)?directory\\b",
+            r"\\bmake\\s+(?:a|an|the|my|your|new\\s+)?directory\\b",
+
+        )
+
+        for pattern in file_folder_operation_patterns:
+
+            if re.search(
+                pattern,
+                normalized_for_guard,
+                flags=re.IGNORECASE
+            ):
+
+                print(
+                    "Application Extraction Skipped : "
+                    "file/folder creation command detected."
+                )
+
+                return None
+
+        text = normalized_for_guard
 
         # ---------------------------------
         # System Application Aliases
@@ -667,19 +725,266 @@ class EntityExtractor:
         text
     ):
         """
-        Extract folder name from
-        voice command.
+        Extract folder name from voice command.
+
+        Supports:
+
+            create folder as Trot Test
+            create a folder as Trot Test
+            create the folder as Trot Test
+            create your folder as Trot Test
+
+            create folder named Trot Test
+            create a folder named Trot Test
+            create the folder named Trot Test
+
+            create folder called Trot Test
+            create a folder called Trot Test
+            create the folder called Trot Test
+
+            make folder Trot Test
+            make a folder Trot Test
+            make the folder Trot Test
+
+            new folder Trot Test
+            new a folder Trot Test
+            new the folder Trot Test
+
+        Also supports existing special folders:
+
+            open desktop
+            open documents
+            open downloads
+            open pictures
+            open videos
+            open music
+            open recycle bin
+            open this pc
         """
 
         if not text:
 
             return None
 
-        text = self.normalize_text(text)
+        # ---------------------------------
+        # Normalize STT text
+        # ---------------------------------
 
-        # -------------------------
-        # Exact Match
-        # -------------------------
+        text = self.normalize_text(
+            text
+        )
+
+        if not text:
+
+            return None
+
+        # Remove trailing punctuation.
+        text = text.strip().rstrip(
+            ".,!?;:"
+        )
+
+        # ==================================================
+        # USER-CREATED FOLDER COMMANDS
+        # ==================================================
+
+        create_patterns = (
+
+            # create
+            "create the folder",
+            "create a folder",
+            "create your folder",
+            "create folder",
+
+            # make
+            "make the folder",
+            "make a folder",
+            "make your folder",
+            "make folder",
+
+            # new
+            "new the folder",
+            "new a folder",
+            "new your folder",
+            "new folder",
+
+            # directory
+            "create the directory",
+            "create a directory",
+            "create directory",
+
+            "make the directory",
+            "make a directory",
+            "make directory",
+
+        )
+
+        folder_name = text
+
+        # ---------------------------------
+        # Remove command phrase
+        #
+        # IMPORTANT:
+        # Longest phrases are checked first.
+        # ---------------------------------
+
+        for pattern in create_patterns:
+
+            if folder_name.startswith(
+                pattern
+            ):
+
+                folder_name = folder_name[
+                    len(pattern):
+                ].strip()
+
+                break
+
+        # ==================================================
+        # REMOVE NAMING CONNECTORS
+        # ==================================================
+        #
+        # Examples:
+        #
+        # create folder as Trot Test
+        # create folder named Trot Test
+        # create folder called Trot Test
+        # create folder with name Trot Test
+        #
+        # ==================================================
+
+        naming_connectors = (
+
+            "as ",
+            "named ",
+            "called ",
+            "with name ",
+            "with the name ",
+            "name ",
+
+        )
+
+        for connector in naming_connectors:
+
+            if folder_name.startswith(
+                connector
+            ):
+
+                folder_name = folder_name[
+                    len(connector):
+                ].strip()
+
+                break
+
+        # ==================================================
+        # REMOVE FILLER WORDS
+        # ==================================================
+        #
+        # Handles:
+        #
+        # create the folder
+        # create a folder
+        # create my folder
+        #
+        # ==================================================
+
+        filler_prefixes = (
+
+            "the ",
+            "a ",
+            "an ",
+            "my ",
+            "your ",
+
+        )
+
+        changed = True
+
+        while changed:
+
+            changed = False
+
+            for prefix in filler_prefixes:
+
+                if folder_name.startswith(
+                    prefix
+                ):
+
+                    folder_name = folder_name[
+                        len(prefix):
+                    ].strip()
+
+                    changed = True
+
+                    break
+
+        # ==================================================
+        # CLEAN FOLDER NAME
+        # ==================================================
+
+        folder_name = (
+            folder_name
+            .strip()
+            .strip("\"'")
+            .rstrip(".,!?;:")
+            .strip()
+        )
+
+        # ==================================================
+        # REMOVE TRAILING FILLER WORDS
+        # ==================================================
+
+        trailing_words = (
+
+            "please",
+            "please da",
+            "please dee",
+            "please di",
+
+        )
+
+        for word in trailing_words:
+
+            if folder_name.lower().endswith(
+                " " + word
+            ):
+
+                folder_name = (
+                    folder_name[
+                        :-(len(word) + 1)
+                    ]
+                    .strip()
+                )
+
+        # ==================================================
+        # RETURN USER-CREATED FOLDER NAME
+        # ==================================================
+
+        if folder_name:
+
+            invalid_names = {
+
+                "folder",
+                "directory",
+                "new",
+                "create",
+                "make",
+                "the",
+                "a",
+                "an",
+                "my",
+                "your",
+
+            }
+
+            if folder_name.lower() not in (
+                invalid_names
+            ):
+
+                return folder_name
+
+        # ==================================================
+        # SPECIAL FOLDER DETECTION
+        # ==================================================
 
         for folder in self.special_folders:
 
@@ -687,9 +992,9 @@ class EntityExtractor:
 
                 return folder
 
-        # -------------------------
-        # Fuzzy Match
-        # -------------------------
+        # ==================================================
+        # FUZZY MATCH FOR SPECIAL FOLDERS
+        # ==================================================
 
         best_match = process.extractOne(
 
@@ -708,11 +1013,9 @@ class EntityExtractor:
             if score >= 75:
 
                 print(
-
                     f"Folder Match : "
-
-                    f"{folder} ({score:.1f}%)"
-
+                    f"{folder} "
+                    f"({score:.1f}%)"
                 )
 
                 return folder
@@ -1080,15 +1383,185 @@ class EntityExtractor:
         text
     ):
         """
-        Extract filename from
-        voice command.
+        Extract filename from voice command.
+
+        Supports:
+
+            create file demo
+            create a file demo
+            create a test file demo
+            create a new file demo
+            make file sample
+            make a file sample
+            new file resume
+
+        Also supports existing file operations:
+
+            open file resume
+            delete file resume
+            rename file resume
+            copy file resume to desktop
+            move file resume to documents
+            compress file resume
+            extract zip demo
         """
 
         if not text:
 
             return None
 
-        text = self.normalize_text(text)
+        # ---------------------------------
+        # Normalize STT text
+        # ---------------------------------
+
+        text = self.normalize_text(
+            text
+        )
+
+        if not text:
+
+            return None
+
+        # ---------------------------------
+        # Remove punctuation
+        # ---------------------------------
+
+        text = (
+            text
+            .strip()
+            .strip("\"'")
+            .rstrip(".,!?;:")
+            .strip()
+        )
+
+        # ==================================================
+        # CREATE FILE COMMAND
+        # ==================================================
+        #
+        # CREATE HAS PRIORITY OVER APPLICATION NAME MATCHING.
+        #
+        # Whatever filename Whisper/entity extraction produces here
+        # belongs to the create-file operation. It must not be resolved
+        # as an existing application/file before this point.
+        #
+        # Examples:
+        #
+        # create file demo
+        # create a file demo
+        # create a test file demo
+        # create a new file demo
+        # make file sample
+        # make a file sample
+        # new file resume
+        #
+        # IMPORTANT:
+        # "test" is NOT removed because it may be
+        # part of the actual filename.
+        # ==================================================
+
+        create_prefixes = (
+
+            "create a ",
+            "create an ",
+            "create the ",
+            "create my ",
+            "create your ",
+            "create ",
+
+            "make a ",
+            "make an ",
+            "make the ",
+            "make my ",
+            "make your ",
+            "make ",
+
+            "new a ",
+            "new an ",
+            "new the ",
+            "new my ",
+            "new your ",
+            "new ",
+
+        )
+
+        create_text = text
+
+        for prefix in create_prefixes:
+
+            if create_text.startswith(prefix):
+
+                create_text = create_text[
+                    len(prefix):
+                ].strip()
+
+                break
+
+        # ---------------------------------
+        # Remove naming connectors
+        #
+        # Example:
+        #   create a file as demo test
+        #   create file named demo test
+        #   create file called demo test
+        # ---------------------------------
+
+        for connector in (
+            "as ",
+            "named ",
+            "called ",
+            "with name ",
+            "with the name ",
+            "name ",
+        ):
+            if create_text.startswith(connector):
+                create_text = create_text[len(connector):].strip()
+                break
+
+        # ---------------------------------
+        # Remove "file" from create command
+        # ---------------------------------
+
+        if "file" in create_text.split():
+
+            words = create_text.split()
+
+            file_index = words.index(
+                "file"
+            )
+
+            # Everything after "file" is
+            # considered the filename.
+            #
+            # Example:
+            # create a test file demo
+            #
+            # after removing prefix:
+            # test file demo
+            #
+            # filename:
+            # demo
+
+            if file_index < len(words) - 1:
+
+                query = " ".join(
+                    words[file_index + 1:]
+                )
+
+                query = (
+                    query
+                    .strip()
+                    .strip("\"'")
+                    .rstrip(".,!?;:")
+                    .strip()
+                )
+
+                if query:
+
+                    return query
+
+        # ==================================================
+        # GENERAL FILE COMMANDS
+        # ==================================================
 
         remove_words = {
 
@@ -1105,6 +1578,10 @@ class EntityExtractor:
             "folder",
 
             "create",
+
+            "make",
+
+            "new",
 
             "rename",
 
@@ -1129,6 +1606,12 @@ class EntityExtractor:
             "my",
 
             "the",
+
+            "a",
+
+            "an",
+
+            "your",
 
             "named",
 
@@ -1160,12 +1643,6 @@ class EntityExtractor:
 
             "locate",
 
-            "named",
-
-            "called",
-
-            "called as",
-
             "by",
 
             "name"
@@ -1182,7 +1659,40 @@ class EntityExtractor:
 
         ]
 
-        query = " ".join(words).strip()
+        # ---------------------------------
+        # Handle "2" -> "to"
+        # ---------------------------------
+
+        if "2" in words:
+
+            words = [
+
+                "to"
+                if word == "2"
+                else word
+
+                for word in words
+
+            ]
+
+        # ---------------------------------
+        # Build filename
+        # ---------------------------------
+
+        query = " ".join(
+            words
+        ).strip()
+
+        # ---------------------------------
+        # Remove punctuation
+        # ---------------------------------
+
+        query = (
+            query
+            .strip("\"'")
+            .rstrip(".,!?;:")
+            .strip()
+        )
 
         if not query:
 
@@ -1346,9 +1856,13 @@ class EntityExtractor:
         """
         Extract old and new filename.
 
-        Example
-        -------
-        rename notes to project
+        Supports:
+            rename notes to project
+            rename notes 2 project
+            rename astra file 2 astra demo
+            rename astra file to astra demo
+            rename a file notes to project
+            rename the file notes into project
 
         Returns
         -------
@@ -1356,93 +1870,86 @@ class EntityExtractor:
         """
 
         if not text:
-
             return None
 
         text = self.normalize_text(text)
 
-        remove_words = {
+        text = (
+            text
+            .strip()
+            .strip("\"'")
+            .rstrip(".,!?;:")
+            .strip()
+        )
 
+        # Remove command/filler words without removing the actual
+        # filename words.
+        words = text.split()
+
+        removable_prefixes = (
             "rename",
+        )
 
-            "file",
+        if words and words[0] in removable_prefixes:
+            words = words[1:]
 
-            "document",
-
-            "please",
-
-            "my",
-
+        while words and words[0] in {
+            "a",
+            "an",
             "the",
+            "my",
+            "your",
+            "file",
+            "document",
+        }:
+            words.pop(0)
 
-            "called",
-
-            "named"
-
-        }
-
-        words = [
-
-            word
-
-            for word in text.split()
-
-            if word not in remove_words
-
-        ]
-
-        if "2" in words:
-
-            words = [
-
-                "to"
-
-                if word == "2"
-
-                else word
-
-                for word in words
-
-            ]
-
+        # "rename astra file 2 astra demo" may normalize 2 -> to.
         if "to" not in words and "into" not in words:
+            if "2" in words:
+                words = [
+                    "to" if word == "2" else word
+                    for word in words
+                ]
 
-            return None
+        separator = None
 
-        separator = "to"
-
-        if "into" in words:
-
+        if "to" in words:
+            separator = "to"
+        elif "into" in words:
             separator = "into"
+
+        if separator is None:
+            return None
 
         index = words.index(separator)
 
-        old_name = (
-            " ".join(
-                words[:index]
-            )
-            .strip()
-            .rstrip(".,!?")
-        )
+        old_words = words[:index]
+        new_words = words[index + 1:]
 
-        new_name = (
-            " ".join(
-                words[index + 1:]
-            )
-            .strip()
-            .rstrip(".,!?")
-        )
+        # Remove "file/document" only when it is acting as a command
+        # connector, not as part of the actual filename.
+        old_words = [
+            word
+            for word in old_words
+            if word not in {"file", "document"}
+        ]
+
+        new_words = [
+            word
+            for word in new_words
+            if word not in {"file", "document"}
+        ]
+
+        old_name = " ".join(old_words).strip().rstrip(".,!?;:")
+        new_name = " ".join(new_words).strip().rstrip(".,!?;:")
 
         if not old_name or not new_name:
-
             return None
 
         return {
-
             "old_name": old_name,
-
             "new_name": new_name
-
         }
 
     # --------------------------------------------------
@@ -1455,88 +1962,85 @@ class EntityExtractor:
     ):
         """
         Extract filename and destination.
+
+        Supports:
+            copy report to desktop
+            copy astra test to desktop
+            copy file resume to documents
+            copy resume into documents
+            copy report 2 desktop
+
+        Returns
+        -------
+        dict | None
         """
 
         if not text:
-
             return None
 
         text = self.normalize_text(text)
 
-        remove_words = {
+        text = (
+            text
+            .strip()
+            .strip("\"'")
+            .rstrip(".,!?;:")
+            .strip()
+        )
 
-            "copy",
+        words = text.split()
 
-            "file",
+        if words and words[0] == "copy":
+            words = words[1:]
 
-            "document",
-
-            "please",
-
+        while words and words[0] in {
+            "a",
+            "an",
+            "the",
             "my",
+            "your",
+        }:
+            words.pop(0)
 
-            "the"
-
-        }
-
-        words = [
-
-            word
-
-            for word in text.split()
-
-            if word not in remove_words
-
-        ]
-
-        if "2" in words:
-
+        if "2" in words and "to" not in words and "into" not in words:
             words = [
-
-                "to"
-
-                if word == "2"
-
-                else word
-
+                "to" if word == "2" else word
                 for word in words
-
             ]
 
-        if "to" not in words and "into" not in words:
+        separator = None
 
-            return None
-
-        separator = "to"
-
-        if "into" in words:
-
+        if "to" in words:
+            separator = "to"
+        elif "into" in words:
             separator = "into"
+
+        if separator is None:
+            return None
 
         index = words.index(separator)
 
-        filename = " ".join(
+        filename_words = words[:index]
+        destination_words = words[index + 1:]
 
-            words[:index]
+        if filename_words and filename_words[0] in {
+            "file",
+            "document",
+        }:
+            filename_words = filename_words[1:]
 
-        ).strip()
+        filename = " ".join(filename_words).strip()
+        destination = " ".join(destination_words).strip()
 
-        destination = (
-            " ".join(words[index + 1:])
-            .strip()
-            .rstrip(".,!?")
-        )
+        filename = filename.rstrip(".,!?;:")
+        destination = destination.rstrip(".,!?;:")
 
         if not filename or not destination:
-
             return None
 
         return {
-
             "filename": filename,
-
             "destination": destination
-
         }
 
     # --------------------------------------------------
@@ -1549,88 +2053,85 @@ class EntityExtractor:
     ):
         """
         Extract filename and destination.
+
+        Supports:
+            move report to desktop
+            move astra test to desktop
+            move file resume to documents
+            move resume into documents
+            move report 2 desktop
+
+        Returns
+        -------
+        dict | None
         """
 
         if not text:
-
             return None
 
         text = self.normalize_text(text)
 
-        remove_words = {
+        text = (
+            text
+            .strip()
+            .strip("\"'")
+            .rstrip(".,!?;:")
+            .strip()
+        )
 
-            "move",
+        words = text.split()
 
-            "file",
+        if words and words[0] == "move":
+            words = words[1:]
 
-            "document",
-
-            "please",
-
+        while words and words[0] in {
+            "a",
+            "an",
+            "the",
             "my",
+            "your",
+        }:
+            words.pop(0)
 
-            "the"
-
-        }
-
-        words = [
-
-            word
-
-            for word in text.split()
-
-            if word not in remove_words
-
-        ]
-
-        if "2" in words:
-
+        if "2" in words and "to" not in words and "into" not in words:
             words = [
-
-                "to"
-
-                if word == "2"
-
-                else word
-
+                "to" if word == "2" else word
                 for word in words
-
             ]
 
-        if "to" not in words and "into" not in words:
+        separator = None
 
-            return None
-
-        separator = "to"
-
-        if "into" in words:
-
+        if "to" in words:
+            separator = "to"
+        elif "into" in words:
             separator = "into"
+
+        if separator is None:
+            return None
 
         index = words.index(separator)
 
-        filename = " ".join(
+        filename_words = words[:index]
+        destination_words = words[index + 1:]
 
-            words[:index]
+        if filename_words and filename_words[0] in {
+            "file",
+            "document",
+        }:
+            filename_words = filename_words[1:]
 
-        ).strip()
+        filename = " ".join(filename_words).strip()
+        destination = " ".join(destination_words).strip()
 
-        destination = (
-            " ".join(words[index + 1:])
-            .strip()
-            .rstrip(".,!?")
-        )
+        filename = filename.rstrip(".,!?;:")
+        destination = destination.rstrip(".,!?;:")
 
         if not filename or not destination:
-
             return None
 
         return {
-
             "filename": filename,
-
             "destination": destination
-
         }
 
     # --------------------------------------------------

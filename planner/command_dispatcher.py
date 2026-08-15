@@ -7,6 +7,7 @@ to the appropriate controller.
 
 from ai.gemini_client import GeminiClient
 from automation.screen_recorder import ScreenRecorder
+from automation.file_system_agent import FileSystemAgent
 
 class CommandDispatcher:
 
@@ -51,6 +52,18 @@ class CommandDispatcher:
         self.gemini = gemini_client
 
         self.screen_recorder = ScreenRecorder()
+
+        # --------------------------------------------------
+        # File System Agent
+        # --------------------------------------------------
+        # Central filesystem orchestration layer.
+        # FileFinder, FileManager and FolderManager are
+        # still used internally by FileSystemAgent.
+        self.file_system_agent = FileSystemAgent(
+            file_finder=self.file_finder,
+            file_manager=self.file_manager,
+            folder_manager=self.folder_manager,
+        )
         
 
     # --------------------------------------------------
@@ -62,10 +75,11 @@ class CommandDispatcher:
         success: bool,
         success_status: str,
         failed_status: str,
-        assistant_reply: str = ""
+        assistant_reply: str = "",
+        **extra
     ):
 
-        return {
+        result = {
 
             "success": success,
 
@@ -85,6 +99,131 @@ class CommandDispatcher:
 
         }
 
+        # Preserve optional orchestration data such as
+        # multiple-file candidates for the UI.
+        result.update(extra)
+
+        return result
+
+    # --------------------------------------------------
+    # Helper : Resolve File Candidate
+    # --------------------------------------------------
+
+    def resolve_file_candidate(
+        self,
+        filename,
+        selection=None
+    ):
+        """
+        Resolve a file without silently selecting the first
+        match.
+
+        Returns the FileSystemAgent resolution result.
+        When multiple files match and no selection is supplied,
+        the caller must return the candidates to the UI.
+        """
+
+        return self.file_system_agent.resolve_file_selection(
+            filename,
+            selection
+        )
+
+    # --------------------------------------------------
+    # Helper : Selection Payload
+    # --------------------------------------------------
+
+    @staticmethod
+    def build_selection_payload(
+        intent,
+        entity=None,
+        typed_text=None,
+        browser=None,
+        website=None,
+        search_query=None,
+        profile=None,
+        user_text=None,
+        multi_command=False,
+    ):
+        """
+        Preserve the original command context while the UI waits
+        for a numbered filesystem selection.
+
+        This prevents a spoken response such as "2" from being
+        interpreted as a brand-new command.
+        """
+
+        return {
+            "intent": intent,
+            "entity": entity,
+            "typed_text": typed_text,
+            "browser": browser,
+            "website": website,
+            "search_query": search_query,
+            "profile": profile,
+            "user_text": user_text,
+            "multi_command": multi_command,
+        }
+
+    # --------------------------------------------------
+    # Helper : Multiple File Selection Response
+    # --------------------------------------------------
+
+    def multiple_file_response(
+        self,
+        result,
+        action_name,
+        pending_payload=None
+    ):
+        """
+        Return multiple matching filesystem candidates to MainWindow.
+
+        MainWindow displays the candidates in the UI and waits for
+        the user's numeric selection. The dispatcher does not speak
+        or listen here.
+        """
+
+        candidates = result.get(
+            "candidates",
+            []
+        )
+
+        if not candidates:
+
+            return self.response(
+                False,
+                "",
+                "Status : File Selection Failed",
+                "No matching files were found.",
+            )
+
+        # Always preserve the exact command payload.
+        payload = (
+            dict(pending_payload)
+            if isinstance(
+                pending_payload,
+                dict
+            )
+            else dict(
+                getattr(
+                    self,
+                    "_current_selection_payload",
+                    {}
+                )
+            )
+        )
+
+        return self.response(
+            False,
+            "",
+            "Status : File Selection Required",
+            "Please choose a file from the list.",
+            requires_selection=True,
+            selection_required=True,
+            candidates=candidates,
+            pending_action=action_name,
+            pending_payload=payload,
+        )
+
     # --------------------------------------------------
     # Helper : Speak + Return Message
     # --------------------------------------------------
@@ -99,38 +238,118 @@ class CommandDispatcher:
         return message
 
     # --------------------------------------------------
-    # Helper : Confirmation
+    # Helper : Confirmation Request
     # --------------------------------------------------
 
-    def confirm_action(
+    def confirmation_response(
         self,
-        message: str
-    ) -> bool:
+        message,
+        intent,
+        entity=None,
+        typed_text=None,
+        browser=None,
+        website=None,
+        search_query=None,
+        profile=None,
+        user_text=None,
+        multi_command=False,
+        selection=None,
+        confirmation_action=None,
+        confirmation_payload=None,
+    ):
+        """
+        Return a non-blocking confirmation request to MainWindow.
 
-        self.speak(message)
+        The dispatcher must never directly listen to the microphone
+        for confirmation because MainWindow owns the microphone
+        lifecycle.
+        """
 
-        confirm = self.whisper.listen_confirmation()
+        return self.response(
+            False,
+            "",
+            "Status : Confirmation Required",
+            message,
+            requires_confirmation=True,
+            confirmation_required=True,
+            confirmation_message=message,
+            confirmation_action=(
+                confirmation_action
+                or intent
+            ),
+            confirmation_payload=(
+                confirmation_payload
+                or {
+                    "intent": intent,
+                    "entity": entity,
+                    "typed_text": typed_text,
+                    "browser": browser,
+                    "website": website,
+                    "search_query": search_query,
+                    "profile": profile,
+                    "user_text": user_text,
+                    "multi_command": multi_command,
+                    "selection": selection,
+                }
+            ),
+        )
 
-        if not confirm:
+    # --------------------------------------------------
+    # Helper : Legacy Confirmation Compatibility
+    # --------------------------------------------------
 
-            return False
+    def confirm_action(self, message):
+        """
+        Legacy compatibility helper.
 
-        confirm = confirm.lower().strip()
+        Confirmation must be handled by MainWindow.
+        This method is intentionally kept only so older code paths
+        do not crash.
 
-        return confirm in {
+        New filesystem operations MUST use confirmation_response()
+        when skip_confirmation is False.
+        """
 
-            "yes",
-            "yeah",
-            "yep",
-            "ya",
-            "yas",
-            "yes.",
-            "yes!",
-            "ok",
-            "okay",
-            "sure"
+        return True
 
-        }
+    # --------------------------------------------------
+    # Helper : Execute Confirmed Action
+    # --------------------------------------------------
+
+    def execute_confirmed_action(
+        self,
+        confirmation_action,
+        payload=None
+    ):
+        """
+        Execute an operation after MainWindow receives an explicit
+        YES confirmation.
+
+        The original command context is restored from payload and
+        dispatch() is re-entered with skip_confirmation=True.
+        """
+
+        payload = payload or {}
+
+        return self.dispatch(
+            intent=payload.get(
+                "intent",
+                confirmation_action
+            ),
+            entity=payload.get("entity"),
+            typed_text=payload.get("typed_text"),
+            browser=payload.get("browser"),
+            website=payload.get("website"),
+            search_query=payload.get("search_query"),
+            profile=payload.get("profile"),
+            user_text=payload.get("user_text"),
+            multi_command=payload.get(
+                "multi_command",
+                False
+            ),
+            selection=payload.get("selection"),
+            skip_confirmation=True
+        )
 
     # --------------------------------------------------
     # Dispatcher
@@ -146,7 +365,9 @@ class CommandDispatcher:
         search_query=None,
         profile=None,
         user_text=None,
-        multi_command=False
+        multi_command=False,
+        selection=None,
+        skip_confirmation=False
     ):
         """
         Execute the detected intent.
@@ -157,6 +378,24 @@ class CommandDispatcher:
         """
 
         try:
+
+            # Preserve the complete command context. If filesystem
+            # resolution becomes ambiguous, this payload is returned
+            # to MainWindow so a numbered voice selection can resume
+            # the original operation instead of starting a new command.
+            self._current_selection_payload = (
+                self.build_selection_payload(
+                    intent=intent,
+                    entity=entity,
+                    typed_text=typed_text,
+                    browser=browser,
+                    website=website,
+                    search_query=search_query,
+                    profile=profile,
+                    user_text=user_text,
+                    multi_command=multi_command,
+                )
+            )
 
             # -------------------------
             # AI Conversation
@@ -2099,6 +2338,10 @@ class CommandDispatcher:
 
                 )
             
+            # ==================================================
+            # FILE SYSTEM AGENT
+            # ==================================================
+
             # -------------------------
             # Open File
             # -------------------------
@@ -2108,27 +2351,74 @@ class CommandDispatcher:
                 and entity
             ):
 
-                reply = self.speak(
-                    f"Opening {entity}"
+                filename = (
+                    entity.get("filename")
+                    or entity.get("source")
+                    or entity.get("file_path")
+                    if isinstance(entity, dict)
+                    else str(entity)
                 )
 
-                success = self.file_manager.open_file(
-                    entity
+                resolution = self.resolve_file_candidate(
+                    filename,
+                    selection
+                )
+
+                if resolution.get("requires_selection"):
+
+                    return self.multiple_file_response(
+                        resolution,
+                        "open_file"
+                    )
+
+                if not resolution.get("success"):
+
+                    reply = self.speak(
+                        resolution.get(
+                            "message",
+                            f"File not found: {filename}"
+                        )
+                    )
+
+                    return self.response(
+                        False,
+                        "",
+                        "Status : File Not Found",
+                        reply
+                    )
+
+                reply = self.speak(
+                    f"Opening {filename}"
+                )
+
+                result = self.file_system_agent.execute(
+                    "open_file",
+                    {
+                        "entity": filename,
+                        "selection": selection
+                    }
+                )
+
+                success = bool(
+                    result.get("success")
                 )
 
                 if success:
                     self.keyboard.activate_window()
 
+                if not success:
+                    reply = self.speak(
+                        result.get(
+                            "message",
+                            "Unable to open the file."
+                        )
+                    )
+
                 return self.response(
-
                     success,
-
                     "Status : File Opened",
-
-                    "Status : File Not Found",
-
+                    "Status : File Open Failed",
                     reply
-
                 )
 
             # -------------------------
@@ -2136,20 +2426,23 @@ class CommandDispatcher:
             # -------------------------
 
             elif (
-
                 intent == "open_folder"
-
                 and entity
-
             ):
 
                 reply = self.speak(
                     f"Opening {entity}"
                 )
 
-                success = (
-                    self.folder_manager
-                    .open_folder(entity)
+                result = self.file_system_agent.execute(
+                    "open_folder",
+                    {
+                        "entity": entity
+                    }
+                )
+
+                success = bool(
+                    result.get("success")
                 )
 
                 if success:
@@ -2180,9 +2473,31 @@ class CommandDispatcher:
                     f"Creating {entity}"
                 )
 
-                success = self.file_manager.create_file(
-                    entity
+                result = self.file_system_agent.execute(
+                    "create_file",
+                    {
+                        "entity": entity
+                    }
                 )
+
+                success = bool(
+                    result.get("success")
+                )
+
+                if success:
+
+                    reply = self.speak(
+                        "File created successfully."
+                    )
+
+                else:
+
+                    reply = self.speak(
+                        result.get(
+                            "message",
+                            "Unable to create the file."
+                        )
+                    )
 
                 return self.response(
 
@@ -2205,46 +2520,102 @@ class CommandDispatcher:
                 and entity
             ):
 
-                reply = self.speak(
-                    f"I found {entity}."
+                filename = (
+                    entity.get("filename")
+                    or entity.get("source")
+                    or entity.get("file_path")
+                    if isinstance(entity, dict)
+                    else str(entity)
                 )
 
-                if not self.confirm_action(
+                resolution = self.resolve_file_candidate(
+                    filename,
+                    selection
+                )
 
-                    "Do you want to delete this file?"
-
+                if resolution.get(
+                    "requires_selection"
                 ):
 
+                    return self.multiple_file_response(
+                        resolution,
+                        "delete_file",
+                        pending_payload=self._current_selection_payload
+                    )
+
+                if not resolution.get("success"):
+
                     reply = self.speak(
-                        "Deletion cancelled."
+                        resolution.get(
+                            "message",
+                            f"File not found: {filename}"
+                        )
                     )
 
                     return self.response(
-
                         False,
-
                         "",
-
-                        "Status : Delete Cancelled",
-
+                        "Status : File Not Found",
                         reply
-
                     )
 
-                success = self.file_manager.delete_file(
-                    entity
+                # ---------------------------------
+                # Confirmation
+                # ---------------------------------
+
+                if not skip_confirmation:
+
+                    return self.confirmation_response(
+                        "Do you want to delete this file?",
+                        intent="delete_file",
+                        entity=entity,
+                        typed_text=typed_text,
+                        browser=browser,
+                        website=website,
+                        search_query=search_query,
+                        profile=profile,
+                        user_text=user_text,
+                        multi_command=multi_command,
+                        selection=selection,
+                        confirmation_action="delete_file",
+                    )
+
+                # ---------------------------------
+                # Execute after YES
+                # ---------------------------------
+
+                result = self.file_system_agent.execute(
+                    "delete_file",
+                    {
+                        "entity": filename,
+                        "selection": selection
+                    }
                 )
 
+                success = bool(
+                    result.get("success")
+                )
+
+                if success:
+
+                    reply = self.speak(
+                        "File deleted successfully."
+                    )
+
+                else:
+
+                    reply = self.speak(
+                        result.get(
+                            "message",
+                            "Unable to delete the file."
+                        )
+                    )
+
                 return self.response(
-
                     success,
-
                     "Status : File Deleted",
-
-                    "Status : Delete Cancelled",
-
-                    "File deleted successfully." if success else "Unable to delete the file."
-
+                    "Status : Delete Failed",
+                    reply
                 )
 
             # -------------------------
@@ -2256,28 +2627,81 @@ class CommandDispatcher:
                 and entity
             ):
 
-                print("\n===================================")
+                if isinstance(entity, dict):
 
+                    old_name = (
+                        entity.get("old_name")
+                        or entity.get("filename")
+                        or entity.get("source")
+                        or entity.get("file_path")
+                    )
+
+                    new_name = (
+                        entity.get("new_name")
+                        or entity.get("newName")
+                        or entity.get("destination_name")
+                    )
+
+                else:
+
+                    old_name = str(entity)
+                    new_name = None
+
+                if not old_name or not new_name:
+
+                    reply = self.speak(
+                        "I need both the current file name and the new file name."
+                    )
+
+                    return self.response(
+                        False,
+                        "",
+                        "Status : Rename Information Missing",
+                        reply
+                    )
+
+                resolution = self.resolve_file_candidate(
+                    old_name,
+                    selection
+                )
+
+                if resolution.get("requires_selection"):
+
+                    return self.multiple_file_response(
+                        resolution,
+                        "rename_file"
+                    )
+
+                if not resolution.get("success"):
+
+                    reply = self.speak(
+                        resolution.get(
+                            "message",
+                            f"File not found: {old_name}"
+                        )
+                    )
+
+                    return self.response(
+                        False,
+                        "",
+                        "Status : File Not Found",
+                        reply
+                    )
+
+                print(
+                    "\\n==================================="
+                )
                 print("RENAME CONFIRMATION")
-
                 print("===================================")
-
                 print()
-
-                print(entity["old_name"])
-
+                print(old_name)
                 print()
-
                 print("Rename To")
-
                 print()
-
-                print(entity["new_name"])
+                print(new_name)
 
                 if not self.confirm_action(
-
                     "Do you want to rename this file?"
-
                 ):
 
                     reply = self.speak(
@@ -2285,23 +2709,23 @@ class CommandDispatcher:
                     )
 
                     return self.response(
-
                         False,
-
                         "",
-
-                        "Status : Cancelled",
-
+                        "Status : Rename Cancelled",
                         reply
-
                     )
 
-                success = self.file_manager.rename_file(
+                result = self.file_system_agent.execute(
+                    "rename_file",
+                    {
+                        "source": old_name,
+                        "new_name": new_name,
+                        "selection": selection
+                    }
+                )
 
-                    entity["old_name"],
-
-                    entity["new_name"]
-
+                success = bool(
+                    result.get("success")
                 )
 
                 if success:
@@ -2313,19 +2737,17 @@ class CommandDispatcher:
                 else:
 
                     reply = self.speak(
-                        "Unable to rename the file."
+                        result.get(
+                            "message",
+                            "Unable to rename the file."
+                        )
                     )
 
                 return self.response(
-
                     success,
-
                     "Status : File Renamed",
-
                     "Status : Rename Failed",
-
                     reply
-
                 )
 
             # -------------------------
@@ -2337,41 +2759,99 @@ class CommandDispatcher:
                 and entity
             ):
 
-                print("\n===================================")
-                print("COPY CONFIRMATION")
-                print("===================================")
+                if isinstance(entity, dict):
 
-                print(f"\nFile : {entity['filename']}")
-                print(f"\nDestination : {entity['destination']}")
+                    filename = (
+                        entity.get("filename")
+                        or entity.get("source")
+                        or entity.get("file_path")
+                    )
 
-                if not self.confirm_action(
+                    destination = (
+                        entity.get("destination")
+                        or entity.get("destination_folder")
+                        or entity.get("target")
+                    )
 
-                    "Do you want to copy this file?"
+                else:
 
-                ):
+                    filename = str(entity)
+                    destination = None
+
+                if not filename or not destination:
 
                     reply = self.speak(
-                        "Copy cancelled."
+                        "I need the file and destination folder."
                     )
 
                     return self.response(
-
                         False,
-
                         "",
-
-                        "Status : Cancelled",
-
+                        "Status : Copy Information Missing",
                         reply
-
                     )
 
-                success = self.file_manager.copy_file(
+                resolution = self.resolve_file_candidate(
+                    filename,
+                    selection
+                )
 
-                    entity["filename"],
+                if resolution.get("requires_selection"):
 
-                    entity["destination"]
+                    return self.multiple_file_response(
+                        resolution,
+                        "copy_file",
+                        pending_payload=self._current_selection_payload
+                    )
 
+                if not resolution.get("success"):
+
+                    reply = self.speak(
+                        resolution.get(
+                            "message",
+                            f"File not found: {filename}"
+                        )
+                    )
+
+                    return self.response(
+                        False,
+                        "",
+                        "Status : File Not Found",
+                        reply
+                    )
+
+                # ---------------------------------
+                # Confirmation
+                # ---------------------------------
+
+                if not skip_confirmation:
+
+                    return self.confirmation_response(
+                        "Do you want to copy this file?",
+                        intent="copy_file",
+                        entity=entity,
+                        typed_text=typed_text,
+                        browser=browser,
+                        website=website,
+                        search_query=search_query,
+                        profile=profile,
+                        user_text=user_text,
+                        multi_command=multi_command,
+                        selection=selection,
+                        confirmation_action="copy_file",
+                    )
+
+                result = self.file_system_agent.execute(
+                    "copy_file",
+                    {
+                        "source": filename,
+                        "destination": destination,
+                        "selection": selection
+                    }
+                )
+
+                success = bool(
+                    result.get("success")
                 )
 
                 if success:
@@ -2383,19 +2863,17 @@ class CommandDispatcher:
                 else:
 
                     reply = self.speak(
-                        "Unable to copy the file."
+                        result.get(
+                            "message",
+                            "Unable to copy the file."
+                        )
                     )
 
                 return self.response(
-
                     success,
-
                     "Status : File Copied",
-
                     "Status : Copy Failed",
-
                     reply
-
                 )
 
             # -------------------------
@@ -2407,41 +2885,99 @@ class CommandDispatcher:
                 and entity
             ):
 
-                print("\n===================================")
-                print("MOVE CONFIRMATION")
-                print("===================================")
+                if isinstance(entity, dict):
 
-                print(f"\nFile : {entity['filename']}")
-                print(f"\nDestination : {entity['destination']}")
+                    filename = (
+                        entity.get("filename")
+                        or entity.get("source")
+                        or entity.get("file_path")
+                    )
 
-                if not self.confirm_action(
+                    destination = (
+                        entity.get("destination")
+                        or entity.get("destination_folder")
+                        or entity.get("target")
+                    )
 
-                    "Do you want to move this file?"
+                else:
 
-                ):
+                    filename = str(entity)
+                    destination = None
+
+                if not filename or not destination:
 
                     reply = self.speak(
-                        "Move cancelled."
+                        "I need the file and destination folder."
                     )
 
                     return self.response(
-
                         False,
-
                         "",
-
-                        "Status : Cancelled",
-
+                        "Status : Move Information Missing",
                         reply
-
                     )
 
-                success = self.file_manager.move_file(
+                resolution = self.resolve_file_candidate(
+                    filename,
+                    selection
+                )
 
-                    entity["filename"],
+                if resolution.get("requires_selection"):
 
-                    entity["destination"]
+                    return self.multiple_file_response(
+                        resolution,
+                        "move_file",
+                        pending_payload=self._current_selection_payload
+                    )
 
+                if not resolution.get("success"):
+
+                    reply = self.speak(
+                        resolution.get(
+                            "message",
+                            f"File not found: {filename}"
+                        )
+                    )
+
+                    return self.response(
+                        False,
+                        "",
+                        "Status : File Not Found",
+                        reply
+                    )
+
+                # ---------------------------------
+                # Confirmation
+                # ---------------------------------
+
+                if not skip_confirmation:
+
+                    return self.confirmation_response(
+                        "Do you want to move this file?",
+                        intent="move_file",
+                        entity=entity,
+                        typed_text=typed_text,
+                        browser=browser,
+                        website=website,
+                        search_query=search_query,
+                        profile=profile,
+                        user_text=user_text,
+                        multi_command=multi_command,
+                        selection=selection,
+                        confirmation_action="move_file",
+                    )
+
+                result = self.file_system_agent.execute(
+                    "move_file",
+                    {
+                        "source": filename,
+                        "destination": destination,
+                        "selection": selection
+                    }
+                )
+
+                success = bool(
+                    result.get("success")
                 )
 
                 if success:
@@ -2453,19 +2989,17 @@ class CommandDispatcher:
                 else:
 
                     reply = self.speak(
-                        "Unable to move the file."
+                        result.get(
+                            "message",
+                            "Unable to move the file."
+                        )
                     )
 
                 return self.response(
-
                     success,
-
                     "Status : File Moved",
-
                     "Status : Move Failed",
-
                     reply
-
                 )
 
             # -------------------------
@@ -2477,36 +3011,74 @@ class CommandDispatcher:
                 and entity
             ):
 
-                print("\n===================================")
-                print("ZIP CONFIRMATION")
-                print("===================================")
+                filename = (
+                    entity.get("filename")
+                    or entity.get("source")
+                    or entity.get("file_path")
+                    if isinstance(entity, dict)
+                    else str(entity)
+                )
 
-                print(f"\nFile : {entity}")
+                resolution = self.resolve_file_candidate(
+                    filename,
+                    selection
+                )
 
-                if not self.confirm_action(
+                if resolution.get("requires_selection"):
 
-                    "Do you want to compress this file?"
+                    return self.multiple_file_response(
+                        resolution,
+                        "compress_file",
+                        pending_payload=self._current_selection_payload
+                    )
 
-                ):
+                if not resolution.get("success"):
 
                     reply = self.speak(
-                        "Compression cancelled."
+                        resolution.get(
+                            "message",
+                            f"File not found: {filename}"
+                        )
                     )
 
                     return self.response(
-
                         False,
-
                         "",
-
-                        "Status : Cancelled",
-
+                        "Status : File Not Found",
                         reply
-
                     )
 
-                success = self.file_manager.compress_file(
-                    entity
+                # ---------------------------------
+                # Confirmation
+                # ---------------------------------
+
+                if not skip_confirmation:
+
+                    return self.confirmation_response(
+                        "Do you want to compress this file?",
+                        intent="compress_file",
+                        entity=entity,
+                        typed_text=typed_text,
+                        browser=browser,
+                        website=website,
+                        search_query=search_query,
+                        profile=profile,
+                        user_text=user_text,
+                        multi_command=multi_command,
+                        selection=selection,
+                        confirmation_action="compress_file",
+                    )
+
+                result = self.file_system_agent.execute(
+                    "compress_file",
+                    {
+                        "entity": filename,
+                        "selection": selection
+                    }
+                )
+
+                success = bool(
+                    result.get("success")
                 )
 
                 if success:
@@ -2518,19 +3090,17 @@ class CommandDispatcher:
                 else:
 
                     reply = self.speak(
-                        "Unable to compress the file."
+                        result.get(
+                            "message",
+                            "Unable to compress the file."
+                        )
                     )
 
                 return self.response(
-
                     success,
-
                     "Status : ZIP Created",
-
                     "Status : Compression Failed",
-
                     reply
-
                 )
 
             # -------------------------
@@ -2542,36 +3112,75 @@ class CommandDispatcher:
                 and entity
             ):
 
-                print("\n===================================")
-                print("EXTRACT CONFIRMATION")
-                print("===================================")
+                filename = (
+                    entity.get("filename")
+                    or entity.get("source")
+                    or entity.get("file_path")
+                    or entity.get("zip_file")
+                    if isinstance(entity, dict)
+                    else str(entity)
+                )
 
-                print(f"\nZIP File : {entity}")
+                resolution = self.resolve_file_candidate(
+                    filename,
+                    selection
+                )
 
-                if not self.confirm_action(
+                if resolution.get("requires_selection"):
 
-                    "Do you want to extract this archive?"
+                    return self.multiple_file_response(
+                        resolution,
+                        "extract_zip",
+                        pending_payload=self._current_selection_payload
+                    )
 
-                ):
+                if not resolution.get("success"):
 
                     reply = self.speak(
-                        "Extraction cancelled."
+                        resolution.get(
+                            "message",
+                            f"ZIP file not found: {filename}"
+                        )
                     )
 
                     return self.response(
-
                         False,
-
                         "",
-
-                        "Status : Cancelled",
-
+                        "Status : ZIP File Not Found",
                         reply
-
                     )
 
-                success = self.file_manager.extract_zip(
-                    entity
+                # ---------------------------------
+                # Confirmation
+                # ---------------------------------
+
+                if not skip_confirmation:
+
+                    return self.confirmation_response(
+                        "Do you want to extract this archive?",
+                        intent="extract_zip",
+                        entity=entity,
+                        typed_text=typed_text,
+                        browser=browser,
+                        website=website,
+                        search_query=search_query,
+                        profile=profile,
+                        user_text=user_text,
+                        multi_command=multi_command,
+                        selection=selection,
+                        confirmation_action="extract_zip",
+                    )
+
+                result = self.file_system_agent.execute(
+                    "extract_zip",
+                    {
+                        "entity": filename,
+                        "selection": selection
+                    }
+                )
+
+                success = bool(
+                    result.get("success")
                 )
 
                 if success:
@@ -2583,19 +3192,17 @@ class CommandDispatcher:
                 else:
 
                     reply = self.speak(
-                        "Unable to extract the ZIP archive."
+                        result.get(
+                            "message",
+                            "Unable to extract the ZIP archive."
+                        )
                     )
 
                 return self.response(
-
                     success,
-
                     "Status : ZIP Extracted",
-
                     "Status : Extraction Failed",
-
                     reply
-
                 )
 
             # -------------------------
@@ -2603,23 +3210,23 @@ class CommandDispatcher:
             # -------------------------
 
             elif (
-
                 intent == "create_folder"
-
                 and entity
-
             ):
 
                 reply = self.speak(
                     f"Creating {entity} folder."
                 )
 
-                success = (
+                result = self.file_system_agent.execute(
+                    "create_folder",
+                    {
+                        "entity": entity
+                    }
+                )
 
-                    self.folder_manager
-
-                    .create_folder(entity)
-
+                success = bool(
+                    result.get("success")
                 )
 
                 if success:
@@ -2631,7 +3238,10 @@ class CommandDispatcher:
                 else:
 
                     reply = self.speak(
-                        "Unable to create the folder."
+                        result.get(
+                            "message",
+                            "Unable to create the folder."
+                        )
                     )
 
                 return self.response(
@@ -2645,40 +3255,146 @@ class CommandDispatcher:
                     reply
 
                 )
-            
+
             # -------------------------
             # Rename Folder
             # -------------------------
 
-            elif intent == "rename_folder":
+            elif (
+                intent == "rename_folder"
+                and entity
+            ):
+
+                if isinstance(entity, dict):
+
+                    source = (
+                        entity.get("source")
+                        or entity.get("folder")
+                        or entity.get("folder_path")
+                        or entity.get("old_name")
+                    )
+
+                    new_name = (
+                        entity.get("new_name")
+                        or entity.get("newName")
+                        or entity.get("destination_name")
+                    )
+
+                else:
+
+                    source = str(entity)
+                    new_name = None
+
+                if not source or not new_name:
+
+                    reply = self.speak(
+                        "I need both the current folder and the new folder name."
+                    )
+
+                    return self.response(
+
+                        False,
+
+                        "",
+
+                        "Status : Rename Information Missing",
+
+                        reply
+
+                    )
+
+                print(
+                    "\n==================================="
+                )
+
+                print(
+                    "FOLDER RENAME CONFIRMATION"
+                )
+
+                print(
+                    "==================================="
+                )
+
+                print(
+                    f"\nFolder : {source}"
+                )
+
+                print(
+                    f"\nRename To : {new_name}"
+                )
+
+                if not self.confirm_action(
+                    "Do you want to rename this folder?"
+                ):
+
+                    reply = self.speak(
+                        "Rename cancelled."
+                    )
+
+                    return self.response(
+
+                        False,
+
+                        "",
+
+                        "Status : Rename Cancelled",
+
+                        reply
+
+                    )
+
+                result = self.file_system_agent.execute(
+                    "rename_folder",
+                    {
+                        "source": source,
+                        "new_name": new_name
+                    }
+                )
+
+                success = bool(
+                    result.get("success")
+                )
+
+                if success:
+
+                    reply = self.speak(
+                        "Folder renamed successfully."
+                    )
+
+                else:
+
+                    reply = self.speak(
+                        result.get(
+                            "message",
+                            "Unable to rename the folder."
+                        )
+                    )
 
                 return self.response(
 
-                    False,
+                    success,
 
-                    "",
+                    "Status : Folder Renamed",
 
-                    "Status : Pending"
+                    "Status : Rename Failed",
+
+                    reply
 
                 )
-            
+
             # -------------------------
             # Delete Folder
             # -------------------------
 
             elif (
-
                 intent == "delete_folder"
-
                 and entity
-
             ):
+
                 if not self.confirm_action(
-
                     "Do you want to delete this folder?"
-
                 ):
-                    
+
                     reply = self.speak(
                         "Deletion cancelled."
                     )
@@ -2695,12 +3411,15 @@ class CommandDispatcher:
 
                     )
 
-                success = (
+                result = self.file_system_agent.execute(
+                    "delete_folder",
+                    {
+                        "entity": entity
+                    }
+                )
 
-                    self.folder_manager
-
-                    .delete_folder(entity)
-
+                success = bool(
+                    result.get("success")
                 )
 
                 if success:
@@ -2712,7 +3431,10 @@ class CommandDispatcher:
                 else:
 
                     reply = self.speak(
-                        "Unable to delete the folder."
+                        result.get(
+                            "message",
+                            "Unable to delete the folder."
+                        )
                     )
 
                 return self.response(
@@ -2726,36 +3448,254 @@ class CommandDispatcher:
                     reply
 
                 )
-            
+
             # -------------------------
             # Move Folder
             # -------------------------
 
-            elif intent == "move_folder":
+            elif (
+                intent == "move_folder"
+                and entity
+            ):
+
+                if isinstance(entity, dict):
+
+                    source = (
+                        entity.get("source")
+                        or entity.get("folder")
+                        or entity.get("folder_path")
+                    )
+
+                    destination = (
+                        entity.get("destination")
+                        or entity.get("destination_folder")
+                        or entity.get("target")
+                    )
+
+                else:
+
+                    source = str(entity)
+                    destination = None
+
+                if not source or not destination:
+
+                    reply = self.speak(
+                        "I need the folder and destination folder."
+                    )
+
+                    return self.response(
+
+                        False,
+
+                        "",
+
+                        "Status : Move Information Missing",
+
+                        reply
+
+                    )
+
+                print(
+                    "\n==================================="
+                )
+
+                print(
+                    "FOLDER MOVE CONFIRMATION"
+                )
+
+                print(
+                    "==================================="
+                )
+
+                print(
+                    f"\nFolder : {source}"
+                )
+
+                print(
+                    f"\nDestination : {destination}"
+                )
+
+                if not self.confirm_action(
+                    "Do you want to move this folder?"
+                ):
+
+                    reply = self.speak(
+                        "Move cancelled."
+                    )
+
+                    return self.response(
+
+                        False,
+
+                        "",
+
+                        "Status : Move Cancelled",
+
+                        reply
+
+                    )
+
+                result = self.file_system_agent.execute(
+                    "move_folder",
+                    {
+                        "source": source,
+                        "destination": destination
+                    }
+                )
+
+                success = bool(
+                    result.get("success")
+                )
+
+                if success:
+
+                    reply = self.speak(
+                        "Folder moved successfully."
+                    )
+
+                else:
+
+                    reply = self.speak(
+                        result.get(
+                            "message",
+                            "Unable to move the folder."
+                        )
+                    )
 
                 return self.response(
 
-                    False,
+                    success,
 
-                    "",
+                    "Status : Folder Moved",
 
-                    "Status : Pending"
+                    "Status : Move Failed",
+
+                    reply
 
                 )
-            
+
             # -------------------------
             # Copy Folder
             # -------------------------
 
-            elif intent == "copy_folder":
+            elif (
+                intent == "copy_folder"
+                and entity
+            ):
+
+                if isinstance(entity, dict):
+
+                    source = (
+                        entity.get("source")
+                        or entity.get("folder")
+                        or entity.get("folder_path")
+                    )
+
+                    destination = (
+                        entity.get("destination")
+                        or entity.get("destination_folder")
+                        or entity.get("target")
+                    )
+
+                else:
+
+                    source = str(entity)
+                    destination = None
+
+                if not source or not destination:
+
+                    reply = self.speak(
+                        "I need the folder and destination folder."
+                    )
+
+                    return self.response(
+
+                        False,
+
+                        "",
+
+                        "Status : Copy Information Missing",
+
+                        reply
+
+                    )
+
+                print(
+                    "\n==================================="
+                )
+
+                print(
+                    "FOLDER COPY CONFIRMATION"
+                )
+
+                print(
+                    "==================================="
+                )
+
+                print(
+                    f"\nFolder : {source}"
+                )
+
+                print(
+                    f"\nDestination : {destination}"
+                )
+
+                if not self.confirm_action(
+                    "Do you want to copy this folder?"
+                ):
+
+                    reply = self.speak(
+                        "Copy cancelled."
+                    )
+
+                    return self.response(
+
+                        False,
+
+                        "",
+
+                        "Status : Copy Cancelled",
+
+                        reply
+
+                    )
+
+                result = self.file_system_agent.execute(
+                    "copy_folder",
+                    {
+                        "source": source,
+                        "destination": destination
+                    }
+                )
+
+                success = bool(
+                    result.get("success")
+                )
+
+                if success:
+
+                    reply = self.speak(
+                        "Folder copied successfully."
+                    )
+
+                else:
+
+                    reply = self.speak(
+                        result.get(
+                            "message",
+                            "Unable to copy the folder."
+                        )
+                    )
 
                 return self.response(
 
-                    False,
+                    success,
 
-                    "",
+                    "Status : Folder Copied",
 
-                    "Status : Pending"
+                    "Status : Copy Failed",
+
+                    reply
 
                 )
             
@@ -2764,6 +3704,23 @@ class CommandDispatcher:
             # -------------------------
 
             elif intent == "empty_recycle_bin":
+
+                if not skip_confirmation:
+
+                    return self.confirmation_response(
+                        "Do you want to empty the recycle bin?",
+                        intent="empty_recycle_bin",
+                        entity=entity,
+                        typed_text=typed_text,
+                        browser=browser,
+                        website=website,
+                        search_query=search_query,
+                        profile=profile,
+                        user_text=user_text,
+                        multi_command=multi_command,
+                        selection=selection,
+                        confirmation_action="empty_recycle_bin",
+                    )
 
                 if not self.confirm_action(
 

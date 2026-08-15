@@ -1,4 +1,5 @@
 import os
+import re
 
 from PySide6.QtCore import (
     Qt,
@@ -9,6 +10,7 @@ from PySide6.QtCore import (
     QTimer,
     QPropertyAnimation,
     QEasingCurve,
+    QPoint,
 )
 
 from PySide6.QtGui import (
@@ -40,6 +42,7 @@ from ui.components.right_panel import RightPanelWidget
 
 from ui.widgets.background_widget import BackgroundWidget
 from ui.widgets.mic_widget import MicWidget
+from ui.widgets.file_selection_panel import FileSelectionPanel
 
 from voice.whisper_recognizer import WhisperRecognizer
 from voice.text_to_speech import TextToSpeech
@@ -137,9 +140,10 @@ class VoiceWorker(QThread):
 
             else:
 
-                self.tts.speak(
-                    "Listening."
-                )
+                # IMPORTANT:
+                # Do not speak while the microphone is active.
+                # Speaking here causes Whisper to capture ASTRA's
+                # own voice and can trigger feedback / false commands.
 
                 self.msleep(180)
 
@@ -232,6 +236,8 @@ class MainWindow(QMainWindow):
 
         super().__init__()
 
+        self._closing = False
+
         # ----------------------------------
         # Backend
         # ----------------------------------
@@ -310,6 +316,29 @@ class MainWindow(QMainWindow):
 
         # Prevent multiple mic clicks
         self.processing_voice = False
+
+        # ----------------------------------
+        # Pending File Selection
+        # ----------------------------------
+        # When a file operation matches multiple files, the
+        # dispatcher returns candidates instead of selecting
+        # the first match. MainWindow keeps the original
+        # command here and applies the user's numeric choice
+        # to that exact operation.
+        self._pending_file_selection = None
+
+        self._file_selection_candidates = []
+
+        self._file_selection_operation = None
+
+        self._loading_overlay_deleted = False
+
+        # ----------------------------------
+        # Pending Confirmation
+        # ----------------------------------
+        # CommandDispatcher returns a non-blocking confirmation
+        # request. MainWindow owns the microphone confirmation flow.
+        self._pending_confirmation = None
 
         # ----------------------------------
         # Window
@@ -459,9 +488,41 @@ class MainWindow(QMainWindow):
             0
         )
 
-        self.center_layout.setSpacing(0)
+        self.center_layout.setSpacing(10)
+
+        # --------------------------------------------------
+        # File / Folder Selection Glass Panel
+        # --------------------------------------------------
+        # IMPORTANT:
+        # Do NOT add this panel to center_layout.
+        #
+        # It is positioned manually above the microphone so it
+        # does not push the microphone/halo/avatar downward.
+        # --------------------------------------------------
+
+        self.file_selection_panel = FileSelectionPanel(
+            self.center_container
+        )
+
+        self.file_selection_panel.hide()
+
+        self.file_selection_panel.selection_requested.connect(
+            self._on_file_selection_clicked
+        )
+
+        self.file_selection_panel.cancelled.connect(
+            self._on_file_selection_cancelled
+        )
+
+        # --------------------------------------------------
+        # Flexible Space
+        # --------------------------------------------------
 
         self.center_layout.addStretch()
+
+        # --------------------------------------------------
+        # Microphone
+        # --------------------------------------------------
 
         self.mic_widget = MicWidget()
 
@@ -896,6 +957,1473 @@ class MainWindow(QMainWindow):
         print("=============================\n")
 
     # --------------------------------------------------
+    # Speech Completion / Non-Blocking UI Helpers
+    # --------------------------------------------------
+
+    def _unlock_after_speech(
+        self,
+        restart_wake=True
+    ):
+        """
+        Keep the microphone locked while ASTRA is speaking,
+        without blocking the Qt GUI thread.
+
+        This replaces blocking calls to
+        ``tts.wait_until_done()`` inside the UI thread.
+        """
+
+        def check_speech():
+
+            if self._closing:
+                return
+
+            try:
+                speaking = (
+                    self.tts is not None
+                    and self.tts.speaking()
+                )
+            except Exception:
+                speaking = False
+
+            if speaking:
+                QTimer.singleShot(
+                    60,
+                    check_speech
+                )
+                return
+
+            self.unlock_microphone()
+
+            try:
+                self.left_panel.set_speaking(
+                    "Silent"
+                )
+            except Exception:
+                pass
+
+            if (
+                restart_wake
+                and self.wake_word_enabled
+                and not self.manual_listening_requested
+                and not self._pending_file_selection
+            ):
+                QTimer.singleShot(
+                    350,
+                    self.start_wake_word_worker
+                )
+
+        # Give the TTS worker a moment to start before polling.
+        QTimer.singleShot(
+            120,
+            check_speech
+        )
+
+    def _extract_selection_number(
+        self,
+        text
+    ):
+        """
+        Extract a numeric file-selection answer.
+
+        Accepts:
+            1
+            2.
+            number 2
+            option 2
+            choose 2
+            select number 2
+        """
+
+        if text is None:
+            return None
+
+        cleaned = str(text).strip().lower()
+
+        match = re.search(
+            r"\b(?:number|option|choice|select|choose)\s*(\d+)\b",
+            cleaned
+        )
+
+        if match:
+            return int(match.group(1))
+
+        match = re.fullmatch(
+            r"(?:the\s+)?(\d+)[\s\.!?]*",
+            cleaned
+        )
+
+        if match:
+            return int(match.group(1))
+
+        # Whisper may return a spoken number.
+        spoken_numbers = {
+            "zero": 0,
+            "one": 1,
+            "two": 2,
+            "three": 3,
+            "four": 4,
+            "five": 5,
+            "six": 6,
+            "seven": 7,
+            "eight": 8,
+            "nine": 9,
+            "ten": 10,
+        }
+
+        for word, number in spoken_numbers.items():
+
+            if re.search(
+                rf"\b{word}\b",
+                cleaned
+            ):
+                return number
+
+        return None
+
+    def _wait_for_speech_then_start_selection(
+        self
+    ):
+        """
+        Start the numeric selection listener only after ASTRA
+        has completely stopped speaking.
+        """
+
+        if not self._pending_file_selection:
+            return
+
+        def check():
+
+            if not self._pending_file_selection:
+                return
+
+            if self.tts is not None:
+
+                try:
+                    if self.tts.speaking():
+                        QTimer.singleShot(
+                            80,
+                            check
+                        )
+                        return
+                except Exception:
+                    pass
+
+            self.status_label.setText(
+                "Status : Waiting for File Selection"
+            )
+
+            try:
+                self.left_panel.set_listening(
+                    "Select File Number"
+                )
+
+                self.left_panel.set_thinking(
+                    "Waiting for Selection"
+                )
+
+                self.left_panel.set_speaking(
+                    "Silent"
+                )
+
+                self.mic_widget.show_listening()
+
+                self.mic_widget.set_listening(
+                    True
+                )
+
+            except Exception:
+                pass
+
+            self.manual_listening_requested = True
+
+            # --------------------------------------------------
+            # Lock microphone while ASTRA is preparing the
+            # selection listener.
+            # --------------------------------------------------
+
+            self.lock_microphone()
+
+            QTimer.singleShot(
+                180,
+                lambda: self._start_file_selection_listener()
+            )
+
+        QTimer.singleShot(
+            120,
+            check
+        )
+
+    def _start_file_selection_listener(self):
+        """
+        Start microphone listening specifically for a pending
+        file-selection number.
+
+        This method is called only after ASTRA has stopped speaking.
+        """
+
+        if self._closing:
+            return
+
+        if not self._pending_file_selection:
+            return
+
+        # --------------------------------------------------
+        # Safety: never start another worker if one is alive.
+        # --------------------------------------------------
+
+        if self.voice_worker is not None:
+
+            try:
+
+                if self.voice_worker.isRunning():
+                    return
+
+            except Exception:
+                pass
+
+        self.status_label.setText(
+            "Status : Listening for File Selection"
+        )
+
+        try:
+
+            self.left_panel.set_listening(
+                "Listening for Number"
+            )
+
+            self.left_panel.set_thinking(
+                "Waiting for Selection"
+            )
+
+            self.left_panel.set_speaking(
+                "Silent"
+            )
+
+            self.mic_widget.show_listening()
+
+            self.mic_widget.set_listening(
+                True
+            )
+
+        except Exception:
+            pass
+
+        # --------------------------------------------------
+        # Start manual listener.
+        # --------------------------------------------------
+
+        self.start_voice_worker(
+            wake_word_mode=False
+        )
+
+    def _handle_pending_file_selection(
+        self,
+        text
+    ):
+        """
+        Handle the numeric selection for a pending file operation.
+
+        The original dispatcher payload is preserved so that the
+        selected number resumes the exact same operation instead of
+        sending the number back through intent detection.
+        """
+
+        pending = self._pending_file_selection
+
+        if not pending:
+            return False
+
+        selection = self._extract_selection_number(
+            text
+        )
+
+        candidates = pending.get(
+            "candidates",
+            []
+        )
+
+        # --------------------------------------------------
+        # No candidates
+        # --------------------------------------------------
+
+        if not candidates:
+
+            self._pending_file_selection = None
+
+            self.clear_file_selection()
+
+            message = (
+                "The file selection list is no longer available. "
+                "Please repeat the command."
+            )
+
+            self.mic_widget.update_ai_message(
+                message
+            )
+
+            self.status_label.setText(
+                "Status : File Selection Expired"
+            )
+
+            try:
+
+                self.tts.speak(
+                    message
+                )
+
+            except Exception:
+                pass
+
+            self._unlock_after_speech(
+                restart_wake=True
+            )
+
+            return True
+
+        # --------------------------------------------------
+        # Invalid / unclear selection
+        # --------------------------------------------------
+
+        if selection is None:
+
+            message = (
+                "Please say the number of the file "
+                "you want to select."
+            )
+
+            self.mic_widget.update_ai_message(
+                message
+            )
+
+            self.status_label.setText(
+                "Status : Waiting for File Selection"
+            )
+
+            try:
+
+                self.left_panel.set_listening(
+                    "Waiting for Number"
+                )
+
+                self.left_panel.set_thinking(
+                    "Select File"
+                )
+
+                self.left_panel.set_speaking(
+                    "Speaking"
+                )
+
+            except Exception:
+                pass
+
+            try:
+
+                self.tts.speak(
+                    message
+                )
+
+            except Exception:
+                pass
+
+            self._wait_for_speech_then_start_selection()
+
+            return True
+
+        # --------------------------------------------------
+        # Range validation
+        # --------------------------------------------------
+
+        if not (
+            1 <= selection <= len(candidates)
+        ):
+
+            message = (
+                f"That selection is invalid. "
+                f"Please choose a number between "
+                f"1 and {len(candidates)}."
+            )
+
+            self.mic_widget.update_ai_message(
+                message
+            )
+
+            self.status_label.setText(
+                "Status : Invalid File Selection"
+            )
+
+            try:
+
+                self.tts.speak(
+                    message
+                )
+
+            except Exception:
+                pass
+
+            self._wait_for_speech_then_start_selection()
+
+            return True
+
+        # --------------------------------------------------
+        # Preserve the COMPLETE dispatcher payload
+        # --------------------------------------------------
+
+        pending_command = dict(
+            pending
+        )
+
+        # --------------------------------------------------
+        # Consume pending state BEFORE dispatching.
+        # This prevents duplicate microphone events from
+        # executing the same selection twice.
+        # --------------------------------------------------
+
+        self._pending_file_selection = None
+
+        self.clear_file_selection()
+
+        # --------------------------------------------------
+        # Selected candidate
+        # --------------------------------------------------
+
+        selected_candidate = candidates[
+            selection - 1
+        ]
+
+        if isinstance(
+            selected_candidate,
+            dict
+        ):
+
+            selected_name = (
+                selected_candidate.get(
+                    "name"
+                )
+                or selected_candidate.get(
+                    "filename"
+                )
+                or "file"
+            )
+
+            selected_path = (
+                selected_candidate.get(
+                    "path"
+                )
+                or ""
+            )
+
+        else:
+
+            selected_name = str(
+                selected_candidate
+            )
+
+            selected_path = ""
+
+        # --------------------------------------------------
+        # UI
+        # --------------------------------------------------
+
+        self.status_label.setText(
+            "Status : Executing Selected File"
+        )
+
+        self.mic_widget.update_ai_message(
+            f"Selected option {selection}. Executing..."
+        )
+
+        self.conversation_label.setText(
+            f"Selected File\n\n"
+            f"{selection}. {selected_name}"
+            + (
+                f"\n\nLocation:\n{selected_path}"
+                if selected_path
+                else ""
+            )
+        )
+
+        try:
+
+            self.left_panel.set_listening(
+                "Idle"
+            )
+
+            self.left_panel.set_thinking(
+                "Executing"
+            )
+
+            self.left_panel.set_speaking(
+                "Silent"
+            )
+
+        except Exception:
+            pass
+
+        # --------------------------------------------------
+        # Resume ORIGINAL dispatcher command
+        # --------------------------------------------------
+
+        payload = pending_command.get(
+            "payload"
+        )
+
+        if isinstance(
+            payload,
+            dict
+        ):
+
+            payload = dict(
+                payload
+            )
+
+        else:
+
+            # Backward-compatible fallback for old pending
+            # structures already stored by MainWindow.
+            payload = {
+                "intent": pending_command.get(
+                    "intent"
+                ),
+                "entity": pending_command.get(
+                    "entity"
+                ),
+                "typed_text": pending_command.get(
+                    "typed_text"
+                ),
+                "browser": pending_command.get(
+                    "browser"
+                ),
+                "website": pending_command.get(
+                    "website"
+                ),
+                "search_query": pending_command.get(
+                    "search_query"
+                ),
+                "profile": pending_command.get(
+                    "profile"
+                ),
+                "user_text": pending_command.get(
+                    "user_text"
+                ),
+                "multi_command": pending_command.get(
+                    "multi_command",
+                    False
+                ),
+            }
+
+        try:
+
+            result = self.dispatcher.dispatch(
+
+                intent=payload.get(
+                    "intent"
+                ),
+
+                entity=payload.get(
+                    "entity"
+                ),
+
+                typed_text=payload.get(
+                    "typed_text"
+                ),
+
+                browser=payload.get(
+                    "browser"
+                ),
+
+                website=payload.get(
+                    "website"
+                ),
+
+                search_query=payload.get(
+                    "search_query"
+                ),
+
+                profile=payload.get(
+                    "profile"
+                ),
+
+                user_text=payload.get(
+                    "user_text"
+                ),
+
+                multi_command=payload.get(
+                    "multi_command",
+                    False
+                ),
+
+                selection=selection
+
+            )
+
+        except Exception as error:
+
+            print(
+                f"Selected File Dispatch Error : {error}"
+            )
+
+            result = {
+                "success": False,
+                "status": "Status : File Selection Failed",
+                "message": (
+                    "I could not complete the selected "
+                    "file operation."
+                )
+            }
+
+        # --------------------------------------------------
+        # Use ONE result handler only
+        # --------------------------------------------------
+
+        self._handle_dispatch_result(
+
+            result,
+
+            payload.get(
+                "user_text",
+                str(text)
+            ),
+
+            payload.get(
+                "intent"
+            ),
+
+            payload.get(
+                "entity"
+            ),
+
+        )
+
+        return True
+
+    def _finish_dispatch_result(
+        self,
+        result,
+        text,
+        intent=None,
+        entity=None
+    ):
+        """
+        Backward-compatible wrapper.
+
+        All dispatcher results now use one centralized result
+        handler so file selection and confirmation state cannot
+        diverge between two different flows.
+        """
+
+        self._handle_dispatch_result(
+            result,
+            text,
+            intent,
+            entity,
+        )
+
+    # --------------------------------------------------
+    # Confirmation Helpers
+    # --------------------------------------------------
+
+    def _parse_confirmation(self, text):
+        """
+        Parse a YES/NO confirmation answer.
+
+        Returns:
+            True  -> explicit yes
+            False -> explicit no
+            None  -> unclear answer
+        """
+
+        if text is None:
+            return None
+
+        cleaned = re.sub(
+            r"[^a-z0-9\s]",
+            " ",
+            str(text).strip().lower()
+        )
+
+        cleaned = re.sub(
+            r"\s+",
+            " ",
+            cleaned
+        )
+
+        yes_patterns = (
+            "yes",
+            "yeah",
+            "yep",
+            "yup",
+            "sure",
+            "okay",
+            "ok",
+            "confirm",
+            "confirmed",
+            "do it",
+            "go ahead",
+            "proceed",
+            "continue",
+            "please do",
+            "affirmative",
+        )
+
+        no_patterns = (
+            "no",
+            "nope",
+            "nah",
+            "cancel",
+            "cancel it",
+            "stop",
+            "dont",
+            "do not",
+            "negative",
+            "abort",
+        )
+
+        if cleaned in yes_patterns:
+            return True
+
+        if cleaned in no_patterns:
+            return False
+
+        # Whisper often returns a short phrase such as
+        # "yes please" or "no please".
+        yes_prefixes = (
+            "yes ",
+            "yeah ",
+            "yep ",
+            "sure ",
+            "okay ",
+            "ok ",
+            "confirm ",
+            "go ahead ",
+            "please do ",
+        )
+
+        no_prefixes = (
+            "no ",
+            "nope ",
+            "cancel ",
+            "stop ",
+            "dont ",
+            "do not ",
+        )
+
+        if cleaned.startswith(yes_prefixes):
+            return True
+
+        if cleaned.startswith(no_prefixes):
+            return False
+
+        return None
+
+    def _start_confirmation_listener_after_prompt(self):
+        """
+        Start the microphone only after the confirmation prompt
+        has completely finished speaking.
+        """
+
+        if self._closing:
+            return
+
+        if not self._pending_confirmation:
+            return
+
+        if self.voice_worker is not None:
+            try:
+                if self.voice_worker.isRunning():
+                    return
+            except Exception:
+                pass
+
+        self.manual_listening_requested = True
+
+        self.status_label.setText(
+            "Status : Waiting for Confirmation"
+        )
+
+        try:
+            self.mic_widget.show_listening()
+            self.mic_widget.set_listening(True)
+
+            self.left_panel.set_listening(
+                "Say Yes or No"
+            )
+            self.left_panel.set_thinking(
+                "Waiting for Confirmation"
+            )
+            self.left_panel.set_speaking(
+                "Silent"
+            )
+        except Exception:
+            pass
+
+        QApplication.processEvents()
+
+        QTimer.singleShot(
+            80,
+            lambda: self.start_voice_worker(
+                wake_word_mode=False
+            )
+        )
+
+    def _wait_for_confirmation_prompt(self):
+        """
+        Wait asynchronously until ASTRA finishes the confirmation
+        prompt. The Qt GUI thread is never blocked.
+        """
+
+        if self._closing:
+            return
+
+        if not self._pending_confirmation:
+            return
+
+        try:
+            speaking = (
+                self.tts is not None
+                and self.tts.speaking()
+            )
+        except Exception:
+            speaking = False
+
+        if speaking:
+            QTimer.singleShot(
+                60,
+                self._wait_for_confirmation_prompt
+            )
+            return
+
+        self._start_confirmation_listener_after_prompt()
+
+    def _begin_confirmation_flow(self, result):
+        """
+        Store the dispatcher confirmation payload and ask the user
+        for YES/NO through the existing voice worker.
+
+        CommandDispatcher never listens for confirmation itself.
+        """
+
+        self._pending_confirmation = {
+            "action": result.get(
+                "confirmation_action",
+                result.get("intent")
+            ),
+            "payload": result.get(
+                "confirmation_payload",
+                {}
+            ),
+            "message": result.get(
+                "confirmation_message",
+                result.get(
+                    "message",
+                    "Please confirm."
+                )
+            ),
+        }
+
+        self.manual_listening_requested = True
+        self.lock_microphone()
+
+        message = self._pending_confirmation["message"]
+
+        self.status_label.setText(
+            "Status : Confirmation Required"
+        )
+
+        self.mic_widget.update_ai_message(
+            message
+        )
+
+        self.conversation_label.setText(
+            f"Confirmation Required\n\n{message}\n\n"
+            "Please say Yes or No."
+        )
+
+        try:
+            self.left_panel.set_listening(
+                "Waiting for Confirmation"
+            )
+            self.left_panel.set_thinking(
+                "Confirmation Required"
+            )
+            self.left_panel.set_speaking(
+                "Speaking"
+            )
+            self.mic_widget.show_listening()
+            self.mic_widget.set_listening(False)
+        except Exception:
+            pass
+
+        # The dispatcher did not speak this confirmation.
+        # MainWindow owns TTS and waits asynchronously before
+        # starting Whisper, preventing ASTRA from hearing itself.
+        try:
+            self.tts.speak(
+                f"{message} Please say yes or no."
+            )
+        except Exception as error:
+            print(
+                f"Confirmation TTS Error : {error}"
+            )
+
+        QTimer.singleShot(
+            100,
+            self._wait_for_confirmation_prompt
+        )
+
+    def _cancel_pending_confirmation(self):
+        """
+        Cancel the pending operation without executing it.
+        """
+
+        self._pending_confirmation = None
+        self.manual_listening_requested = False
+
+        self.status_label.setText(
+            "Status : Cancelled"
+        )
+
+        self.mic_widget.update_ai_message(
+            "Operation cancelled."
+        )
+
+        self.conversation_label.setText(
+            "Operation Cancelled"
+        )
+
+        try:
+            self.left_panel.set_listening(
+                "Idle"
+            )
+            self.left_panel.set_thinking(
+                "Inactive"
+            )
+            self.left_panel.set_speaking(
+                "Speaking"
+            )
+        except Exception:
+            pass
+
+        try:
+            self.tts.speak(
+                "Operation cancelled."
+            )
+        except Exception:
+            pass
+
+        self._unlock_after_speech(
+            restart_wake=True
+        )
+
+    def _handle_confirmation_response(self, text):
+        """
+        Handle a YES/NO answer for the pending confirmation.
+
+        Returns True when the input was consumed by the
+        confirmation flow.
+        """
+
+        if not self._pending_confirmation:
+            return False
+
+        answer = self._parse_confirmation(text)
+
+        # ---------------------------------
+        # Unclear answer
+        # ---------------------------------
+
+        if answer is None:
+
+            message = (
+                "I did not understand. "
+                "Please say yes or no."
+            )
+
+            self.mic_widget.update_ai_message(
+                message
+            )
+
+            self.status_label.setText(
+                "Status : Confirmation Required"
+            )
+
+            try:
+                self.left_panel.set_listening(
+                    "Waiting for Confirmation"
+                )
+                self.left_panel.set_thinking(
+                    "Say Yes or No"
+                )
+                self.left_panel.set_speaking(
+                    "Speaking"
+                )
+            except Exception:
+                pass
+
+            try:
+                self.tts.speak(
+                    message
+                )
+            except Exception:
+                pass
+
+            # Keep the pending confirmation and listen again
+            # only after TTS has stopped.
+            QTimer.singleShot(
+                100,
+                self._wait_for_confirmation_prompt
+            )
+
+            return True
+
+        # ---------------------------------
+        # NO
+        # ---------------------------------
+
+        if answer is False:
+
+            self._cancel_pending_confirmation()
+
+            return True
+
+        # ---------------------------------
+        # YES
+        # ---------------------------------
+
+        pending = self._pending_confirmation
+
+        self._pending_confirmation = None
+        self.manual_listening_requested = False
+
+        self.status_label.setText(
+            "Status : Executing Confirmed Action"
+        )
+
+        self.mic_widget.update_ai_message(
+            "Confirmed. Executing..."
+        )
+
+        try:
+            self.left_panel.set_listening(
+                "Idle"
+            )
+            self.left_panel.set_thinking(
+                "Executing"
+            )
+            self.left_panel.set_speaking(
+                "Silent"
+            )
+        except Exception:
+            pass
+
+        payload = dict(
+            pending.get(
+                "payload",
+                {}
+            )
+        )
+
+        action = pending.get(
+            "action"
+        )
+
+        try:
+
+            result = self.dispatcher.execute_confirmed_action(
+                action,
+                payload
+            )
+
+        except Exception as error:
+
+            print(
+                f"Confirmed Action Error : {error}"
+            )
+
+            result = {
+                "success": False,
+                "status": "Status : Confirmation Execution Failed",
+                "message": (
+                    "I could not complete the confirmed action."
+                ),
+            }
+
+        self._handle_dispatch_result(
+            result,
+            payload.get(
+                "user_text",
+                ""
+            ),
+            payload.get(
+                "intent",
+                action
+            ),
+            payload.get("entity"),
+        )
+
+        return True
+
+    def _handle_dispatch_result(
+        self,
+        result,
+        text,
+        intent=None,
+        entity=None,
+    ):
+        """
+        Apply a CommandDispatcher result to the UI.
+
+        This centralizes confirmation, multi-file selection,
+        success, and failure handling so both normal commands and
+        confirmed commands follow the same lifecycle.
+        """
+
+        result = result or {}
+
+        # ---------------------------------
+        # Confirmation Required
+        # ---------------------------------
+
+        if result.get(
+            "requires_confirmation"
+        ) or result.get(
+            "confirmation_required"
+        ):
+
+            self._begin_confirmation_flow(
+                result
+            )
+
+            return
+
+        # ---------------------------------
+        # File Selection Required
+        # ---------------------------------
+
+        if result.get(
+            "requires_selection"
+        ):
+
+            candidates = result.get(
+                "candidates",
+                []
+            )
+
+            if not candidates:
+
+                failure_message = (
+                    "I could not find any selectable files."
+                )
+
+                self.mic_widget.update_ai_message(
+                    failure_message
+                )
+
+                self.status_label.setText(
+                    "Status : File Selection Failed"
+                )
+
+                try:
+
+                    self.tts.speak(
+                        failure_message
+                    )
+
+                except Exception:
+                    pass
+
+                self._unlock_after_speech(
+                    restart_wake=True
+                )
+
+                return
+
+            # ---------------------------------
+            # IMPORTANT:
+            # Preserve the exact payload created by
+            # CommandDispatcher.
+            # ---------------------------------
+
+            pending_payload = result.get(
+                "pending_payload"
+            )
+
+            if not isinstance(
+                pending_payload,
+                dict
+            ):
+
+                # Backward-compatible fallback
+                pending_payload = {
+                    "intent": intent,
+                    "entity": entity,
+                    "typed_text": result.get(
+                        "typed_text"
+                    ),
+                    "browser": result.get(
+                        "browser"
+                    ),
+                    "website": result.get(
+                        "website"
+                    ),
+                    "search_query": result.get(
+                        "search_query"
+                    ),
+                    "profile": result.get(
+                        "profile"
+                    ),
+                    "user_text": text,
+                    "multi_command": False,
+                }
+
+            else:
+
+                pending_payload = dict(
+                    pending_payload
+                )
+
+            # Make sure current command context exists.
+            pending_payload.setdefault(
+                "intent",
+                intent
+            )
+
+            pending_payload.setdefault(
+                "entity",
+                entity
+            )
+
+            pending_payload.setdefault(
+                "user_text",
+                text
+            )
+
+            # ---------------------------------
+            # Store selection state
+            # ---------------------------------
+
+            self._pending_file_selection = {
+
+                "payload": pending_payload,
+
+                "candidates": candidates,
+
+                "operation": result.get(
+                    "pending_action",
+                    "file"
+                ),
+
+            }
+
+            # ---------------------------------
+            # Show candidates ONLY in UI.
+            # Do not read the full paths through TTS.
+            # ---------------------------------
+
+            self.show_file_selection(
+
+                candidates,
+
+                operation=result.get(
+                    "pending_action",
+                    "file"
+                )
+
+            )
+
+            # ---------------------------------
+            # Short voice prompt
+            # ---------------------------------
+
+            message = (
+                f"I found {len(candidates)} matching "
+                f"{result.get('pending_action', 'file')}s. "
+                "Please say the number you want."
+            )
+
+            self.mic_widget.update_ai_message(
+                message
+            )
+
+            self.status_label.setText(
+                "Status : Waiting for File Selection"
+            )
+
+            try:
+
+                self.left_panel.set_listening(
+                    "Waiting for File Number"
+                )
+
+                self.left_panel.set_thinking(
+                    "Select a File"
+                )
+
+                self.left_panel.set_speaking(
+                    "Speaking"
+                )
+
+            except Exception:
+                pass
+
+            # ---------------------------------
+            # MainWindow owns TTS + microphone
+            # lifecycle.
+            # ---------------------------------
+
+            try:
+
+                self.tts.speak(
+                    message
+                )
+
+            except Exception as error:
+
+                print(
+                    f"File Selection Prompt Error : {error}"
+                )
+
+            # Start microphone only AFTER TTS ends.
+            self._wait_for_speech_then_start_selection()
+
+            return
+
+        # ---------------------------------
+        # Success
+        # ---------------------------------
+
+        if result.get(
+            "success",
+            False
+        ):
+
+            reply = result.get(
+                "message",
+                result.get(
+                    "status",
+                    "Done."
+                )
+            )
+
+            self.mic_widget.update_ai_message(
+                reply
+            )
+
+            self.status_label.setText(
+                result.get(
+                    "status",
+                    "Status : Completed"
+                )
+            )
+
+            self.conversation_label.setText(
+                f"Executed Successfully\n\n{text}"
+            )
+
+            if (
+                intent == "launch_application"
+                and entity
+            ):
+
+                self.last_application = entity
+
+                if (
+                    "notepad" in entity.lower()
+                    or "word" in entity.lower()
+                ):
+                    self.typing_mode = True
+
+            try:
+                self.left_panel.set_listening(
+                    "Idle"
+                )
+                self.left_panel.set_thinking(
+                    "Inactive"
+                )
+                self.left_panel.set_speaking(
+                    "Speaking"
+                )
+                self.right_panel.update_system_metrics()
+            except Exception:
+                pass
+
+            # Dispatcher normally speaks successful replies itself.
+            # Wait asynchronously instead of blocking the GUI.
+            self._unlock_after_speech(
+                restart_wake=True
+            )
+
+            QTimer.singleShot(
+                1400,
+                lambda: self.left_panel.set_speaking(
+                    "Silent"
+                )
+            )
+
+            return
+
+        # ---------------------------------
+        # Failed / Cancelled
+        # ---------------------------------
+
+        failure_reply = result.get(
+            "message",
+            "Sorry, I could not complete that request."
+        )
+
+        self.mic_widget.update_ai_message(
+            failure_reply
+        )
+
+        self.status_label.setText(
+            result.get(
+                "status",
+                "Status : No Action"
+            )
+        )
+
+        self.conversation_label.setText(
+            f"Command Failed\n\n{text}\n\n"
+            f"{result.get('status', '')}"
+        )
+
+        try:
+            self.left_panel.set_listening(
+                "Idle"
+            )
+            self.left_panel.set_thinking(
+                "Inactive"
+            )
+            self.left_panel.set_speaking(
+                "Speaking"
+            )
+        except Exception:
+            pass
+
+        # Avoid speaking twice if the dispatcher already has TTS
+        # running. If it is not speaking, provide the failure reply.
+        try:
+            if (
+                self.tts is not None
+                and not self.tts.speaking()
+            ):
+                self.tts.speak(
+                    failure_reply
+                )
+        except Exception:
+            pass
+
+        self._unlock_after_speech(
+            restart_wake=True
+        )
+
+        QTimer.singleShot(
+            1400,
+            lambda: self.left_panel.set_speaking(
+                "Silent"
+            )
+        )
+
+    # --------------------------------------------------
     # Process Command
     # --------------------------------------------------
 
@@ -916,6 +2444,39 @@ class MainWindow(QMainWindow):
         # ------------------------------------------
 
         self.lock_microphone()
+
+        # ------------------------------------------
+        # Pending YES/NO confirmation
+        # ------------------------------------------
+        # Confirmation answers must never go through intent
+        # detection. The original command payload is stored in
+        # _pending_confirmation and is executed only after YES.
+        if self._pending_confirmation:
+
+            if not text:
+                return
+
+            if self._handle_confirmation_response(
+                text
+            ):
+                return
+
+        # ------------------------------------------
+        # Pending numeric file selection
+        # ------------------------------------------
+        # A selection answer must not go through intent
+        # detection again. Otherwise "2" can be treated as
+        # a new/unknown command and the original operation
+        # starts over.
+        if self._pending_file_selection:
+
+            if not text:
+                return
+
+            if self._handle_pending_file_selection(
+                text
+            ):
+                return
 
         # ------------------------------------------
         # Normalize text
@@ -1173,7 +2734,9 @@ class MainWindow(QMainWindow):
                         reply
                     )
 
-                    self.tts.wait_until_done()
+                    self._unlock_after_speech(
+                        restart_wake=True
+                    )
 
                     QTimer.singleShot(
                         1400,
@@ -1185,7 +2748,8 @@ class MainWindow(QMainWindow):
                         )
                     )
 
-                    self.unlock_microphone()
+                    # _unlock_after_speech() owns microphone
+                    # unlock + wake-word restart.
 
                     return
 
@@ -1254,7 +2818,9 @@ class MainWindow(QMainWindow):
                     failure_message
                 )
 
-                self.tts.wait_until_done()
+                self._unlock_after_speech(
+                    restart_wake=True
+                )
 
                 QTimer.singleShot(
                     1400,
@@ -1265,8 +2831,6 @@ class MainWindow(QMainWindow):
                         )
                     )
                 )
-
-                self.unlock_microphone()
 
                 return
 
@@ -1312,9 +2876,9 @@ class MainWindow(QMainWindow):
                     error_message
                 )
 
-                self.tts.wait_until_done()
-
-                self.unlock_microphone()
+                self._unlock_after_speech(
+                    restart_wake=True
+                )
 
                 return
 
@@ -1348,7 +2912,9 @@ class MainWindow(QMainWindow):
                 "Typed successfully."
             )
 
-            self.tts.wait_until_done()
+            self._unlock_after_speech(
+                restart_wake=True
+            )
 
             self.status_label.setText(
                 "Status : Typed"
@@ -1361,8 +2927,9 @@ class MainWindow(QMainWindow):
             # ---------------------------------
             # Command completed
             # ---------------------------------
-
-            self.unlock_microphone()
+            # Keep the microphone locked until TTS finishes.
+            # _unlock_after_speech() handles the unlock and
+            # DHEEPTHI restart.
 
             try:
 
@@ -1418,9 +2985,9 @@ class MainWindow(QMainWindow):
                 ai_reply
             )
 
-            self.tts.wait_until_done()
-
-            self.unlock_microphone()
+            self._unlock_after_speech(
+                restart_wake=True
+            )
 
             self.status_label.setText(
                 "Status : Gemini AI"
@@ -1866,130 +3433,482 @@ class MainWindow(QMainWindow):
             user_text=text
 
         )
-
         # ---------------------------------
-        # Success
+        # Handle Dispatcher Result
         # ---------------------------------
 
-        if result["success"]:
+        self._handle_dispatch_result(
+            result,
+            text,
+            intent,
+            entity,
+        )
 
-            # ---------------------------------
-            # Conversation Reply
-            # ---------------------------------
+    # --------------------------------------------------
+    # Position File Selection Panel
+    # --------------------------------------------------
 
-            reply = result.get(
-                "message",
-                result.get(
-                    "status",
-                    "Done."
+    def _position_file_selection_panel(self):
+        """
+        Position the File/Folder Selection Panel at the
+        bottom-center, directly above the ACTUAL microphone
+        button.
+
+        IMPORTANT:
+            - MicWidget is NOT moved.
+            - MicWidget size is NOT changed.
+            - User message area is NOT changed.
+            - ASTRA response area is NOT changed.
+            - Only the floating file-selection panel is moved.
+            - The panel follows the real microphone button,
+            not the large MicWidget container.
+        """
+
+        panel = getattr(
+            self,
+            "file_selection_panel",
+            None
+        )
+
+        mic_button = getattr(
+            self,
+            "microphone_button",
+            None
+        )
+
+        center = getattr(
+            self,
+            "center_container",
+            None
+        )
+
+        if (
+            panel is None
+            or mic_button is None
+            or center is None
+        ):
+            return
+
+        try:
+
+            # --------------------------------------------------
+            # Panel must be visible
+            # --------------------------------------------------
+
+            if not panel.isVisible():
+                return
+
+            # --------------------------------------------------
+            # Make sure layouts are updated first.
+            # --------------------------------------------------
+
+            layout = center.layout()
+
+            if layout is not None:
+                layout.activate()
+
+            QApplication.processEvents()
+
+            # --------------------------------------------------
+            # Panel Width
+            # --------------------------------------------------
+
+            available_width = center.width()
+
+            panel_width = min(
+                700,
+                max(
+                    500,
+                    available_width - 30
                 )
             )
 
-            self.mic_widget.update_ai_message(reply)
+            panel.setFixedWidth(
+                panel_width
+            )
 
-            self.lock_microphone()
+            # --------------------------------------------------
+            # Recalculate panel height.
+            # --------------------------------------------------
 
-            self.tts.wait_until_done()
+            panel.adjustSize()
 
-            self.unlock_microphone()
+            QApplication.processEvents()
 
-            if (
+            # --------------------------------------------------
+            # ACTUAL MICROPHONE BUTTON POSITION
+            #
+            # IMPORTANT:
+            #
+            # Do NOT use:
+            #
+            #     self.mic_widget.height()
+            #
+            # because MicWidget contains the complete
+            # left / center / right conversation area.
+            #
+            # Instead use the real microphone button.
+            # --------------------------------------------------
 
-                intent == "launch_application"
+            mic_top_left = mic_button.mapTo(
+                center,
+                QPoint(0, 0)
+            )
 
-                and
+            mic_x = mic_top_left.x()
 
-                entity
+            mic_y = mic_top_left.y()
 
-            ):
+            mic_width = mic_button.width()
 
-                self.last_application = entity
+            # --------------------------------------------------
+            # Center panel relative to ACTUAL microphone.
+            #
+            # This also keeps the panel aligned with the mic
+            # if the internal 3-column microphone area changes.
+            # --------------------------------------------------
 
-                if (
+            x = (
+                mic_x
+                + (mic_width - panel.width()) // 2
+            )
 
-                    "notepad" in entity.lower()
+            # --------------------------------------------------
+            # Small visual gap.
+            #
+            # Panel:
+            #
+            #   ┌──────────────────────┐
+            #   │ File Selection       │
+            #   └──────────────────────┘
+            #
+            #              6 px
+            #
+            #              🎤
+            #
+            # --------------------------------------------------
 
-                    or
+            gap = 6
 
-                    "word" in entity.lower()
+            y = (
+                mic_y
+                - panel.height()
+                - gap
+            )
 
-                ):
+            # --------------------------------------------------
+            # Horizontal safety boundary
+            # --------------------------------------------------
 
-                    self.typing_mode = True
+            x = max(
+                8,
+                min(
+                    x,
+                    center.width()
+                    - panel.width()
+                    - 8
+                )
+            )
+
+            # --------------------------------------------------
+            # Vertical safety boundary
+            # --------------------------------------------------
+
+            y = max(
+                8,
+                y
+            )
+
+            # --------------------------------------------------
+            # Final geometry
+            #
+            # ONLY THE FILE PANEL MOVES.
+            # --------------------------------------------------
+
+            panel.setGeometry(
+                x,
+                y,
+                panel.width(),
+                panel.height()
+            )
+
+            # --------------------------------------------------
+            # Keep panel above background/avatar layer.
+            # --------------------------------------------------
+
+            panel.raise_()
+
+            panel.update()
+
+        except RuntimeError:
+
+            # Qt object may already be closing/deleted.
+            return
+
+        except Exception as error:
+
+            print(
+                f"File Selection Position Error : {error}"
+            )
+
+    # --------------------------------------------------
+    # File Selection UI
+    # --------------------------------------------------
+
+    def show_file_selection(
+        self,
+        candidates,
+        operation="file"
+    ):
+        """
+        Show file/folder candidates in the glassmorphism
+        FileSelectionPanel.
+
+        The panel floats directly above the microphone
+        without changing the microphone, halo, or avatar
+        layout position.
+        """
+
+        if not candidates:
+            return
+
+        self._file_selection_candidates = list(
+            candidates
+        )
+
+        self._file_selection_operation = (
+            operation or "file"
+        )
+
+        try:
+
+            # --------------------------------------------------
+            # Prepare panel content
+            # --------------------------------------------------
+
+            self.file_selection_panel.show_candidates(
+                candidates,
+                operation=operation
+            )
+
+            # --------------------------------------------------
+            # Main UI status
+            # --------------------------------------------------
 
             self.status_label.setText(
-
-                result["status"]
-
+                f"Status : Select {operation.title()}"
             )
+
+            # --------------------------------------------------
+            # Short AI message beside microphone
+            # --------------------------------------------------
+
+            message = (
+                f"I found {len(candidates)} matching "
+                f"{operation}s. Please say the number you want."
+            )
+
+            self.mic_widget.update_ai_message(
+                message
+            )
+
+            # --------------------------------------------------
+            # Keep conversation area clean.
+            # Full file paths remain ONLY inside the panel.
+            # --------------------------------------------------
 
             self.conversation_label.setText(
-
-                f"Executed Successfully\n\n{text}"
-
+                f"{operation.title()} Selection\n\n"
+                f"{len(candidates)} matching items found.\n\n"
+                "Choose a number from the panel."
             )
+
+            # --------------------------------------------------
+            # Left status cards
+            # --------------------------------------------------
 
             try:
 
-                # Automation completed
                 self.left_panel.set_listening(
-                    "Idle"
+                    "Waiting for File Number"
                 )
 
                 self.left_panel.set_thinking(
-                    "Inactive"
+                    "Select a File"
                 )
 
                 self.left_panel.set_speaking(
-                    "Speaking"
-                )
-
-                self.right_panel.update_system_metrics()
-
-            except Exception:
-
-                pass
-
-            # AI reply finished
-            QTimer.singleShot(
-
-                1400,
-
-                lambda: self.left_panel.set_speaking(
                     "Silent"
                 )
 
+            except Exception:
+                pass
+
+            # --------------------------------------------------
+            # Show panel
+            # --------------------------------------------------
+
+            self.file_selection_panel.show()
+
+            # --------------------------------------------------
+            # Let Qt calculate the panel's final size.
+            # --------------------------------------------------
+
+            QApplication.processEvents()
+
+            self.file_selection_panel.adjustSize()
+
+            QApplication.processEvents()
+
+            # --------------------------------------------------
+            # Position panel relative to microphone.
+            #
+            # IMPORTANT:
+            # Use delayed positioning because the microphone
+            # geometry may finish updating only after this
+            # event loop pass.
+            # --------------------------------------------------
+
+            QTimer.singleShot(
+                0,
+                self._position_file_selection_panel
             )
+
+            # --------------------------------------------------
+            # Second positioning pass.
+            #
+            # This handles final layout/paint geometry and
+            # keeps the panel locked to the microphone.
+            # --------------------------------------------------
+
+            QTimer.singleShot(
+                80,
+                self._position_file_selection_panel
+            )
+
+            self.file_selection_panel.raise_()
+
+            self.file_selection_panel.update()
+
+            self.center_container.update()
+
+            self.update()
+
+        except Exception as error:
+
+            print(
+                f"File Selection Panel Error : {error}"
+            )
+
+    def clear_file_selection(self):
+        """
+        Clear the current filesystem selection state
+        and hide the glass selection panel.
+        """
+
+        self._file_selection_candidates = []
+
+        self._file_selection_operation = None
+
+        # --------------------------------------------------
+        # Hide the dedicated file/folder selection UI
+        # --------------------------------------------------
+
+        try:
+
+            self.file_selection_panel.hide_panel()
+
+        except Exception as error:
+
+            print(
+                f"File Selection Panel Hide Error : {error}"
+            )
+
+    # --------------------------------------------------
+    # File Selection Button Click
+    # --------------------------------------------------
+
+    def _on_file_selection_clicked(
+        self,
+        selection_index
+    ):
+        """
+        Handle a direct UI selection.
+
+        Example:
+            User clicks option 2
+            -> selection_index = 2
+            -> same pending voice command is resumed
+            -> no second intent detection
+        """
+
+        if self._closing:
+            return
+
+        if not self._pending_file_selection:
+            return
+
+        try:
+
+            selection_index = int(
+                selection_index
+            )
+
+        except (
+            TypeError,
+            ValueError
+        ):
 
             return
 
-        # ---------------------------------
-        # Failed
-        # ---------------------------------
-
-        self.mic_widget.update_ai_message(
-
-            result.get(
-                "message",
-                "Sorry, I couldn't complete that request."
-            )
-
+        print(
+            f"File Selection UI Choice : {selection_index}"
         )
 
-        self.lock_microphone()
+        # --------------------------------------------------
+        # Reuse the SAME pending-command selection flow
+        # --------------------------------------------------
 
-        self.tts.speak(
-            "Sorry. I could not understand your command."
+        self._handle_pending_file_selection(
+            str(selection_index)
         )
 
-        self.tts.wait_until_done()
 
-        self.unlock_microphone()
+    # --------------------------------------------------
+    # File Selection Cancel
+    # --------------------------------------------------
+
+    def _on_file_selection_cancelled(
+        self
+    ):
+        """
+        Cancel the currently pending file/folder selection.
+        """
+
+        if self._closing:
+            return
+
+        if not self._pending_file_selection:
+            return
+
+        print(
+            "File Selection UI Cancelled."
+        )
+
+        self._pending_file_selection = None
+
+        self.clear_file_selection()
 
         self.status_label.setText(
+            "Status : File Selection Cancelled"
+        )
 
-            "Status : No Action"
+        self.mic_widget.update_ai_message(
+            "File selection cancelled."
+        )
 
+        self.conversation_label.setText(
+            "File Selection Cancelled"
         )
 
         try:
@@ -2007,17 +3926,19 @@ class MainWindow(QMainWindow):
             )
 
         except Exception:
-
             pass
 
-        QTimer.singleShot(
+        try:
 
-            1400,
-
-            lambda: self.left_panel.set_speaking(
-                "Silent"
+            self.tts.speak(
+                "File selection cancelled."
             )
 
+        except Exception:
+            pass
+
+        self._unlock_after_speech(
+            restart_wake=True
         )
 
     # --------------------------------------------------
@@ -2205,21 +4126,40 @@ class MainWindow(QMainWindow):
 
     def finish_loading_animation(self):
         """
-        Remove loading overlay.
+        Remove loading overlay safely.
+
+        The overlay is detached from MainWindow before
+        deleteLater() so resizeEvent() can never access
+        a QWidget that has already been deleted.
         """
 
-        if not hasattr(self, "loading_overlay"):
+        overlay = getattr(
+            self,
+            "loading_overlay",
+            None
+        )
+
+        if overlay is None:
+            self.enable_main_ui()
             return
 
-        if not self.loading_overlay.isVisible():
+        try:
+
+            if not overlay.isVisible():
+                self.loading_overlay = None
+                self.enable_main_ui()
+                return
+
+        except RuntimeError:
+
+            # Qt object has already been deleted.
+            self.loading_overlay = None
+            self.enable_main_ui()
             return
 
         fade = QPropertyAnimation(
-
             self.overlay_opacity,
-
             b"opacity"
-
         )
 
         fade.setDuration(350)
@@ -2234,9 +4174,24 @@ class MainWindow(QMainWindow):
 
         def remove_overlay():
 
-            self.loading_overlay.hide()
+            try:
+                overlay.hide()
 
-            self.loading_overlay.deleteLater()
+            except RuntimeError:
+                pass
+
+            # IMPORTANT:
+            # Remove the Python reference BEFORE deleteLater().
+            # This prevents resizeEvent() from touching the
+            # deleted QWidget.
+
+            self.loading_overlay = None
+
+            try:
+                overlay.deleteLater()
+
+            except RuntimeError:
+                pass
 
             self.enable_main_ui()
 
@@ -2453,17 +4408,40 @@ class MainWindow(QMainWindow):
         """
         Start manual voice recognition.
 
-        If DHEEPTHI wake-word listener is currently
-        using the microphone, stop it first and then
-        start manual microphone listening.
+        Manual microphone lifecycle:
+
+            Mic Click
+                ↓
+            Stop DHEEPTHI wake listener
+                ↓
+            Show "Listening" immediately
+                ↓
+            ASTRA says "Listening"
+                ↓
+            Wait until TTS finishes
+                ↓
+            Start the actual microphone listener
+                ↓
+            Capture one command
+                ↓
+            Disable microphone while ASTRA processes / speaks
+                ↓
+            Restart DHEEPTHI after the task is complete
+
+        The GUI thread is never blocked waiting for the wake-word
+        worker. This is important because blocking QThread.wait()
+        from the Qt GUI thread can make the window appear as
+        "Not Responding".
         """
+
+        if self._closing:
+            return
 
         # ---------------------------------
         # Already processing
         # ---------------------------------
 
         if self.processing_voice:
-
             return
 
         # ---------------------------------
@@ -2471,7 +4449,6 @@ class MainWindow(QMainWindow):
         # ---------------------------------
 
         if self.manual_listening_requested:
-
             return
 
         # ---------------------------------
@@ -2480,57 +4457,287 @@ class MainWindow(QMainWindow):
 
         self.manual_listening_requested = True
 
-        # ---------------------------------
-        # Stop DHEEPTHI Wake Worker
-        # ---------------------------------
-
-        if self.voice_worker is not None:
-
-            if self.voice_worker.isRunning():
-
-                if self.current_voice_mode == "wake":
-
-                    print(
-                        "Stopping DHEEPTHI listener for manual microphone..."
-                    )
-
-                    try:
-
-                        self.voice_worker.stop()
-
-                    except Exception as error:
-
-                        print(
-                            f"Wake Worker Stop Error : {error}"
-                        )
-
-                    # ---------------------------------
-                    # Wait for microphone to release
-                    # ---------------------------------
-
-                    self.voice_worker.wait(3000)
-
-                else:
-
-                    # Manual worker already running
-
-                    self.manual_listening_requested = False
-
-                    return
-
-        # ---------------------------------
-        # Lock Microphone
-        # ---------------------------------
-
+        # Lock immediately so the user cannot start another
+        # microphone action while the mode is switching.
         self.lock_microphone()
+
+        # ---------------------------------
+        # Update UI immediately
+        # ---------------------------------
+        # The user asked for the first manual click to show
+        # "Listening", not "Preparing".
+        #
+        # The actual audio capture is still delayed until
+        # ASTRA finishes saying "Listening", preventing Whisper
+        # from capturing ASTRA's own voice.
+        # ---------------------------------
 
         self.status_label.setText(
             "Status : Listening..."
         )
 
-        self.mic_widget.show_listening()
+        try:
+            self.mic_widget.show_listening()
+
+            self.mic_widget.set_listening(
+                False
+            )
+
+            self.left_panel.set_listening(
+                "Listening"
+            )
+
+            self.left_panel.set_thinking(
+                "Inactive"
+            )
+
+            self.left_panel.set_speaking(
+                "Silent"
+            )
+
+        except Exception:
+            pass
+
+        QApplication.processEvents()
+
+        # ---------------------------------
+        # Stop DHEEPTHI Wake Worker
+        # ---------------------------------
+        # IMPORTANT:
+        # Do NOT call voice_worker.wait() here.
+        # The GUI must remain responsive.
+        #
+        # listening_finished() will continue the manual flow
+        # after the wake worker has actually finished.
+        # ---------------------------------
+
+        if self.voice_worker is not None:
+
+            try:
+
+                if self.voice_worker.isRunning():
+
+                    if self.current_voice_mode == "wake":
+
+                        print(
+                            "Stopping DHEEPTHI listener for manual microphone..."
+                        )
+
+                        try:
+                            self.voice_worker.stop()
+
+                        except Exception as error:
+                            print(
+                                f"Wake Worker Stop Error : {error}"
+                            )
+
+                        return
+
+                    # Manual worker is already running.
+                    self.manual_listening_requested = False
+                    self.unlock_microphone()
+                    return
+
+            except Exception as error:
+
+                print(
+                    f"Voice Worker State Error : {error}"
+                )
+
+        # ---------------------------------
+        # No wake worker is running.
+        # Start the manual prompt now.
+        # ---------------------------------
+
+        self._begin_manual_listening_prompt()
+
+    # --------------------------------------------------
+    # Begin Manual Listening Prompt
+    # --------------------------------------------------
+
+    def _begin_manual_listening_prompt(self):
+        """
+        Start the manual-listening TTS prompt.
+
+        This is called only after the wake-word worker has
+        stopped, so ASTRA cannot speak while the wake listener
+        still owns the microphone.
+        """
+
+        if self._closing:
+            return
+
+        if not self.manual_listening_requested:
+            return
+
+        # ---------------------------------
+        # Safety: wake worker must be gone
+        # ---------------------------------
+
+        if self.voice_worker is not None:
+
+            try:
+
+                if self.voice_worker.isRunning():
+
+                    return
+
+            except Exception:
+                pass
+
+        # ---------------------------------
+        # Keep the UI in Listening state
+        # ---------------------------------
+
+        self.status_label.setText(
+            "Status : Listening..."
+        )
 
         try:
+
+            self.mic_widget.show_listening()
+
+            self.mic_widget.set_listening(
+                False
+            )
+
+            self.left_panel.set_listening(
+                "Listening"
+            )
+
+            self.left_panel.set_thinking(
+                "Inactive"
+            )
+
+            self.left_panel.set_speaking(
+                "Speaking"
+            )
+
+        except Exception:
+            pass
+
+        # ---------------------------------
+        # ASTRA Voice Prompt
+        # ---------------------------------
+        # Only the word "Listening" is used.
+        # No "Sollunga" prompt is generated here.
+        # ---------------------------------
+
+        try:
+
+            if self.tts is not None:
+
+                self.tts.speak(
+                    "Listening"
+                )
+
+        except Exception as error:
+
+            print(
+                f"Listening Prompt TTS Error : {error}"
+            )
+
+            # If TTS fails, start microphone directly.
+            self._start_manual_listener_after_prompt()
+
+            return
+
+        # ---------------------------------
+        # Wait asynchronously for TTS
+        # ---------------------------------
+
+        QTimer.singleShot(
+            100,
+            self._wait_for_manual_listening_prompt
+        )
+
+    # --------------------------------------------------
+    # Wait For Manual Listening Prompt
+    # --------------------------------------------------
+
+    def _wait_for_manual_listening_prompt(self):
+        """
+        Wait asynchronously until ASTRA finishes saying
+        "Listening".
+
+        The microphone remains disabled at the backend while
+        TTS is speaking. This prevents Whisper from hearing
+        ASTRA's own voice.
+        """
+
+        if self._closing:
+            return
+
+        if not self.manual_listening_requested:
+            return
+
+        try:
+
+            speaking = (
+                self.tts is not None
+                and self.tts.speaking()
+            )
+
+        except Exception:
+
+            speaking = False
+
+        if speaking:
+
+            QTimer.singleShot(
+                60,
+                self._wait_for_manual_listening_prompt
+            )
+
+            return
+
+        # ---------------------------------
+        # TTS finished
+        # ---------------------------------
+
+        self._start_manual_listener_after_prompt()
+
+    # --------------------------------------------------
+    # Start Manual Listener After Prompt
+    # --------------------------------------------------
+
+    def _start_manual_listener_after_prompt(self):
+        """
+        Start the actual microphone listener only after
+        ASTRA's "Listening" prompt has completely finished.
+        """
+
+        if self._closing:
+            return
+
+        if not self.manual_listening_requested:
+            return
+
+        # ---------------------------------
+        # Safety: existing worker
+        # ---------------------------------
+
+        if self.voice_worker is not None:
+
+            try:
+
+                if self.voice_worker.isRunning():
+                    return
+
+            except Exception:
+                pass
+
+        # ---------------------------------
+        # Update UI
+        # ---------------------------------
+
+        self.status_label.setText(
+            "Status : Listening..."
+        )
+
+        try:
+
+            self.mic_widget.show_listening()
 
             self.mic_widget.set_listening(
                 True
@@ -2549,7 +4756,6 @@ class MainWindow(QMainWindow):
             )
 
         except Exception:
-
             pass
 
         QApplication.processEvents()
@@ -2559,18 +4765,11 @@ class MainWindow(QMainWindow):
         # ---------------------------------
 
         QTimer.singleShot(
-
-            100,
-
+            50,
             lambda: self.start_voice_worker(
                 wake_word_mode=False
             )
-
         )
-
-    # --------------------------------------------------
-    # Listening Finished
-    # --------------------------------------------------
 
     def listening_finished(self):
         """
@@ -2578,19 +4777,14 @@ class MainWindow(QMainWindow):
 
         1. DHEEPTHI wake-word listening
         2. Manual microphone listening
+
+        IMPORTANT:
+        This method never blocks the Qt GUI thread with
+        QThread.wait(). The worker's finished signal already
+        tells us that its run() method has returned.
         """
 
-        # ---------------------------------
-        # Remember which worker finished
-        # ---------------------------------
-
-        finished_mode = (
-            self.current_voice_mode
-        )
-
-        # ---------------------------------
-        # Clear Current Worker
-        # ---------------------------------
+        finished_mode = self.current_voice_mode
 
         current_worker = self.voice_worker
 
@@ -2608,35 +4802,20 @@ class MainWindow(QMainWindow):
                 0.0
             )
 
-            # ---------------------------------
-            # Only stop the visual listening
-            # animation here.
-            #
-            # Do NOT unlock the microphone here.
-            # Command processing still owns the lock.
-            # ---------------------------------
-
             self.mic_widget._listening = False
 
             self.mic_widget.update()
 
         except Exception:
-
             pass
 
         # ---------------------------------
-        # Cleanup Worker
+        # Non-blocking Worker Cleanup
         # ---------------------------------
 
         if current_worker:
 
             try:
-
-                if current_worker.isRunning():
-
-                    current_worker.wait(
-                        3000
-                    )
 
                 current_worker.deleteLater()
 
@@ -2660,8 +4839,108 @@ class MainWindow(QMainWindow):
 
             self.wake_word_running = False
 
+            # --------------------------------------------------
+            # Pending YES/NO confirmation
+            # --------------------------------------------------
+            # process_command() can receive the confirmation request
+            # while the manual worker is still unwinding. Start the
+            # confirmation listener only after this worker has fully
+            # finished, otherwise two voice workers could overlap.
+            if self._pending_confirmation:
+
+                print(
+                    "Manual listening finished. "
+                    "Pending confirmation is active."
+                )
+
+                self.status_label.setText(
+                    "Status : Waiting for Confirmation"
+                )
+
+                try:
+                    self.left_panel.set_listening(
+                        "Say Yes or No"
+                    )
+
+                    self.left_panel.set_thinking(
+                        "Waiting for Confirmation"
+                    )
+
+                    self.left_panel.set_speaking(
+                        "Silent"
+                    )
+                except Exception:
+                    pass
+
+                QTimer.singleShot(
+                    120,
+                    self._wait_for_confirmation_prompt
+                )
+
+                return
+
+            # --------------------------------------------------
+            # Pending file selection
+            # --------------------------------------------------
+
+            if self._pending_file_selection:
+
+                print(
+                    "Manual listening finished. "
+                    "Pending file selection is active."
+                )
+
+                self.status_label.setText(
+                    "Status : Waiting for File Selection"
+                )
+
+                try:
+
+                    self.left_panel.set_listening(
+                        "Select File Number"
+                    )
+
+                    self.left_panel.set_thinking(
+                        "Waiting for Selection"
+                    )
+
+                    self.left_panel.set_speaking(
+                        "Silent"
+                    )
+
+                    self.mic_widget.show_listening()
+
+                    self.mic_widget.set_listening(
+                        False
+                    )
+
+                except Exception:
+                    pass
+
+                # ----------------------------------
+                # Start selection listener only after
+                # the previous manual worker has fully
+                # finished.
+                # ----------------------------------
+
+                QTimer.singleShot(
+                    150,
+                    self._wait_for_speech_then_start_selection
+                )
+
+                return
+
+            # --------------------------------------------------
+            # Normal manual command
+            # --------------------------------------------------
+            # DO NOT unlock or restart wake-word mode here.
+            # process_command() owns the command lifecycle and
+            # _unlock_after_speech() will unlock + restart wake
+            # only after processing/TTS has completed.
+            # --------------------------------------------------
+
             self.status_label.setText(
-                "Status : Ready"
+                "Status : Processing..."
             )
 
             try:
@@ -2671,7 +4950,7 @@ class MainWindow(QMainWindow):
                 )
 
                 self.left_panel.set_thinking(
-                    "Inactive"
+                    "Thinking"
                 )
 
                 self.left_panel.set_speaking(
@@ -2679,34 +4958,7 @@ class MainWindow(QMainWindow):
                 )
 
             except Exception:
-
                 pass
-
-            # ---------------------------------
-            # Unlock microphone
-            # ---------------------------------
-
-            QTimer.singleShot(
-
-                120,
-
-                self.unlock_microphone
-
-            )
-
-            # ---------------------------------
-            # Return to DHEEPTHI standby
-            # ---------------------------------
-
-            if self.wake_word_enabled:
-
-                QTimer.singleShot(
-
-                    500,
-
-                    self.start_wake_word_worker
-
-                )
 
             return
 
@@ -2719,8 +4971,7 @@ class MainWindow(QMainWindow):
             self.wake_word_running = False
 
             # ---------------------------------
-            # If manual listening was requested,
-            # DO NOT restart DHEEPTHI here.
+            # Manual microphone has priority
             # ---------------------------------
 
             if self.manual_listening_requested:
@@ -2729,17 +4980,26 @@ class MainWindow(QMainWindow):
                     "Wake listener stopped for manual microphone."
                 )
 
+                QTimer.singleShot(
+                    0,
+                    self._begin_manual_listening_prompt
+                )
+
+                return
+
+            # ---------------------------------
+            # Wake-word command is being processed.
+            # ---------------------------------
+
+            if self.processing_voice:
+
                 return
 
             # ---------------------------------
             # Normal Wake Word Loop
             # ---------------------------------
 
-            if (
-                self.wake_word_enabled
-                and
-                not self.manual_listening_requested
-            ):
+            if self.wake_word_enabled:
 
                 try:
 
@@ -2756,20 +5016,17 @@ class MainWindow(QMainWindow):
                     )
 
                 except Exception:
-
                     pass
 
                 QTimer.singleShot(
-
                     700,
-
                     lambda: (
                         self.start_wake_word_worker()
                         if self.wake_word_enabled
                         and not self.manual_listening_requested
+                        and not self.processing_voice
                         else None
                     )
-
                 )
 
             return
@@ -2778,19 +5035,14 @@ class MainWindow(QMainWindow):
         # Unknown / Safety
         # ---------------------------------
 
-        self.manual_listening_requested = False
+        if not self.processing_voice:
 
-        QTimer.singleShot(
+            self.manual_listening_requested = False
 
-            120,
-
-            self.unlock_microphone
-
-        )
-
-    # --------------------------------------------------
-    # Start Voice Worker
-    # --------------------------------------------------
+            QTimer.singleShot(
+                120,
+                self.unlock_microphone
+            )
 
     def start_voice_worker(
         self,
@@ -2989,13 +5241,73 @@ class MainWindow(QMainWindow):
         event
     ):
 
-        super().resizeEvent(event)
+        super().resizeEvent(
+            event
+        )
 
-        if hasattr(self, "loading_overlay"):
+        # --------------------------------------------------
+        # Loading overlay
+        # --------------------------------------------------
 
-            self.loading_overlay.setGeometry(
-                self.rect()
+        overlay = getattr(
+            self,
+            "loading_overlay",
+            None
+        )
+
+        if overlay is not None:
+
+            try:
+
+                if overlay.isVisible():
+
+                    overlay.setGeometry(
+                        self.rect()
+                    )
+
+            except RuntimeError:
+
+                self.loading_overlay = None
+
+        # --------------------------------------------------
+        # Keep file selection panel attached to microphone.
+        # --------------------------------------------------
+
+        panel = getattr(
+            self,
+            "file_selection_panel",
+            None
+        )
+
+        if panel is None:
+            return
+
+        try:
+
+            if not panel.isVisible():
+                return
+
+            # --------------------------------------------------
+            # First pass after resize.
+            # --------------------------------------------------
+
+            QTimer.singleShot(
+                0,
+                self._position_file_selection_panel
             )
+
+            # --------------------------------------------------
+            # Second pass after Qt completes the layout.
+            # --------------------------------------------------
+
+            QTimer.singleShot(
+                80,
+                self._position_file_selection_panel
+            )
+
+        except RuntimeError:
+
+            pass
 
     # --------------------------------------------------
     # Initialize Application
@@ -3031,6 +5343,8 @@ class MainWindow(QMainWindow):
         and backend resources before destroying
         the main window.
         """
+
+        self._closing = True
 
         print(
             "\n========== ASTRA SHUTDOWN =========="
