@@ -225,6 +225,98 @@ class VoiceWorker(QThread):
             )
 
 # =====================================================
+# Gemini Conversation Worker
+# =====================================================
+
+class ChatWorker(QThread):
+    """
+    Background worker for Gemini conversation.
+
+    IMPORTANT:
+        Gemini API call happens outside the Qt GUI thread.
+
+    This keeps ASTRA-AI responsive on lower-spec systems
+    such as i5 / 8GB RAM laptops.
+    """
+
+    reply_ready = Signal(str)
+
+    error_occurred = Signal(str)
+
+    def __init__(
+        self,
+        gemini,
+        message,
+    ):
+        super().__init__()
+
+        self.gemini = gemini
+
+        self.message = str(
+            message
+        ).strip()
+
+    def run(self):
+        """
+        Generate Gemini response in background.
+        """
+
+        try:
+
+            if not self.message:
+
+                self.reply_ready.emit(
+                    "Please say something."
+                )
+
+                return
+
+            if self.gemini is None:
+
+                self.error_occurred.emit(
+                    "Gemini is not available right now."
+                )
+
+                return
+
+            # -----------------------------------------
+            # Gemini API call
+            # -----------------------------------------
+
+            response = self.gemini.generate_response(
+                self.message
+            )
+
+            response = str(
+                response or ""
+            ).strip()
+
+            if not response:
+
+                response = (
+                    "Sorry, I couldn't generate "
+                    "a response right now."
+                )
+
+            # -----------------------------------------
+            # Send result back to GUI thread
+            # -----------------------------------------
+
+            self.reply_ready.emit(
+                response
+            )
+
+        except Exception as error:
+
+            print(
+                f"Conversation Gemini Error : {error}"
+            )
+
+            self.error_occurred.emit(
+                "Sorry, I couldn't connect to ASTRA right now."
+            )
+
+# =====================================================
 # Main Window
 # =====================================================
 
@@ -295,6 +387,21 @@ class MainWindow(QMainWindow):
 
         self.voice_worker = None
         self.worker = None
+
+        # ----------------------------------
+        # Gemini Conversation Worker
+        # ----------------------------------
+        # Only ONE text conversation request
+        # is allowed at a time.
+        #
+        # This prevents multiple Gemini API
+        # calls from running simultaneously
+        # on lower-spec systems.
+        # ----------------------------------
+
+        self.chat_worker = None
+
+        self.chat_processing = False
 
         # ----------------------------------
         # Voice Worker State
@@ -603,9 +710,36 @@ class MainWindow(QMainWindow):
             self
         )
 
-        # Conversation header button -> open / close
+        # --------------------------------------------------
+        # Conversation close button
+        # --------------------------------------------------
+
         self.conversation_panel.close_requested.connect(
             self.close_conversation_panel
+        )
+
+        # --------------------------------------------------
+        # Conversation text message
+        # --------------------------------------------------
+        # User sends a message from the conversation panel.
+        #
+        # IMPORTANT:
+        # This does NOT go through the command dispatcher yet.
+        #
+        # For this stage:
+        #
+        # Text Message
+        #      ↓
+        # Gemini Conversation
+        #      ↓
+        # ASTRA Reply
+        #
+        # Command execution will remain with the existing
+        # voice-command pipeline for now.
+        # --------------------------------------------------
+
+        self.conversation_panel.send_requested.connect(
+            self.handle_conversation_message
         )
 
         self.conversation_panel.hide()
@@ -5287,6 +5421,409 @@ class MainWindow(QMainWindow):
 
             pass
 
+    # =====================================================
+    # Conversation Message Handling
+    # =====================================================
+
+    @Slot(str)
+    def handle_conversation_message(
+        self,
+        text
+    ):
+        """
+        Handle a text message sent from ConversationPanel.
+
+        Flow:
+
+            User
+              ↓
+            ConversationPanel
+              ↓
+            MainWindow
+              ↓
+            ChatWorker
+              ↓
+            Gemini
+              ↓
+            ASTRA response
+              ↓
+            ConversationPanel
+        """
+
+        if self._closing:
+
+            return
+
+        # ------------------------------------------
+        # Normalize
+        # ------------------------------------------
+
+        text = str(
+            text or ""
+        ).strip()
+
+        if not text:
+
+            return
+
+        # ------------------------------------------
+        # Gemini must be initialized
+        # ------------------------------------------
+
+        if self.gemini is None:
+
+            try:
+
+                self.conversation_panel.show_error(
+                    "Gemini is not ready yet."
+                )
+
+            except Exception:
+
+                pass
+
+            return
+
+        # ------------------------------------------
+        # Prevent duplicate / overlapping requests
+        # ------------------------------------------
+
+        if self.chat_processing:
+
+            try:
+
+                self.conversation_panel.show_error(
+                    "ASTRA is still thinking. Please wait a moment."
+                )
+
+            except Exception:
+
+                pass
+
+            return
+
+        # ------------------------------------------
+        # Check existing worker
+        # ------------------------------------------
+
+        if self.chat_worker is not None:
+
+            try:
+
+                if self.chat_worker.isRunning():
+
+                    return
+
+            except RuntimeError:
+
+                self.chat_worker = None
+
+        # ------------------------------------------
+        # Lock conversation input
+        # ------------------------------------------
+
+        self.chat_processing = True
+
+        try:
+
+            self.conversation_panel.set_input_enabled(
+                False
+            )
+
+        except Exception as error:
+
+            print(
+                f"Conversation Input Lock Error : {error}"
+            )
+
+        # ------------------------------------------
+        # Status
+        # ------------------------------------------
+
+        self.status_label.setText(
+            "Status : ASTRA is thinking..."
+        )
+
+        try:
+
+            self.left_panel.set_thinking(
+                "Thinking"
+            )
+
+            self.left_panel.set_speaking(
+                "Silent"
+            )
+
+        except Exception:
+
+            pass
+
+        # ------------------------------------------
+        # Create background Gemini worker
+        # ------------------------------------------
+
+        self.chat_worker = ChatWorker(
+
+            gemini=self.gemini,
+
+            message=text
+
+        )
+
+        # ------------------------------------------
+        # Signals
+        # ------------------------------------------
+
+        self.chat_worker.reply_ready.connect(
+            self._conversation_reply_ready
+        )
+
+        self.chat_worker.error_occurred.connect(
+            self._conversation_reply_error
+        )
+
+        self.chat_worker.finished.connect(
+            self._conversation_worker_finished
+        )
+
+        # ------------------------------------------
+        # Start background request
+        # ------------------------------------------
+
+        print(
+            f"\n========== CONVERSATION =========="
+        )
+
+        print(
+            f"User : {text}"
+        )
+
+        print(
+            "Sending message to Gemini..."
+        )
+
+        print(
+            "=================================\n"
+        )
+
+        self.chat_worker.start()
+
+    # =====================================================
+    # Gemini Reply
+    # =====================================================
+
+    @Slot(str)
+    def _conversation_reply_ready(
+        self,
+        reply
+    ):
+        """
+        Display Gemini response on the LEFT side
+        of the conversation panel.
+
+        ConversationPanel handles the actual bubble
+        alignment.
+
+        MainWindow only supplies the response.
+        """
+
+        if self._closing:
+
+            return
+
+        reply = str(
+            reply or ""
+        ).strip()
+
+        if not reply:
+
+            reply = (
+                "Sorry, I couldn't generate "
+                "a response right now."
+            )
+
+        # ------------------------------------------
+        # Add Gemini / ASTRA response
+        # ------------------------------------------
+
+        try:
+
+            self.conversation_panel.show_ai_response(
+                reply
+            )
+
+        except Exception as error:
+
+            print(
+                f"Conversation UI Reply Error : {error}"
+            )
+
+        # ------------------------------------------
+        # Status
+        # ------------------------------------------
+
+        self.status_label.setText(
+            "Status : Ready"
+        )
+
+        try:
+
+            self.left_panel.set_thinking(
+                "Inactive"
+            )
+
+            self.left_panel.set_speaking(
+                "Silent"
+            )
+
+        except Exception:
+
+            pass
+
+        print(
+            "\n========== ASTRA CONVERSATION =========="
+        )
+
+        print(
+            f"ASTRA : {reply}"
+        )
+
+        print(
+            "========================================\n"
+        )
+
+    # =====================================================
+    # Gemini Conversation Error
+    # =====================================================
+
+    @Slot(str)
+    def _conversation_reply_error(
+        self,
+        message
+    ):
+        """
+        Handle Gemini conversation errors without
+        crashing the application.
+        """
+
+        if self._closing:
+
+            return
+
+        message = str(
+            message or
+            "Something went wrong."
+        ).strip()
+
+        print(
+            f"Conversation Error : {message}"
+        )
+
+        try:
+
+            self.conversation_panel.show_error(
+                message
+            )
+
+        except Exception as error:
+
+            print(
+                f"Conversation Error UI Failure : {error}"
+            )
+
+        self.status_label.setText(
+            "Status : Conversation Error"
+        )
+
+        try:
+
+            self.left_panel.set_thinking(
+                "Inactive"
+            )
+
+            self.left_panel.set_speaking(
+                "Silent"
+            )
+
+        except Exception:
+
+            pass
+
+    # =====================================================
+    # Conversation Worker Finished
+    # =====================================================
+
+    @Slot()
+    def _conversation_worker_finished(
+        self
+    ):
+        """
+        Unlock the conversation input after the
+        Gemini worker has completely finished.
+
+        No blocking wait() is used here.
+        """
+
+        self.chat_processing = False
+
+        # ------------------------------------------
+        # Re-enable input
+        # ------------------------------------------
+
+        if not self._closing:
+
+            try:
+
+                self.conversation_panel.set_input_enabled(
+                    True
+                )
+
+            except Exception as error:
+
+                print(
+                    f"Conversation Input Unlock Error : {error}"
+                )
+
+        # ------------------------------------------
+        # Worker cleanup
+        # ------------------------------------------
+
+        worker = self.chat_worker
+
+        self.chat_worker = None
+
+        if worker is not None:
+
+            try:
+
+                worker.deleteLater()
+
+            except Exception as error:
+
+                print(
+                    f"Conversation Worker Cleanup Error : {error}"
+                )
+
+        # ------------------------------------------
+        # Final status
+        # ------------------------------------------
+
+        if not self._closing:
+
+            self.status_label.setText(
+                "Status : Ready"
+            )
+
+            try:
+
+                self.left_panel.set_thinking(
+                    "Inactive"
+                )
+
+            except Exception:
+
+                pass
+
     # --------------------------------------------------
     # Conversation Panel Geometry
     # --------------------------------------------------
@@ -5953,6 +6490,56 @@ class MainWindow(QMainWindow):
         except Exception:
 
             pass
+
+        # ==================================================
+        # Gemini Conversation Worker
+        # ==================================================
+
+        chat_worker = self.chat_worker
+
+        if chat_worker is not None:
+
+            try:
+
+                if chat_worker.isRunning():
+
+                    print(
+                        "Stopping ChatWorker..."
+                    )
+
+                    chat_worker.requestInterruption()
+
+                    # --------------------------------------------------
+                    # Do NOT use a long blocking wait here.
+                    #
+                    # Gemini network call itself may be inside the
+                    # worker. The application is already closing, so
+                    # we only give the worker a short graceful window.
+                    # --------------------------------------------------
+
+                    if chat_worker.wait(
+                        1500
+                    ):
+
+                        print(
+                            "ChatWorker stopped successfully."
+                        )
+
+                    else:
+
+                        print(
+                            "ChatWorker is still finishing."
+                        )
+
+                self.chat_worker = None
+
+            except Exception as error:
+
+                print(
+                    f"ChatWorker Cleanup Error : {error}"
+                )
+
+            self.chat_processing = False
 
         # ==================================================
         # Voice Worker

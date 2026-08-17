@@ -1,6 +1,4 @@
 """
-ai/gemini_client.py
-
 ASTRA-AI
 DHEEPTHI Gemini Client
 
@@ -12,11 +10,29 @@ Features
 ✓ Quota-aware fallback
 ✓ Invalid-key fallback
 ✓ Conversation memory
-✓ Tanglish support
+✓ Temporary in-memory conversation
+✓ Context-aware replies
+✓ Automatic language/style matching
 ✓ English support
+✓ Tamil support
+✓ Tanglish support
+✓ Mixed Tamil + English support
 ✓ Thread safe
 ✓ Clean API-key logging
 ✓ Production-ready error handling
+
+IMPORTANT
+---------
+Conversation history exists only in RAM.
+
+It is NOT saved to SQLite or any permanent storage.
+
+When the application closes:
+    GeminiClient.close()
+        ↓
+    history.clear()
+        ↓
+    temporary conversation is erased.
 """
 
 from __future__ import annotations
@@ -38,9 +54,16 @@ class GeminiClient:
     """
     Central Gemini AI client used by DHEEPTHI.
 
-    Supports multiple Gemini API keys and automatically
-    rotates to another key when the current key becomes
-    unavailable.
+    Responsibilities
+    ----------------
+    - Gemini API communication
+    - API key rotation
+    - Temporary conversation memory
+    - Context-aware conversation
+    - Language/style preservation
+    - Structured action-plan generation
+
+    This class does NOT execute desktop commands.
     """
 
     # ------------------------------------------------------
@@ -90,12 +113,26 @@ class GeminiClient:
         )
 
         # ------------------------------------------
-        # Conversation Memory
+        # Temporary Conversation Memory
         # ------------------------------------------
 
         self.history: List[Dict[str, str]] = []
 
+        # Maximum messages retained in RAM.
+        #
+        # Example:
+        #
+        # 20 user + assistant messages
+        #
+        # This prevents unnecessary RAM growth on
+        # lower-end systems.
         self.max_history_messages = 40
+
+        # Number of previous messages actually sent
+        # to Gemini as conversational context.
+        #
+        # Keeping this smaller improves performance.
+        self.context_messages = 12
 
         # ------------------------------------------
         # Thread Lock
@@ -211,8 +248,6 @@ class GeminiClient:
                 self.current_key_index + 1
             ) % len(self.api_keys)
 
-            # If we have already cycled through every key,
-            # caller can decide whether to stop.
             if (
                 self.current_key_index
                 == old_index
@@ -236,7 +271,7 @@ class GeminiClient:
 
     def system_prompt(self):
         """
-        DHEEPTHI system personality and language rules.
+        DHEEPTHI system personality and conversation rules.
         """
 
         return """
@@ -263,72 +298,211 @@ Never introduce yourself as Google AI.
 
 Never introduce yourself as a Large Language Model.
 
-If someone asks your name, answer:
+If someone asks your name, answer naturally:
 
 "My name is DHEEPTHI."
 
-If someone asks who created you, answer:
+If someone asks who created you, answer naturally:
 
 "I was created by Naresh."
 
 If someone asks what ASTRA-AI is, answer naturally:
 
-"ASTRA-AI is the desktop assistant application that I
-work inside."
+"ASTRA-AI is the desktop assistant application
+that I work inside."
 
 Never break this identity.
+
+==================================================
+CONVERSATION
+==================================================
+
+You are having an ongoing conversation with the user.
+
+Use the recent conversation history provided
+in the prompt.
+
+Remember relevant information from earlier messages
+during the current application session.
+
+If the user refers to:
+
+• "that"
+• "it"
+• "this"
+• "he"
+• "she"
+• "the previous one"
+• "what I said"
+• "what you said"
+• "earlier"
+• "before"
+• "continue"
+• "explain more"
+
+use the recent conversation context to understand
+what the user means.
+
+Do not behave as if every message is a completely
+new conversation.
+
+Do not repeat questions that have already been
+answered when the required information exists
+in the conversation history.
+
+IMPORTANT:
+
+Conversation memory is temporary.
+
+The conversation exists only during the current
+ASTRA-AI application session.
 
 ==================================================
 LANGUAGE
 ==================================================
 
-Detect the user's language automatically.
+Automatically detect the language and communication
+style used by the user.
 
-Supported conversational styles include:
+The user's language/style should determine your
+response language/style.
+
+Supported styles include:
 
 • English
 • Tamil
 • Tanglish
-• Mixed English + Tamil
+• Tamil + English mixed conversation
 
-If the user speaks English:
+--------------------------------------------------
+ENGLISH
+--------------------------------------------------
 
-Reply naturally in fluent English.
+If the user communicates in English:
 
-If the user speaks Tanglish:
+Reply naturally in English.
+
+Do not unnecessarily translate the response
+into Tamil.
+
+Example:
+
+User:
+"Can you explain Python?"
+
+Good:
+
+"Sure. Python is a high-level programming language
+known for its simple syntax and wide range of uses."
+
+--------------------------------------------------
+TAMIL
+--------------------------------------------------
+
+If the user communicates in Tamil:
+
+Reply naturally in Tamil.
+
+Do not unnecessarily translate the response into
+English.
+
+Use natural conversational Tamil.
+
+--------------------------------------------------
+TANGLISH
+--------------------------------------------------
+
+If the user communicates in Tanglish:
 
 Reply naturally in Tanglish.
 
-Do NOT translate Tanglish into awkward formal Tamil.
+Do NOT convert natural Tanglish into overly formal
+Tamil.
 
-Examples:
+Preserve the user's conversational style.
+
+Example:
 
 User:
 "Chrome open pannu."
 
 Good:
+
 "Chrome open panniten."
 
 User:
 "Konjam wait pannu."
 
 Good:
-"Sure, konjam wait pannunga."
 
-User:
-"YouTube la oru song podu."
-
-Good:
-"Sure, YouTube-la song play pannuren."
+"Sure da, konjam wait pannunga."
 
 User:
 "Enakku Python explain pannu."
 
 Good:
-"Sure. Python oru programming language..."
 
-If the user mixes Tamil and English,
-preserve that natural mixed style.
+"Sure da. Python oru programming language..."
+
+User:
+"Idha simple ah sollu."
+
+Good:
+
+"Sure da, simple-ah explain pannuren."
+
+--------------------------------------------------
+MIXED LANGUAGE
+--------------------------------------------------
+
+If the user naturally mixes Tamil and English,
+preserve the same mixed communication style.
+
+Example:
+
+User:
+"Python oda main use enna da?"
+
+Good:
+
+"Python oda main use programming, automation,
+data science, AI, web development madhiri
+different areas-la irukku da."
+
+Do NOT force the response into completely
+formal Tamil.
+
+Do NOT force the response into completely
+English when the user is naturally using Tanglish.
+
+==================================================
+NATURAL FRIENDLY STYLE
+==================================================
+
+The user prefers a friendly conversational assistant.
+
+Be:
+
+• Friendly
+• Natural
+• Helpful
+• Warm
+• Clear
+• Professional when necessary
+
+You may naturally use conversational words such as:
+
+• da
+• nanba
+• sure
+• okay
+• seri
+
+when the user's communication style supports it.
+
+Do not overuse them in every sentence.
+
+Do not sound robotic.
 
 ==================================================
 RESPONSE QUALITY
@@ -345,13 +519,13 @@ For greetings:
 
 Keep the response short and natural.
 
-For simple commands:
+For simple questions:
 
-Give a concise confirmation.
+Give a concise but complete answer.
 
 For explanations:
 
-Provide a complete and useful explanation.
+Provide enough useful detail.
 
 For:
 
@@ -363,24 +537,47 @@ For:
 • difference
 • examples
 
-give enough detail to properly answer the user.
+give a useful and complete explanation.
 
 Do not unnecessarily produce huge responses
-for simple desktop commands.
+for simple conversational messages.
+
+==================================================
+CONVERSATIONAL CONTINUITY
+==================================================
+
+If the user says:
+
+"okay"
+
+"seri"
+
+"continue"
+
+"then?"
+
+"what about that?"
+
+"explain that"
+
+"tell me more"
+
+"why?"
+
+interpret it using the recent conversation context.
+
+Do not respond with:
+
+"I don't know what you mean"
+
+unless the context genuinely does not contain
+enough information.
 
 ==================================================
 DESKTOP ASSISTANT BEHAVIOR
 ==================================================
 
 Behave like a premium personal desktop assistant.
-
-Be:
-
-• Friendly
-• Natural
-• Helpful
-• Professional
-• Conversational
 
 You can help with:
 
@@ -395,15 +592,9 @@ You can help with:
 • Automation
 • AI concepts
 
-Do not mention:
-
-• Gemini
-• Google
-• LLM
-• internal model details
-
-unless the user explicitly asks about the underlying
-technology.
+Do not claim that an action was performed unless
+the application backend actually reports that
+the action was performed.
 
 ==================================================
 IMPORTANT
@@ -413,6 +604,11 @@ The user is interacting with DHEEPTHI,
 not directly with the underlying AI service.
 
 Always maintain DHEEPTHI identity.
+
+Always follow the user's language and
+conversation style naturally.
+
+Always use available conversation context.
 """
 
     # ------------------------------------------------------
@@ -424,22 +620,26 @@ Always maintain DHEEPTHI identity.
         text: str
     ):
 
-        text = str(text).strip()
+        text = str(
+            text
+        ).strip()
 
         if not text:
 
             return
 
-        self.history.append(
+        with self.lock:
 
-            {
-                "role": "user",
-                "text": text
-            }
+            self.history.append(
 
-        )
+                {
+                    "role": "user",
+                    "text": text
+                }
 
-        self._trim_history()
+            )
+
+            self._trim_history()
 
     # ------------------------------------------------------
     # Add Assistant Message
@@ -450,22 +650,26 @@ Always maintain DHEEPTHI identity.
         text: str
     ):
 
-        text = str(text).strip()
+        text = str(
+            text
+        ).strip()
 
         if not text:
 
             return
 
-        self.history.append(
+        with self.lock:
 
-            {
-                "role": "assistant",
-                "text": text
-            }
+            self.history.append(
 
-        )
+                {
+                    "role": "assistant",
+                    "text": text
+                }
 
-        self._trim_history()
+            )
+
+            self._trim_history()
 
     # ------------------------------------------------------
     # Trim History
@@ -473,24 +677,79 @@ Always maintain DHEEPTHI identity.
 
     def _trim_history(self):
 
-        if len(self.history) > self.max_history_messages:
+        if len(
+            self.history
+        ) > self.max_history_messages:
 
             self.history = self.history[
                 -self.max_history_messages:
             ]
 
     # ------------------------------------------------------
-    # Clear Memory
+    # Build Conversation Context
     # ------------------------------------------------------
 
-    def clear_history(self):
+    def _build_conversation_context(
+        self
+    ) -> str:
+        """
+        Build recent conversation context.
 
-        with self.lock:
+        Only recent messages are sent to Gemini so that
+        the prompt remains lightweight on lower-end
+        systems.
 
-            self.history.clear()
+        The complete temporary history remains in RAM.
+        """
+
+        if not self.history:
+
+            return ""
+
+        recent_history = self.history[
+            -self.context_messages:
+        ]
+
+        context_parts = []
+
+        for message in recent_history:
+
+            role = message.get(
+                "role",
+                ""
+            )
+
+            text = message.get(
+                "text",
+                ""
+            ).strip()
+
+            if not text:
+
+                continue
+
+            if role == "user":
+
+                context_parts.append(
+                    f"User: {text}"
+                )
+
+            elif role == "assistant":
+
+                context_parts.append(
+                    f"DHEEPTHI: {text}"
+                )
+
+        if not context_parts:
+
+            return ""
+
+        return "\n".join(
+            context_parts
+        )
 
     # ------------------------------------------------------
-    # Build Conversation
+    # Build Conversation Prompt
     # ------------------------------------------------------
 
     def build_prompt(
@@ -498,8 +757,20 @@ Always maintain DHEEPTHI identity.
         user_message: str
     ):
         """
-        Build conversation prompt using recent memory.
+        Build a context-aware conversational prompt.
+
+        IMPORTANT:
+        The user message is already stored in history
+        before this method is called.
+
+        Therefore we exclude the newest user message
+        from the historical context and append it
+        separately as the current message.
         """
+
+        user_message = str(
+            user_message
+        ).strip()
 
         prompt_parts = [
 
@@ -507,34 +778,68 @@ Always maintain DHEEPTHI identity.
 
         ]
 
-        for message in self.history[-8:]:
+        # ------------------------------------------
+        # Historical Context
+        # ------------------------------------------
 
-            if message["role"] == "user":
+        historical_messages = self.history[:-1]
 
-                prompt_parts.append(
+        recent_history = historical_messages[
+            -self.context_messages:
+        ]
 
-                    f"User: {message['text']}"
+        if recent_history:
 
+            prompt_parts.append(
+                "==================================================\n"
+                "RECENT CONVERSATION\n"
+                "=================================================="
+            )
+
+            for message in recent_history:
+
+                role = message.get(
+                    "role",
+                    ""
                 )
 
-            elif message["role"] == "assistant":
+                text = message.get(
+                    "text",
+                    ""
+                ).strip()
 
-                prompt_parts.append(
+                if not text:
 
-                    f"DHEEPTHI: {message['text']}"
+                    continue
 
-                )
+                if role == "user":
+
+                    prompt_parts.append(
+                        f"User: {text}"
+                    )
+
+                elif role == "assistant":
+
+                    prompt_parts.append(
+                        f"DHEEPTHI: {text}"
+                    )
+
+        # ------------------------------------------
+        # Current User Message
+        # ------------------------------------------
 
         prompt_parts.append(
-
-            f"User: {user_message}"
-
+            "==================================================\n"
+            "CURRENT USER MESSAGE\n"
+            "=================================================="
         )
 
         prompt_parts.append(
+            f"User: {user_message}"
+        )
 
+        prompt_parts.append(
             "DHEEPTHI:"
-
         )
 
         return "\n\n".join(
@@ -550,35 +855,98 @@ Always maintain DHEEPTHI identity.
         user_message: str
     ):
         """
-        Build a lightweight prompt for short commands.
+        Lightweight prompt builder.
+
+        Even short messages receive recent conversation
+        context.
+
+        This fixes the previous issue where short messages
+        such as:
+
+            "what did I say?"
+            "why?"
+            "continue"
+            "what about that?"
+
+        were sent to Gemini without conversation history.
         """
 
-        return (
+        user_message = str(
+            user_message
+        ).strip()
+
+        prompt_parts = [
 
             self.system_prompt()
 
-            + "\n\n"
+        ]
 
-            + f"User: {user_message}"
+        # ------------------------------------------
+        # Recent Context
+        # ------------------------------------------
 
-            + "\n\n"
+        historical_messages = self.history[:-1]
 
-            + "Rules:\n"
+        recent_history = historical_messages[
+            -self.context_messages:
+        ]
 
-            + "- Detect English, Tamil or Tanglish automatically.\n"
+        if recent_history:
 
-            + "- Reply naturally in the user's language style.\n"
+            prompt_parts.append(
+                "==================================================\n"
+                "RECENT CONVERSATION\n"
+                "=================================================="
+            )
 
-            + "- Never mention Gemini or Google.\n"
+            for message in recent_history:
 
-            + "- Never truncate the answer.\n"
+                role = message.get(
+                    "role",
+                    ""
+                )
 
-            + "- Keep simple commands concise.\n"
+                text = message.get(
+                    "text",
+                    ""
+                ).strip()
 
-            + "- Give complete explanations when requested.\n"
+                if not text:
 
-            + "\nDHEEPTHI:"
+                    continue
 
+                if role == "user":
+
+                    prompt_parts.append(
+                        f"User: {text}"
+                    )
+
+                elif role == "assistant":
+
+                    prompt_parts.append(
+                        f"DHEEPTHI: {text}"
+                    )
+
+        # ------------------------------------------
+        # Current Message
+        # ------------------------------------------
+
+        prompt_parts.append(
+            "==================================================\n"
+            "CURRENT USER MESSAGE\n"
+            "=================================================="
+        )
+
+        prompt_parts.append(
+            f"User: {user_message}"
+        )
+
+        prompt_parts.append(
+            "DHEEPTHI:"
+        )
+
+        return "\n\n".join(
+            prompt_parts
         )
 
     # ------------------------------------------------------
@@ -646,7 +1014,9 @@ Always maintain DHEEPTHI identity.
 
             return ""
 
-        text = str(text).strip()
+        text = str(
+            text
+        ).strip()
 
         replacements = (
 
@@ -662,7 +1032,7 @@ Always maintain DHEEPTHI identity.
 
             text = text.replace(
                 old,
-                new
+                ""
             )
 
         text = (
@@ -686,8 +1056,14 @@ Always maintain DHEEPTHI identity.
         """
         Generate DHEEPTHI response.
 
-        Automatically rotates through all configured
-        Gemini API keys when the current key fails.
+        Conversation memory is maintained temporarily
+        in RAM.
+
+        The user's current message and recent conversation
+        history are sent together to Gemini.
+
+        API keys automatically rotate when the current
+        key becomes unavailable.
         """
 
         if self._closing:
@@ -702,7 +1078,9 @@ Always maintain DHEEPTHI identity.
 
         if not user_message:
 
-            return "Please say something."
+            return (
+                "Please say something."
+            )
 
         # ------------------------------------------
         # Save User Message
@@ -714,21 +1092,33 @@ Always maintain DHEEPTHI identity.
                 user_message
             )
 
-        # ------------------------------------------
-        # Prompt Selection
-        # ------------------------------------------
+            # --------------------------------------
+            # Prompt Selection
+            # --------------------------------------
+            #
+            # Both prompt types now include recent
+            # conversation history.
+            #
+            # Short messages therefore retain context.
+            # --------------------------------------
 
-        if len(user_message) < 150:
-
-            prompt = self.build_simple_prompt(
+            if len(
                 user_message
-            )
+            ) < 150:
 
-        else:
+                prompt = (
+                    self.build_simple_prompt(
+                        user_message
+                    )
+                )
 
-            prompt = self.build_prompt(
-                user_message
-            )
+            else:
+
+                prompt = (
+                    self.build_prompt(
+                        user_message
+                    )
+                )
 
         # ------------------------------------------
         # API Attempts
@@ -742,7 +1132,9 @@ Always maintain DHEEPTHI identity.
 
             attempted_keys = set()
 
-            for _ in range(total_keys):
+            for _ in range(
+                total_keys
+            ):
 
                 if self._closing:
 
@@ -782,18 +1174,20 @@ Always maintain DHEEPTHI identity.
 
                             contents=prompt,
 
-                            config=types.GenerateContentConfig(
+                            config=(
+                                types.GenerateContentConfig(
 
-                                temperature=0.55,
+                                    temperature=0.55,
 
-                                top_p=0.90,
+                                    top_p=0.90,
 
-                                top_k=40,
+                                    top_k=40,
 
-                                max_output_tokens=2048,
+                                    max_output_tokens=2048,
 
-                                candidate_count=1
+                                    candidate_count=1
 
+                                )
                             )
 
                         )
@@ -911,15 +1305,15 @@ Always maintain DHEEPTHI identity.
         prompt: str
     ) -> str:
         """
-        Generate a structured JSON action plan for ASTRA-AI
-        multi-command execution.
+        Generate a structured JSON action plan for
+        ASTRA-AI multi-command execution.
 
         This method is intentionally separate from
         generate_response() because multi-command planning
         requires machine-readable JSON instead of a normal
         conversational response.
 
-        The existing Gemini API-key rotation and fallback
+        Existing Gemini API-key rotation and fallback
         mechanism is preserved.
         """
 
@@ -947,7 +1341,9 @@ Always maintain DHEEPTHI identity.
 
             attempted_keys = set()
 
-            for _ in range(total_keys):
+            for _ in range(
+                total_keys
+            ):
 
                 if self._closing:
 
@@ -985,20 +1381,24 @@ Always maintain DHEEPTHI identity.
 
                             contents=prompt,
 
-                            config=types.GenerateContentConfig(
+                            config=(
+                                types.GenerateContentConfig(
 
-                                temperature=0.10,
+                                    temperature=0.10,
 
-                                top_p=0.90,
+                                    top_p=0.90,
 
-                                top_k=20,
+                                    top_k=20,
 
-                                max_output_tokens=4096,
+                                    max_output_tokens=4096,
 
-                                candidate_count=1,
+                                    candidate_count=1,
 
-                                response_mime_type="application/json"
+                                    response_mime_type=(
+                                        "application/json"
+                                    )
 
+                                )
                             )
 
                         )
@@ -1133,7 +1533,10 @@ Always maintain DHEEPTHI identity.
 
         with self.lock:
 
-            return self.history.copy()
+            return [
+                message.copy()
+                for message in self.history
+            ]
 
     # ------------------------------------------------------
     # History Count
@@ -1154,13 +1557,28 @@ Always maintain DHEEPTHI identity.
     def close(self):
         """
         Cleanup Gemini resources.
+
+        IMPORTANT:
+
+        Conversation history is intentionally cleared here.
+
+        Therefore conversation memory is temporary and
+        disappears when ASTRA-AI shuts down.
         """
 
         with self.lock:
 
             self._closing = True
 
+            # ------------------------------------------
+            # Erase temporary conversation memory
+            # ------------------------------------------
+
             self.history.clear()
+
+            # ------------------------------------------
+            # Release Gemini client
+            # ------------------------------------------
 
             self.client = None
 
