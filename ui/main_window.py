@@ -722,20 +722,6 @@ class MainWindow(QMainWindow):
         # Conversation text message
         # --------------------------------------------------
         # User sends a message from the conversation panel.
-        #
-        # IMPORTANT:
-        # This does NOT go through the command dispatcher yet.
-        #
-        # For this stage:
-        #
-        # Text Message
-        #      ↓
-        # Gemini Conversation
-        #      ↓
-        # ASTRA Reply
-        #
-        # Command execution will remain with the existing
-        # voice-command pipeline for now.
         # --------------------------------------------------
 
         self.conversation_panel.send_requested.connect(
@@ -5431,79 +5417,642 @@ class MainWindow(QMainWindow):
         text
     ):
         """
-        Handle a text message sent from ConversationPanel.
+        Handle text submitted from ConversationPanel.
 
         Flow:
 
-            User
-              ↓
             ConversationPanel
-              ↓
-            MainWindow
-              ↓
-            ChatWorker
-              ↓
-            Gemini
-              ↓
-            ASTRA response
-              ↓
-            ConversationPanel
+                    ↓
+              MainWindow
+                    ↓
+          Pending State Check
+                    ↓
+          Command Normalization
+                    ↓
+        Multi-Command Detection
+             ↙              ↘
+          YES                NO
+           ↓                  ↓
+        Planner          IntentDetector
+           ↓                  ↓
+        Executor       AI Chat / Automation
+           ↓                  ↓
+          Result          Dispatcher
         """
 
         if self._closing:
-
             return
 
-        # ------------------------------------------
-        # Normalize
-        # ------------------------------------------
+        # =================================================
+        # 1. CLEAN INPUT
+        # =================================================
 
-        text = str(
+        original_text = str(
             text or ""
         ).strip()
 
-        if not text:
-
+        if not original_text:
             return
 
-        # ------------------------------------------
-        # Gemini must be initialized
-        # ------------------------------------------
-
-        if self.gemini is None:
-
-            try:
-
-                self.conversation_panel.show_error(
-                    "Gemini is not ready yet."
-                )
-
-            except Exception:
-
-                pass
-
-            return
-
-        # ------------------------------------------
-        # Prevent duplicate / overlapping requests
-        # ------------------------------------------
+        # =================================================
+        # 2. PREVENT OVERLAPPING GEMINI CHAT REQUESTS
+        # =================================================
 
         if self.chat_processing:
 
             try:
 
                 self.conversation_panel.show_error(
-                    "ASTRA is still thinking. Please wait a moment."
+                    "ASTRA is still processing the previous request."
                 )
 
             except Exception:
+                pass
 
+            return
+
+        # =================================================
+        # 3. PENDING CONFIRMATION
+        # =================================================
+        #
+        # Example:
+        #
+        # User:
+        #   shutdown computer
+        #
+        # ASTRA:
+        #   Please confirm.
+        #
+        # User:
+        #   yes
+        #
+        # The answer must NOT go through IntentDetector.
+        # =================================================
+
+        if self._pending_confirmation:
+
+            self._handle_text_confirmation_response(
+                original_text
+            )
+
+            return
+
+        # =================================================
+        # 4. PENDING FILE SELECTION
+        # =================================================
+        #
+        # Example:
+        #
+        # User:
+        #   open report
+        #
+        # ASTRA:
+        #   I found 3 files. Choose a number.
+        #
+        # User:
+        #   2
+        #
+        # "2" must resume the original command.
+        # It must NOT become a new intent.
+        # =================================================
+
+        if self._pending_file_selection:
+
+            self._handle_pending_file_selection(
+                original_text
+            )
+
+            return
+
+        # =================================================
+        # 5. COMMAND NORMALIZATION
+        # =================================================
+
+        normalized_text = original_text
+
+        if self.command_normalizer:
+
+            try:
+
+                normalized_text = (
+                    self.command_normalizer.normalize(
+                        original_text
+                    )
+                )
+
+            except Exception as error:
+
+                print(
+                    f"Text Command Normalization Error : {error}"
+                )
+
+                normalized_text = original_text
+
+        normalized_text = str(
+            normalized_text or ""
+        ).strip()
+
+        if not normalized_text:
+            return
+
+        print(
+            "\n========== TEXT INPUT =========="
+        )
+
+        print(
+            f"Original   : {original_text}"
+        )
+
+        print(
+            f"Normalized : {normalized_text}"
+        )
+
+        print(
+            "================================\n"
+        )
+
+        # =================================================
+        # 6. MULTI-COMMAND DETECTION
+        # =================================================
+        #
+        # THIS MUST COME BEFORE IntentDetector.
+        #
+        # Example:
+        #
+        # open chrome then search sonatech.ac.in
+        # then click first result
+        #
+        # If IntentDetector runs first, it can classify
+        # the whole sentence as google_search.
+        #
+        # MultiCommandPlanner detects the chain first.
+        # =================================================
+
+        is_multi_command = False
+
+        if self.multi_command_planner:
+
+            try:
+
+                is_multi_command = (
+                    self.multi_command_planner
+                    .is_multi_command(
+                        normalized_text
+                    )
+                )
+
+            except Exception as error:
+
+                print(
+                    f"Multi-Command Detection Error : {error}"
+                )
+
+                is_multi_command = False
+
+        # =================================================
+        # 7. MULTI-COMMAND FLOW
+        # =================================================
+
+        if (
+            is_multi_command
+            and
+            self.multi_command_executor
+        ):
+
+            print(
+                "\n========== TEXT MULTI COMMAND =========="
+            )
+
+            print(
+                f"Command : {normalized_text}"
+            )
+
+            try:
+
+                # -----------------------------------------
+                # Planning State
+                # -----------------------------------------
+
+                self.status_label.setText(
+                    "Status : Planning..."
+                )
+
+                try:
+
+                    self.conversation_panel.show_ai_response(
+                        "Planning your command..."
+                    )
+
+                except Exception:
+                    pass
+
+                try:
+
+                    self.left_panel.set_listening(
+                        "Text Command"
+                    )
+
+                    self.left_panel.set_thinking(
+                        "Planning"
+                    )
+
+                    self.left_panel.set_speaking(
+                        "Silent"
+                    )
+
+                except Exception:
+                    pass
+
+                QApplication.processEvents()
+
+                # -----------------------------------------
+                # Create Action Plan
+                # -----------------------------------------
+
+                plan = (
+                    self.multi_command_planner
+                    .create_plan(
+                        normalized_text
+                    )
+                )
+
+                print(
+                    "\n---------- TEXT ACTION PLAN ----------"
+                )
+
+                print(
+                    self.multi_command_planner
+                    .plan_to_json(
+                        plan
+                    )
+                )
+
+                print(
+                    "---------------------------------------\n"
+                )
+
+                # -----------------------------------------
+                # Execution State
+                # -----------------------------------------
+
+                self.status_label.setText(
+                    "Status : Executing..."
+                )
+
+                try:
+
+                    self.conversation_panel.show_ai_response(
+                        "Executing your command..."
+                    )
+
+                except Exception:
+                    pass
+
+                try:
+
+                    self.left_panel.set_thinking(
+                        "Executing"
+                    )
+
+                except Exception:
+                    pass
+
+                QApplication.processEvents()
+
+                # -----------------------------------------
+                # Execute Sequentially
+                # -----------------------------------------
+
+                result = (
+                    self.multi_command_executor
+                    .execute(
+                        plan
+                    )
+                )
+
+                print(
+                    "\n---------- TEXT EXECUTION RESULT ----------"
+                )
+
+                print(
+                    result
+                )
+
+                print(
+                    "--------------------------------------------\n"
+                )
+
+                result = result or {}
+
+                # =================================================
+                # MULTI-COMMAND SUCCESS
+                # =================================================
+
+                if result.get(
+                    "success",
+                    False
+                ):
+
+                    completed_steps = result.get(
+                        "completed_steps",
+                        0
+                    )
+
+                    total_steps = result.get(
+                        "total_steps",
+                        getattr(
+                            plan,
+                            "total_steps",
+                            len(plan.steps)
+                        )
+                    )
+
+                    reply = (
+                        f"Completed all "
+                        f"{completed_steps} "
+                        f"steps successfully."
+                    )
+
+                    try:
+
+                        self.conversation_panel.show_ai_response(
+                            reply
+                        )
+
+                    except Exception:
+                        pass
+
+                    self.status_label.setText(
+                        "Status : Multi-Command Completed"
+                    )
+
+                    self.conversation_label.setText(
+                        f"Multi-Command Completed\n\n"
+                        f"{original_text}\n\n"
+                        f"Steps : "
+                        f"{completed_steps}/{total_steps}"
+                    )
+
+                    try:
+
+                        self.left_panel.set_listening(
+                            "Text Command"
+                        )
+
+                        self.left_panel.set_thinking(
+                            "Inactive"
+                        )
+
+                        self.left_panel.set_speaking(
+                            "Silent"
+                        )
+
+                        self.right_panel.update_system_metrics()
+
+                    except Exception:
+                        pass
+
+                    print(
+                        "\nText multi-command completed successfully."
+                    )
+
+                    return
+
+                # =================================================
+                # MULTI-COMMAND FAILURE
+                # =================================================
+
+                failed_step = result.get(
+                    "failed_step"
+                )
+
+                completed_steps = result.get(
+                    "completed_steps",
+                    0
+                )
+
+                if failed_step:
+
+                    failed_action = failed_step.get(
+                        "action",
+                        "unknown action"
+                    )
+
+                    failure_message = (
+                        f"I completed "
+                        f"{completed_steps} "
+                        f"step(s), but failed at "
+                        f"{failed_action}."
+                    )
+
+                else:
+
+                    failure_message = (
+                        "I could not complete "
+                        "the multi-step command."
+                    )
+
+                try:
+
+                    self.conversation_panel.show_error(
+                        failure_message
+                    )
+
+                except Exception:
+                    pass
+
+                self.status_label.setText(
+                    "Status : Multi-Command Failed"
+                )
+
+                self.conversation_label.setText(
+                    f"Multi-Command Failed\n\n"
+                    f"{original_text}\n\n"
+                    f"{result.get('status', '')}"
+                )
+
+                try:
+
+                    self.left_panel.set_listening(
+                        "Text Command"
+                    )
+
+                    self.left_panel.set_thinking(
+                        "Inactive"
+                    )
+
+                    self.left_panel.set_speaking(
+                        "Silent"
+                    )
+
+                except Exception:
+                    pass
+
+                print(
+                    "\nText multi-command failed."
+                )
+
+                return
+
+            except Exception as error:
+
+                print(
+                    "\n========== TEXT MULTI COMMAND ERROR =========="
+                )
+
+                print(
+                    error
+                )
+
+                print(
+                    "==============================================\n"
+                )
+
+                error_message = (
+                    "I could not plan or "
+                    "execute that multi-step command."
+                )
+
+                try:
+
+                    self.conversation_panel.show_error(
+                        error_message
+                    )
+
+                except Exception:
+                    pass
+
+                self.status_label.setText(
+                    "Status : Multi-Command Error"
+                )
+
+                self.conversation_label.setText(
+                    f"Multi-Command Error\n\n"
+                    f"{original_text}"
+                )
+
+                try:
+
+                    self.left_panel.set_thinking(
+                        "Inactive"
+                    )
+
+                    self.left_panel.set_speaking(
+                        "Silent"
+                    )
+
+                except Exception:
+                    pass
+
+                return
+
+        # =================================================
+        # 8. SINGLE COMMAND → INTENT DETECTOR
+        # =================================================
+
+        try:
+
+            intent = (
+                self.intent_detector
+                .detect_intent(
+                    normalized_text
+                )
+            )
+
+        except Exception as error:
+
+            print(
+                f"Text Intent Detection Error : {error}"
+            )
+
+            try:
+
+                self.conversation_panel.show_error(
+                    "I could not understand that command."
+                )
+
+            except Exception:
+                pass
+
+            self.status_label.setText(
+                "Status : Intent Detection Error"
+            )
+
+            return
+
+        print(
+            "\n========== TEXT COMMAND =========="
+        )
+
+        print(
+            f"Text   : {normalized_text}"
+        )
+
+        print(
+            f"Intent : {intent}"
+        )
+
+        print(
+            "==================================\n"
+        )
+
+        # =================================================
+        # 9. AI CHAT
+        # =================================================
+
+        if intent == "ai_chat":
+
+            self._start_text_gemini_chat(
+                original_text
+            )
+
+            return
+
+        # =================================================
+        # 10. NORMAL AUTOMATION COMMAND
+        # =================================================
+
+        self._process_text_command(
+
+            text=normalized_text,
+
+            original_text=original_text,
+
+            intent=intent
+
+        )
+
+    # =====================================================
+    # Start Gemini Text Conversation
+    # =====================================================
+
+    def _start_text_gemini_chat(
+        self,
+        text
+    ):
+        """
+        Start Gemini conversation from the text panel.
+
+        Gemini runs inside ChatWorker so the Qt GUI thread
+        remains responsive.
+        """
+
+        if self._closing:
+            return
+
+        if self.gemini is None:
+
+            try:
+                self.conversation_panel.show_error(
+                    "Gemini is not ready yet."
+                )
+            except Exception:
                 pass
 
             return
 
         # ------------------------------------------
-        # Check existing worker
+        # Existing worker check
         # ------------------------------------------
 
         if self.chat_worker is not None:
@@ -5511,7 +6060,6 @@ class MainWindow(QMainWindow):
             try:
 
                 if self.chat_worker.isRunning():
-
                     return
 
             except RuntimeError:
@@ -5519,7 +6067,7 @@ class MainWindow(QMainWindow):
                 self.chat_worker = None
 
         # ------------------------------------------
-        # Lock conversation input
+        # Lock text input
         # ------------------------------------------
 
         self.chat_processing = True
@@ -5555,19 +6103,15 @@ class MainWindow(QMainWindow):
             )
 
         except Exception:
-
             pass
 
         # ------------------------------------------
-        # Create background Gemini worker
+        # Create ChatWorker
         # ------------------------------------------
 
         self.chat_worker = ChatWorker(
-
             gemini=self.gemini,
-
             message=text
-
         )
 
         # ------------------------------------------
@@ -5587,11 +6131,11 @@ class MainWindow(QMainWindow):
         )
 
         # ------------------------------------------
-        # Start background request
+        # Start
         # ------------------------------------------
 
         print(
-            f"\n========== CONVERSATION =========="
+            "\n========== TEXT AI CHAT =========="
         )
 
         print(
@@ -5599,7 +6143,7 @@ class MainWindow(QMainWindow):
         )
 
         print(
-            "Sending message to Gemini..."
+            "Gemini Worker Started"
         )
 
         print(
@@ -5607,6 +6151,1024 @@ class MainWindow(QMainWindow):
         )
 
         self.chat_worker.start()
+
+    # =====================================================
+    # Process Text Automation Command
+    # =====================================================
+
+    def _process_text_command(
+        self,
+        text,
+        original_text,
+        intent
+    ):
+        """
+        Process a text command using the SAME:
+
+            IntentDetector
+            EntityExtractor
+            TextExtractor
+            CommandDispatcher
+
+        backend used by ASTRA voice commands.
+
+        This method intentionally does not call
+        process_command() because process_command() owns
+        microphone/TTS/wake-word lifecycle.
+        """
+
+        try:
+
+            # =================================================
+            # Typing Mode
+            # =================================================
+
+            if (
+                intent == "type_text"
+                and self.typing_mode
+            ):
+
+                self.keyboard_controller.type_text(
+                    text
+                )
+
+                reply = "Typed successfully."
+
+                try:
+
+                    self.conversation_panel.show_ai_response(
+                        reply
+                    )
+
+                except Exception:
+                    pass
+
+                self.status_label.setText(
+                    "Status : Typed"
+                )
+
+                return
+
+            # =================================================
+            # Extract Entity
+            # =================================================
+
+            entity = None
+
+            # -----------------------------------------------
+            # Percentage Commands
+            # -----------------------------------------------
+
+            if intent in {
+                "set_volume",
+                "set_brightness"
+            }:
+
+                entity = (
+                    self.entity_extractor
+                    .extract_percentage(
+                        text
+                    )
+                )
+
+            # -----------------------------------------------
+            # Commands without Entity
+            # -----------------------------------------------
+
+            elif intent in {
+
+                "volume_up",
+                "volume_down",
+                "mute",
+
+                "lock_screen",
+
+                "take_screenshot",
+
+                "open_task_manager",
+
+                "open_file_explorer",
+
+                "brightness_up",
+                "brightness_down",
+
+                "shutdown",
+                "restart",
+                "sleep",
+                "sign_out",
+
+                "open_settings",
+                "open_cmd",
+                "open_powershell",
+                "open_control_panel",
+
+                "open_camera",
+                "capture_photo",
+
+                "start_screen_recording",
+                "stop_screen_recording",
+
+            }:
+
+                entity = None
+
+            # -----------------------------------------------
+            # File Commands
+            # -----------------------------------------------
+
+            elif intent in {
+
+                "open_file",
+                "create_file",
+                "delete_file",
+
+            }:
+
+                entity = (
+                    self.entity_extractor
+                    .extract_file_query(
+                        text
+                    )
+                )
+
+            elif intent == "compress_file":
+
+                entity = (
+                    self.entity_extractor
+                    .extract_compress_file(
+                        text
+                    )
+                )
+
+            elif intent == "extract_zip":
+
+                entity = (
+                    self.entity_extractor
+                    .extract_extract_zip(
+                        text
+                    )
+                )
+
+            elif intent == "rename_file":
+
+                entity = (
+                    self.entity_extractor
+                    .extract_rename_file(
+                        text
+                    )
+                )
+
+            elif intent == "copy_file":
+
+                entity = (
+                    self.entity_extractor
+                    .extract_copy_file(
+                        text
+                    )
+                )
+
+            elif intent == "move_file":
+
+                entity = (
+                    self.entity_extractor
+                    .extract_move_file(
+                        text
+                    )
+                )
+
+            elif intent == "search_extension":
+
+                entity = (
+                    self.entity_extractor
+                    .extract_search_extension(
+                        text
+                    )
+                )
+
+            elif intent == "search_size":
+
+                entity = (
+                    self.entity_extractor
+                    .extract_search_size(
+                        text
+                    )
+                )
+
+            elif intent == "search_date":
+
+                entity = (
+                    self.entity_extractor
+                    .extract_search_date(
+                        text
+                    )
+                )
+
+            # -----------------------------------------------
+            # Browser / Application Commands
+            # -----------------------------------------------
+
+            elif intent in {
+
+                "launch_application",
+
+                "create_word_document",
+
+                "create_excel_workbook",
+
+                "create_powerpoint_presentation",
+
+                "open_website",
+
+                "open_google",
+
+                "open_youtube",
+
+                "google_search",
+
+                "youtube_search",
+
+                "play_youtube",
+
+                "new_tab",
+
+                "close_tab",
+
+                "next_tab",
+
+                "previous_tab",
+
+                "refresh",
+
+                "browser_downloads",
+
+                "browser_history",
+
+                "browser_bookmarks",
+
+                "bookmark_page",
+
+                "address_bar",
+
+                "browser_back",
+
+                "browser_forward",
+
+                "private_window",
+
+                "open_chrome_profile",
+
+            }:
+
+                if intent in {
+
+                    "launch_application",
+
+                    "create_word_document",
+
+                    "create_excel_workbook",
+
+                    "create_powerpoint_presentation",
+
+                }:
+
+                    entity = (
+                        self.entity_extractor
+                        .extract_application(
+                            text
+                        )
+                    )
+
+                elif intent == "open_website":
+
+                    entity = (
+                        self.entity_extractor
+                        .extract_website(
+                            text
+                        )
+                    )
+
+                elif intent == "open_google":
+
+                    entity = "google.com"
+
+                elif intent == "open_youtube":
+
+                    entity = "youtube.com"
+
+                elif intent == "google_search":
+
+                    entity = (
+                        self.entity_extractor
+                        .extract_search_query(
+                            text
+                        )
+                    )
+
+                elif intent in {
+                    "youtube_search",
+                    "play_youtube",
+                }:
+
+                    entity = (
+                        self.entity_extractor
+                        .extract_youtube_query(
+                            text
+                        )
+                    )
+
+                else:
+
+                    entity = None
+
+            # -----------------------------------------------
+            # Folder Commands
+            # -----------------------------------------------
+
+            elif intent in {
+
+                "open_folder",
+                "create_folder",
+                "delete_folder",
+                "rename_folder",
+                "move_folder",
+                "copy_folder",
+                "empty_recycle_bin",
+
+            }:
+
+                entity = (
+                    self.entity_extractor
+                    .extract_folder(
+                        text
+                    )
+                )
+
+            # -----------------------------------------------
+            # Default Application Extraction
+            # -----------------------------------------------
+
+            else:
+
+                entity = (
+                    self.entity_extractor
+                    .extract_application(
+                        text
+                    )
+                )
+
+            # =================================================
+            # Additional Extraction
+            # =================================================
+
+            typed_text = (
+                self.text_extractor.extract_text(
+                    text
+                )
+            )
+
+            browser = (
+                self.entity_extractor.extract_browser(
+                    text
+                )
+            )
+
+            website = (
+                self.entity_extractor.extract_website(
+                    text
+                )
+            )
+
+            # -----------------------------------------------
+            # Search Query
+            # -----------------------------------------------
+
+            search_query = None
+
+            if intent == "google_search":
+
+                search_query = (
+                    self.entity_extractor
+                    .extract_search_query(
+                        text
+                    )
+                )
+
+            elif intent in {
+
+                "youtube_search",
+                "play_youtube",
+
+            }:
+
+                search_query = (
+                    self.entity_extractor
+                    .extract_youtube_query(
+                        text
+                    )
+                )
+
+            # -----------------------------------------------
+            # Chrome Profile
+            # -----------------------------------------------
+
+            profile = (
+                self.entity_extractor.extract_profile(
+                    text
+                )
+            )
+
+            # =================================================
+            # Debug
+            # =================================================
+
+            print(
+                "\n========== TEXT COMMAND DATA =========="
+            )
+
+            print(
+                f"Text         : {text}"
+            )
+
+            print(
+                f"Intent       : {intent}"
+            )
+
+            print(
+                f"Entity       : {entity}"
+            )
+
+            print(
+                f"Typed Text   : {typed_text}"
+            )
+
+            print(
+                f"Browser      : {browser}"
+            )
+
+            print(
+                f"Website      : {website}"
+            )
+
+            print(
+                f"Search Query : {search_query}"
+            )
+
+            print(
+                f"Profile      : {profile}"
+            )
+
+            print(
+                "=======================================\n"
+            )
+
+            # =================================================
+            # Update UI
+            # =================================================
+
+            self.status_label.setText(
+                "Status : Executing..."
+            )
+
+            try:
+
+                self.left_panel.set_listening(
+                    "Text Command"
+                )
+
+                self.left_panel.set_thinking(
+                    "Executing"
+                )
+
+                self.left_panel.set_speaking(
+                    "Silent"
+                )
+
+            except Exception:
+                pass
+
+            # =================================================
+            # Dispatcher
+            # =================================================
+
+            result = self.dispatcher.dispatch(
+
+                intent=intent,
+
+                entity=entity,
+
+                typed_text=typed_text,
+
+                browser=browser,
+
+                website=website,
+
+                search_query=search_query,
+
+                profile=profile,
+
+                user_text=original_text
+
+            )
+
+            # =================================================
+            # Handle Result
+            # =================================================
+
+            self._handle_text_dispatch_result(
+
+                result=result,
+
+                text=original_text,
+
+                intent=intent,
+
+                entity=entity,
+
+            )
+
+        except Exception as error:
+
+            print(
+                f"\nTEXT COMMAND ERROR : {error}\n"
+            )
+
+            self.status_label.setText(
+                "Status : Text Command Error"
+            )
+
+            message = (
+                "Sorry, I could not complete that command."
+            )
+
+            try:
+
+                self.conversation_panel.show_error(
+                    message
+                )
+
+            except Exception:
+                pass
+
+            try:
+
+                self.left_panel.set_thinking(
+                    "Inactive"
+                )
+
+            except Exception:
+                pass
+
+    # =====================================================
+    # Text Dispatcher Result
+    # =====================================================
+
+    def _handle_text_dispatch_result(
+        self,
+        result,
+        text,
+        intent=None,
+        entity=None,
+    ):
+        """
+        Handle CommandDispatcher result for text commands.
+
+        Reuses the existing MainWindow selection and
+        confirmation flows.
+        """
+
+        result = result or {}
+
+        # =================================================
+        # Confirmation
+        # =================================================
+
+        if (
+            result.get(
+                "requires_confirmation"
+            )
+            or
+            result.get(
+                "confirmation_required"
+            )
+        ):
+
+            self._begin_confirmation_flow(
+                result
+            )
+
+            return
+
+        # =================================================
+        # File Selection
+        # =================================================
+
+        if result.get(
+            "requires_selection"
+        ):
+
+            candidates = result.get(
+                "candidates",
+                []
+            )
+
+            if not candidates:
+
+                message = (
+                    "I could not find any selectable files."
+                )
+
+                try:
+
+                    self.conversation_panel.show_error(
+                        message
+                    )
+
+                except Exception:
+                    pass
+
+                self.status_label.setText(
+                    "Status : File Selection Failed"
+                )
+
+                return
+
+            # ---------------------------------------------
+            # Preserve dispatcher payload
+            # ---------------------------------------------
+
+            pending_payload = result.get(
+                "pending_payload"
+            )
+
+            if not isinstance(
+                pending_payload,
+                dict
+            ):
+
+                pending_payload = {
+
+                    "intent": intent,
+
+                    "entity": entity,
+
+                    "typed_text": result.get(
+                        "typed_text"
+                    ),
+
+                    "browser": result.get(
+                        "browser"
+                    ),
+
+                    "website": result.get(
+                        "website"
+                    ),
+
+                    "search_query": result.get(
+                        "search_query"
+                    ),
+
+                    "profile": result.get(
+                        "profile"
+                    ),
+
+                    "user_text": text,
+
+                }
+
+            else:
+
+                pending_payload = dict(
+                    pending_payload
+                )
+
+            pending_payload.setdefault(
+                "intent",
+                intent
+            )
+
+            pending_payload.setdefault(
+                "entity",
+                entity
+            )
+
+            pending_payload.setdefault(
+                "user_text",
+                text
+            )
+
+            # ---------------------------------------------
+            # Store pending state
+            # ---------------------------------------------
+
+            self._pending_file_selection = {
+
+                "payload": pending_payload,
+
+                "candidates": candidates,
+
+                "operation": result.get(
+                    "pending_action",
+                    "file"
+                ),
+
+            }
+
+            operation = result.get(
+                "pending_action",
+                "file"
+            )
+
+            # ---------------------------------------------
+            # Show existing selection panel
+            # ---------------------------------------------
+
+            self.show_file_selection(
+                candidates,
+                operation=operation
+            )
+
+            message = (
+                f"I found {len(candidates)} matching "
+                f"{operation}s. Please choose a number."
+            )
+
+            try:
+
+                self.conversation_panel.show_ai_response(
+                    message
+                )
+
+            except Exception:
+                pass
+
+            self.status_label.setText(
+                "Status : Waiting for File Selection"
+            )
+
+            return
+
+        # =================================================
+        # Success
+        # =================================================
+
+        if result.get(
+            "success",
+            False
+        ):
+
+            reply = result.get(
+                "message",
+                result.get(
+                    "status",
+                    "Done."
+                )
+            )
+
+            reply = str(
+                reply or "Done."
+            ).strip()
+
+            try:
+
+                self.conversation_panel.show_ai_response(
+                    reply
+                )
+
+            except Exception as error:
+
+                print(
+                    f"Text Command Reply UI Error : {error}"
+                )
+
+            self.status_label.setText(
+                result.get(
+                    "status",
+                    "Status : Completed"
+                )
+            )
+
+            self.conversation_label.setText(
+                f"Executed Successfully\n\n{text}"
+            )
+
+            # ---------------------------------------------
+            # Preserve existing application tracking
+            # ---------------------------------------------
+
+            if (
+                intent == "launch_application"
+                and entity
+            ):
+
+                self.last_application = entity
+
+                if (
+                    "notepad" in str(entity).lower()
+                    or "word" in str(entity).lower()
+                ):
+
+                    self.typing_mode = True
+
+            try:
+
+                self.left_panel.set_thinking(
+                    "Inactive"
+                )
+
+                self.left_panel.set_speaking(
+                    "Silent"
+                )
+
+                self.right_panel.update_system_metrics()
+
+            except Exception:
+                pass
+
+            return
+
+        # =================================================
+        # Failed
+        # =================================================
+
+        failure_reply = result.get(
+            "message",
+            "Sorry, I could not complete that request."
+        )
+
+        failure_reply = str(
+            failure_reply
+        ).strip()
+
+        try:
+
+            self.conversation_panel.show_error(
+                failure_reply
+            )
+
+        except Exception:
+            pass
+
+        self.status_label.setText(
+            result.get(
+                "status",
+                "Status : No Action"
+            )
+        )
+
+        try:
+
+            self.left_panel.set_thinking(
+                "Inactive"
+            )
+
+            self.left_panel.set_speaking(
+                "Silent"
+            )
+
+        except Exception:
+            pass
+
+    # =====================================================
+    # Text Confirmation Response
+    # =====================================================
+
+    def _handle_text_confirmation_response(
+        self,
+        text
+    ):
+        """
+        Handle YES/NO confirmation typed in the
+        ConversationPanel.
+        """
+
+        if not self._pending_confirmation:
+            return
+
+        answer = self._parse_confirmation(
+            text
+        )
+
+        # ------------------------------------------
+        # Unclear
+        # ------------------------------------------
+
+        if answer is None:
+
+            message = (
+                "Please answer yes or no."
+            )
+
+            try:
+
+                self.conversation_panel.show_error(
+                    message
+                )
+
+            except Exception:
+                pass
+
+            return
+
+        # ------------------------------------------
+        # NO
+        # ------------------------------------------
+
+        if answer is False:
+
+            self._pending_confirmation = None
+
+            self.status_label.setText(
+                "Status : Cancelled"
+            )
+
+            try:
+
+                self.conversation_panel.show_ai_response(
+                    "Operation cancelled."
+                )
+
+            except Exception:
+                pass
+
+            try:
+
+                self.left_panel.set_thinking(
+                    "Inactive"
+                )
+
+            except Exception:
+                pass
+
+            return
+
+        # ------------------------------------------
+        # YES
+        # ------------------------------------------
+
+        pending = self._pending_confirmation
+
+        self._pending_confirmation = None
+
+        payload = dict(
+            pending.get(
+                "payload",
+                {}
+            )
+        )
+
+        action = pending.get(
+            "action"
+        )
+
+        try:
+
+            result = (
+                self.dispatcher
+                .execute_confirmed_action(
+                    action,
+                    payload
+                )
+            )
+
+        except Exception as error:
+
+            print(
+                f"Text Confirmed Action Error : {error}"
+            )
+
+            result = {
+
+                "success": False,
+
+                "status": (
+                    "Status : Confirmation Execution Failed"
+                ),
+
+                "message": (
+                    "I could not complete the confirmed action."
+                ),
+
+            }
+
+        self._handle_text_dispatch_result(
+
+            result=result,
+
+            text=payload.get(
+                "user_text",
+                text
+            ),
+
+            intent=payload.get(
+                "intent",
+                action
+            ),
+
+            entity=payload.get(
+                "entity"
+            ),
+
+        )
 
     # =====================================================
     # Gemini Reply
@@ -5753,21 +7315,22 @@ class MainWindow(QMainWindow):
     # Conversation Worker Finished
     # =====================================================
 
+    # =====================================================
+    # Conversation Worker Finished
+    # =====================================================
+
     @Slot()
     def _conversation_worker_finished(
         self
     ):
         """
-        Unlock the conversation input after the
-        Gemini worker has completely finished.
-
-        No blocking wait() is used here.
+        Unlock ConversationPanel after Gemini finishes.
         """
 
         self.chat_processing = False
 
         # ------------------------------------------
-        # Re-enable input
+        # Re-enable conversation input
         # ------------------------------------------
 
         if not self._closing:
@@ -5805,7 +7368,7 @@ class MainWindow(QMainWindow):
                 )
 
         # ------------------------------------------
-        # Final status
+        # Final UI state
         # ------------------------------------------
 
         if not self._closing:
@@ -5820,8 +7383,11 @@ class MainWindow(QMainWindow):
                     "Inactive"
                 )
 
-            except Exception:
+                self.left_panel.set_speaking(
+                    "Silent"
+                )
 
+            except Exception:
                 pass
 
     # --------------------------------------------------
