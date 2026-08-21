@@ -27,18 +27,13 @@ from automation.folder_manager import FolderManager
 
 class FileSystemAgent:
     """
-    Orchestrate file and folder operations.
+    Central orchestration layer for ASTRA file/folder automation.
 
-    The agent is responsible for:
-
-        1. Resolving files and folders.
-        2. Validating targets.
-        3. Calling existing automation modules.
-        4. Returning a consistent result structure.
-
-    Existing FileManager, FolderManager and FileFinder
-    implementations remain responsible for the actual
-    filesystem operations.
+    Responsibilities:
+        1. Resolve files and folders.
+        2. Validate targets.
+        3. Delegate actual operations.
+        4. Return consistent result dictionaries.
     """
 
     def __init__(
@@ -54,7 +49,7 @@ class FileSystemAgent:
         self.home = Path.home()
 
     # ==================================================
-    # Result Helper
+    # RESULT HELPER
     # ==================================================
 
     @staticmethod
@@ -65,11 +60,11 @@ class FileSystemAgent:
         **extra: Any,
     ) -> dict:
         """
-        Build a consistent agent response.
+        Build a consistent result structure.
         """
 
         result = {
-            "success": success,
+            "success": bool(success),
             "action": action,
             "message": message,
         }
@@ -79,24 +74,33 @@ class FileSystemAgent:
         return result
 
     # ==================================================
-    # Path Helpers
+    # BASIC HELPERS
     # ==================================================
 
     @staticmethod
-    def _clean(value: Optional[str]) -> str:
+    def _clean(
+        value: Optional[str],
+    ) -> str:
         """
-        Normalize a user-provided value.
+        Clean user-provided text/path values.
         """
 
         if value is None:
             return ""
 
-        return str(value).strip().strip('"').strip("'")
+        return (
+            str(value)
+            .strip()
+            .strip('"')
+            .strip("'")
+        )
 
     @staticmethod
-    def _path_exists(path: Optional[str | Path]) -> bool:
+    def _path_exists(
+        path: Optional[str | Path],
+    ) -> bool:
         """
-        Check whether a path exists.
+        Check whether a filesystem path exists.
         """
 
         if not path:
@@ -105,11 +109,36 @@ class FileSystemAgent:
         try:
             return Path(path).exists()
 
-        except (OSError, ValueError):
+        except (
+            OSError,
+            ValueError,
+            RuntimeError,
+        ):
+            return False
+
+    @staticmethod
+    def _is_real_directory(
+        path: Optional[str | Path],
+    ) -> bool:
+        """
+        Check whether a path is a real directory.
+        """
+
+        if not path:
+            return False
+
+        try:
+            return Path(path).is_dir()
+
+        except (
+            OSError,
+            ValueError,
+            RuntimeError,
+        ):
             return False
 
     # ==================================================
-    # Special Folder Resolution
+    # SPECIAL FOLDER RESOLUTION
     # ==================================================
 
     def resolve_special_folder(
@@ -117,21 +146,21 @@ class FileSystemAgent:
         name: str,
     ) -> Optional[str]:
         """
-        Resolve a known Windows special folder.
+        Resolve Windows special folders.
 
         Examples:
-
-            Desktop
-            Documents
-            Downloads
-            Pictures
-            Videos
-            Music
-            C drive
-            D drive
-            E drive
-            This PC
-            Recycle Bin
+            desktop
+            documents
+            downloads
+            pictures
+            videos
+            music
+            this pc
+            my computer
+            c drive
+            d drive
+            e drive
+            recycle bin
         """
 
         name = self._clean(name).lower()
@@ -145,32 +174,84 @@ class FileSystemAgent:
             {},
         )
 
+        if not isinstance(
+            special_folders,
+            dict,
+        ):
+            special_folders = {}
+
+        # Direct lookup.
         folder = special_folders.get(name)
+
+        # Normalize common aliases.
+        if folder is None:
+
+            aliases = {
+                "desktop": "desktop",
+                "documents": "documents",
+                "downloads": "downloads",
+                "pictures": "pictures",
+                "videos": "videos",
+                "music": "music",
+                "this pc": "this pc",
+                "my computer": "my computer",
+                "c drive": "c drive",
+                "d drive": "d drive",
+                "e drive": "e drive",
+                "recycle bin": "recycle bin",
+                "trash": "recycle bin",
+            }
+
+            alias = aliases.get(name)
+
+            if alias:
+                folder = special_folders.get(alias)
 
         if folder is None:
             return None
 
         # Windows shell location.
-        if isinstance(folder, str):
-            if folder.startswith("shell:"):
+        if isinstance(
+            folder,
+            str,
+        ):
+
+            if folder.lower().startswith(
+                "shell:"
+            ):
                 return folder
 
             if self._path_exists(folder):
-                return str(Path(folder))
+                try:
+                    return str(
+                        Path(folder).resolve()
+                    )
+                except (
+                    OSError,
+                    RuntimeError,
+                ):
+                    return str(folder)
 
             return None
 
         try:
-            if folder.exists():
-                return str(folder)
 
-        except (OSError, AttributeError):
+            if folder.exists():
+                return str(
+                    Path(folder).resolve()
+                )
+
+        except (
+            OSError,
+            AttributeError,
+            RuntimeError,
+        ):
             pass
 
         return None
 
     # ==================================================
-    # File Resolution
+    # FILE RESOLUTION
     # ==================================================
 
     def resolve_file(
@@ -178,12 +259,10 @@ class FileSystemAgent:
         filename: str,
         selection: Optional[int | str] = None,
     ) -> Optional[str]:
-        r"""
+        """
         Resolve a file.
 
-        If multiple files match and no selection is supplied,
-        do not silently choose one. The caller must inspect
-        find_file_candidates() / resolve_file_selection().
+        Multiple matches are never silently selected.
         """
 
         result = self.resolve_file_selection(
@@ -195,11 +274,15 @@ class FileSystemAgent:
             return result.get("path")
 
         if result.get("requires_selection"):
+
             print(
-                "\nMultiple files found:\n"
+                "\n========== FILE SELECTION =========="
             )
 
-            for candidate in result.get("candidates", []):
+            for candidate in result.get(
+                "candidates",
+                [],
+            ):
                 print(
                     f"{candidate['index']}. "
                     f"{candidate['name']}"
@@ -207,6 +290,10 @@ class FileSystemAgent:
                 print(
                     f"   {candidate['path']}"
                 )
+
+            print(
+                "====================================\n"
+            )
 
             return None
 
@@ -217,7 +304,7 @@ class FileSystemAgent:
         return None
 
     # ==================================================
-    # Multiple File Candidate Resolution
+    # FILE CANDIDATES
     # ==================================================
 
     def find_file_candidates(
@@ -225,23 +312,9 @@ class FileSystemAgent:
         filename: str,
     ) -> list[dict]:
         """
-        Find matching files without allowing an unrestricted filesystem
-        walk to block ASTRA for several minutes.
+        Search for files using bounded filesystem scanning.
 
-        Search order:
-            1. User folders
-            2. OneDrive user folders
-            3. E: drive
-
-        Exact matches are preferred over partial matches.
-
-        The scan is bounded by:
-            - maximum candidates
-            - maximum files inspected
-            - maximum scan time
-
-        This keeps voice/UI interaction responsive while still checking
-        the most relevant locations first.
+        Exact filename/stem matches have priority.
         """
 
         filename = self._clean(filename)
@@ -258,43 +331,52 @@ class FileSystemAgent:
             self.home / "Pictures",
             self.home / "Videos",
             self.home / "Music",
+
             self.home / "OneDrive" / "Desktop",
             self.home / "OneDrive" / "Documents",
             self.home / "OneDrive" / "Downloads",
             self.home / "OneDrive" / "Pictures",
             self.home / "OneDrive" / "Videos",
             self.home / "OneDrive" / "Music",
+
             Path("E:/"),
         ]
 
-        unique_locations: list[Path] = []
-        seen_locations: set[str] = set()
+        unique_locations = []
+        seen_locations = set()
 
         for location in locations:
+
             try:
+
                 resolved = location.resolve()
-                key = str(resolved).lower()
+                key = str(
+                    resolved
+                ).lower()
 
                 if key in seen_locations:
                     continue
 
-                if not resolved.exists() or not resolved.is_dir():
+                if not resolved.exists():
+                    continue
+
+                if not resolved.is_dir():
                     continue
 
                 seen_locations.add(key)
-                unique_locations.append(resolved)
+                unique_locations.append(
+                    resolved
+                )
 
-            except (OSError, RuntimeError):
+            except (
+                OSError,
+                RuntimeError,
+            ):
                 continue
 
-        exact: dict[str, Path] = {}
-        partial: dict[str, Path] = {}
+        exact = {}
+        partial = {}
 
-        # --------------------------------------------------
-        # Safety limits
-        # --------------------------------------------------
-        # These prevent commands such as "copy demo" from walking
-        # an entire large drive indefinitely.
         max_candidates = 50
         max_files_scanned = 100_000
         max_scan_seconds = 4.0
@@ -319,20 +401,24 @@ class FileSystemAgent:
 
         for location in unique_locations:
 
-            if timed_out or len(exact) >= max_candidates:
+            if timed_out:
+                break
+
+            if len(exact) >= max_candidates:
                 break
 
             try:
+
                 for root, dirs, files in os.walk(
                     location,
                     topdown=True,
                 ):
 
-                    # Keep the walk away from known huge/system folders.
                     dirs[:] = [
                         directory
                         for directory in dirs
-                        if directory.lower() not in excluded_directories
+                        if directory.lower()
+                        not in excluded_directories
                     ]
 
                     for file_name in files:
@@ -340,36 +426,61 @@ class FileSystemAgent:
                         files_scanned += 1
 
                         if (
-                            files_scanned >= max_files_scanned
-                            or (
-                                time.monotonic() - started_at
-                                >= max_scan_seconds
-                            )
+                            files_scanned
+                            >= max_files_scanned
+                        ):
+                            timed_out = True
+                            break
+
+                        if (
+                            time.monotonic()
+                            - started_at
+                            >= max_scan_seconds
                         ):
                             timed_out = True
                             break
 
                         try:
+
                             path = (
-                                Path(root) / file_name
+                                Path(root)
+                                / file_name
                             ).resolve()
 
-                            actual_name = path.name.lower()
-                            actual_stem = path.stem.lower()
+                            actual_name = (
+                                path.name.lower()
+                            )
+
+                            actual_stem = (
+                                path.stem.lower()
+                            )
+
+                            key = str(
+                                path
+                            ).lower()
 
                             if (
-                                search_name == actual_name
-                                or search_name == actual_stem
+                                search_name
+                                == actual_name
+                                or
+                                search_name
+                                == actual_stem
                             ):
-                                exact[str(path).lower()] = path
+                                exact[key] = path
 
                             elif (
-                                search_name in actual_name
-                                or search_name in actual_stem
+                                search_name
+                                in actual_name
+                                or
+                                search_name
+                                in actual_stem
                             ):
-                                partial[str(path).lower()] = path
+                                partial[key] = path
 
-                            if len(exact) >= max_candidates:
+                            if (
+                                len(exact)
+                                >= max_candidates
+                            ):
                                 break
 
                         except (
@@ -380,7 +491,13 @@ class FileSystemAgent:
                         ):
                             continue
 
-                    if timed_out or len(exact) >= max_candidates:
+                    if timed_out:
+                        break
+
+                    if (
+                        len(exact)
+                        >= max_candidates
+                    ):
                         break
 
             except (
@@ -391,35 +508,51 @@ class FileSystemAgent:
             ):
                 continue
 
-        # Exact matches always win.
-        matches = list(exact.values())
+        matches = list(
+            exact.values()
+        )
 
-        # Only use partial matches when there are no exact matches.
         if not matches:
-            matches = list(partial.values())
+            matches = list(
+                partial.values()
+            )
 
-        matches = matches[:max_candidates]
+        matches = matches[
+            :max_candidates
+        ]
 
-        # --------------------------------------------------
-        # FileFinder/database fallback
-        # --------------------------------------------------
-        # If the bounded filesystem search found nothing, use the
-        # existing indexed finder instead of silently failing.
+        # Database/index fallback.
         if not matches:
+
             try:
-                path = self.file_finder.find_file(filename)
+
+                path = (
+                    self.file_finder
+                    .find_file(filename)
+                )
 
                 if path:
-                    candidate = Path(path).resolve()
 
-                    if candidate.exists() and candidate.is_file():
-                        matches.append(candidate)
+                    candidate = (
+                        Path(path)
+                        .resolve()
+                    )
+
+                    if (
+                        candidate.exists()
+                        and
+                        candidate.is_file()
+                    ):
+                        matches.append(
+                            candidate
+                        )
 
             except Exception:
                 pass
 
         matches.sort(
-            key=lambda item: str(item).lower()
+            key=lambda item:
+            str(item).lower()
         )
 
         return [
@@ -428,47 +561,59 @@ class FileSystemAgent:
                 "name": path.name,
                 "path": str(path),
             }
-            for index, path in enumerate(
+            for index, path
+            in enumerate(
                 matches,
                 start=1,
             )
         ]
 
-    def resolve_file_selection(
+    # ==================================================
+    # FILE SELECTION
+    # ==================================================
 
+    def resolve_file_selection(
         self,
         filename: str,
         selection: Optional[int | str] = None,
+        force_selection: bool = False,
     ) -> dict:
         """
-        Resolve a file with explicit multiple-match handling.
-
-        One match:
-            returns selected path.
-
-        Multiple matches without a selection:
-            returns requires_selection=True and all candidates.
-
-        A supplied numeric selection:
-            returns the exact selected path.
+        Resolve a file with explicit selection handling.
         """
 
-        candidates = self.find_file_candidates(filename)
+        candidates = (
+            self.find_file_candidates(
+                filename
+            )
+        )
 
-        print("\n========== FILE SELECTION DEBUG ==========")
-        print(f"Search filename : {filename}")
-        print(f"Candidates found: {len(candidates)}")
+        print(
+            "\n========== FILE SELECTION DEBUG =========="
+        )
+
+        print(
+            f"Search filename : {filename}"
+        )
+
+        print(
+            f"Candidates found: {len(candidates)}"
+        )
 
         for candidate in candidates:
+
             print(
-                f"{candidate.get('index')}. "
-                f"{candidate.get('name')} -> "
-                f"{candidate.get('path')}"
+                f"{candidate['index']}. "
+                f"{candidate['name']} -> "
+                f"{candidate['path']}"
             )
 
-        print("==========================================\n")
+        print(
+            "==========================================\n"
+        )
 
         if not candidates:
+
             return self._result(
                 False,
                 "resolve_file",
@@ -477,22 +622,52 @@ class FileSystemAgent:
                 requires_selection=False,
             )
 
+        # --------------------------------------------------
+        # Force UI selection for destructive / file-transfer
+        # operations even when only one candidate exists.
+        # --------------------------------------------------
+
+        if len(candidates) == 1 and force_selection:
+
+            if selection is None:
+
+                return self._result(
+                    False,
+                    "resolve_file",
+                    (
+                        f"File found for '{filename}'. "
+                        "Please select the file."
+                    ),
+                    candidates=candidates,
+                    requires_selection=True,
+                )
+
+        # --------------------------------------------------
+        # Normal single-file resolution
+        # --------------------------------------------------
+
         if len(candidates) == 1:
+
             return self._result(
                 True,
                 "resolve_file",
-                f"File resolved: {candidates[0]['path']}",
+                (
+                    f"File resolved: "
+                    f"{candidates[0]['path']}"
+                ),
                 path=candidates[0]["path"],
                 candidates=candidates,
                 requires_selection=False,
             )
 
         if selection is None:
+
             return self._result(
                 False,
                 "resolve_file",
                 (
-                    f"Multiple files found for '{filename}'. "
+                    f"Multiple files found "
+                    f"for '{filename}'. "
                     "Please select one."
                 ),
                 candidates=candidates,
@@ -500,11 +675,16 @@ class FileSystemAgent:
             )
 
         try:
+
             selected_index = int(
                 str(selection).strip()
             )
 
-        except (TypeError, ValueError):
+        except (
+            TypeError,
+            ValueError,
+        ):
+
             return self._result(
                 False,
                 "resolve_file",
@@ -513,24 +693,35 @@ class FileSystemAgent:
                 requires_selection=True,
             )
 
-        if not 1 <= selected_index <= len(candidates):
+        if not (
+            1
+            <= selected_index
+            <= len(candidates)
+        ):
+
             return self._result(
                 False,
                 "resolve_file",
                 (
-                    f"Invalid selection. Choose a number "
-                    f"between 1 and {len(candidates)}."
+                    "Invalid selection. "
+                    f"Choose between 1 and "
+                    f"{len(candidates)}."
                 ),
                 candidates=candidates,
                 requires_selection=True,
             )
 
-        selected = candidates[selected_index - 1]
+        selected = candidates[
+            selected_index - 1
+        ]
 
         return self._result(
             True,
             "resolve_file",
-            f"File selected: {selected['path']}",
+            (
+                f"File selected: "
+                f"{selected['path']}"
+            ),
             path=selected["path"],
             candidates=candidates,
             selected_index=selected_index,
@@ -538,7 +729,7 @@ class FileSystemAgent:
         )
 
     # ==================================================
-    # Folder Resolution
+    # FOLDER RESOLUTION
     # ==================================================
 
     def resolve_folder(
@@ -546,84 +737,362 @@ class FileSystemAgent:
         folder_name: str,
     ) -> Optional[str]:
         """
-        Resolve a folder using:
+        Resolve a folder reliably.
 
-            1. Direct path
-            2. Special folder mapping
-            3. Home directory lookup
-            4. Common user folders
+        Search order:
+
+            1. Direct filesystem path
+            2. Special Windows folder
+            3. Common user folder
+            4. Home directory
+            5. OneDrive user folders
+            6. Bounded recursive search
+            7. FolderManager resolver, if available
         """
 
-        folder_name = self._clean(folder_name)
+        folder_name = self._clean(
+            folder_name
+        )
 
         if not folder_name:
             return None
 
-        # ----------------------------------------------
-        # Direct path
-        # ----------------------------------------------
+        normalized = (
+            folder_name
+            .lower()
+            .strip()
+            .rstrip("\\/")
+        )
 
-        direct_path = Path(folder_name).expanduser()
+        # --------------------------------------------------
+        # 1. Direct path
+        # --------------------------------------------------
+
+        direct_path = Path(
+            folder_name
+        ).expanduser()
 
         try:
-            if direct_path.exists() and direct_path.is_dir():
-                return str(direct_path.resolve())
 
-        except (OSError, RuntimeError):
+            if (
+                direct_path.exists()
+                and direct_path.is_dir()
+            ):
+
+                return str(
+                    direct_path.resolve()
+                )
+
+        except (
+            OSError,
+            RuntimeError,
+        ):
             pass
 
-        # ----------------------------------------------
-        # Special folders
-        # ----------------------------------------------
+        # --------------------------------------------------
+        # 2. Special folders
+        # --------------------------------------------------
 
-        special = self.resolve_special_folder(
-            folder_name
+        special = (
+            self.resolve_special_folder(
+                folder_name
+            )
         )
 
         if special:
             return special
 
-        # ----------------------------------------------
-        # Common folders
-        # ----------------------------------------------
+        # --------------------------------------------------
+        # 3. Common folders
+        # --------------------------------------------------
 
         common_folders = {
-            "desktop": self.home / "Desktop",
-            "documents": self.home / "Documents",
-            "downloads": self.home / "Downloads",
-            "pictures": self.home / "Pictures",
-            "videos": self.home / "Videos",
-            "music": self.home / "Music",
+
+            "desktop":
+                self.home / "Desktop",
+
+            "documents":
+                self.home / "Documents",
+
+            "downloads":
+                self.home / "Downloads",
+
+            "pictures":
+                self.home / "Pictures",
+
+            "videos":
+                self.home / "Videos",
+
+            "music":
+                self.home / "Music",
+
+            "onedrive":
+                self.home / "OneDrive",
+
         }
 
-        normalized = folder_name.lower()
+        common = common_folders.get(
+            normalized
+        )
 
-        if normalized in common_folders:
-            path = common_folders[normalized]
+        if common:
 
-            if path.exists():
-                return str(path.resolve())
+            try:
 
-        # ----------------------------------------------
-        # Search direct children of home
-        # ----------------------------------------------
+                if common.is_dir():
+
+                    return str(
+                        common.resolve()
+                    )
+
+            except (
+                OSError,
+                RuntimeError,
+            ):
+                pass
+
+        # --------------------------------------------------
+        # 4. Home direct children
+        # --------------------------------------------------
 
         try:
+
             for child in self.home.iterdir():
 
-                if not child.is_dir():
+                try:
+
+                    if not child.is_dir():
+                        continue
+
+                    if (
+                        child.name.lower()
+                        == normalized
+                    ):
+
+                        return str(
+                            child.resolve()
+                        )
+
+                except (
+                    OSError,
+                    RuntimeError,
+                ):
                     continue
 
-                if child.name.lower() == normalized:
-                    return str(child.resolve())
-
-        except (OSError, PermissionError):
+        except (
+            OSError,
+            PermissionError,
+        ):
             pass
+
+        # --------------------------------------------------
+        # 5. OneDrive direct children
+        # --------------------------------------------------
+
+        onedrive = (
+            self.home / "OneDrive"
+        )
+
+        if onedrive.is_dir():
+
+            try:
+
+                for child in onedrive.iterdir():
+
+                    try:
+
+                        if not child.is_dir():
+                            continue
+
+                        if (
+                            child.name.lower()
+                            == normalized
+                        ):
+
+                            return str(
+                                child.resolve()
+                            )
+
+                    except (
+                        OSError,
+                        RuntimeError,
+                    ):
+                        continue
+
+            except (
+                OSError,
+                PermissionError,
+            ):
+                pass
+
+        # --------------------------------------------------
+        # 6. Bounded recursive folder search
+        # --------------------------------------------------
+
+        search_roots = [
+            self.home,
+            self.home / "OneDrive",
+        ]
+
+        # E drive is included because your ASTRA
+        # initialization already indexes E:.
+        if Path("E:/").exists():
+            search_roots.append(
+                Path("E:/")
+            )
+
+        excluded_directories = {
+            "$recycle.bin",
+            "system volume information",
+            "node_modules",
+            ".git",
+            "__pycache__",
+            ".venv",
+            "venv",
+            "appdata",
+            "windows",
+            "program files",
+            "program files (x86)",
+        }
+
+        started_at = time.monotonic()
+
+        max_scan_seconds = 3.0
+        max_directories = 25_000
+        directories_scanned = 0
+
+        seen_roots = set()
+
+        for root in search_roots:
+
+            try:
+
+                root = root.resolve()
+
+            except (
+                OSError,
+                RuntimeError,
+            ):
+                continue
+
+            root_key = str(
+                root
+            ).lower()
+
+            if root_key in seen_roots:
+                continue
+
+            seen_roots.add(
+                root_key
+            )
+
+            if not root.is_dir():
+                continue
+
+            try:
+
+                for current_root, dirs, _files in os.walk(
+                    root,
+                    topdown=True,
+                ):
+
+                    directories_scanned += 1
+
+                    if (
+                        directories_scanned
+                        >= max_directories
+                    ):
+                        break
+
+                    if (
+                        time.monotonic()
+                        - started_at
+                        >= max_scan_seconds
+                    ):
+                        break
+
+                    dirs[:] = [
+                        directory
+                        for directory in dirs
+                        if directory.lower()
+                        not in excluded_directories
+                    ]
+
+                    for directory in dirs:
+
+                        if (
+                            directory.lower()
+                            == normalized
+                        ):
+
+                            candidate = (
+                                Path(current_root)
+                                / directory
+                            )
+
+                            try:
+
+                                if candidate.is_dir():
+
+                                    return str(
+                                        candidate.resolve()
+                                    )
+
+                            except (
+                                OSError,
+                                RuntimeError,
+                            ):
+                                continue
+
+            except (
+                PermissionError,
+                FileNotFoundError,
+                OSError,
+                RuntimeError,
+            ):
+                continue
+
+        # --------------------------------------------------
+        # 7. FolderManager fallback
+        # --------------------------------------------------
+
+        manager_resolver = getattr(
+            self.folder_manager,
+            "resolve_folder",
+            None,
+        )
+
+        if callable(
+            manager_resolver
+        ):
+
+            try:
+
+                resolved = (
+                    manager_resolver(
+                        folder_name
+                    )
+                )
+
+                if (
+                    resolved
+                    and self._is_real_directory(
+                        resolved
+                    )
+                ):
+
+                    return str(
+                        Path(resolved)
+                        .resolve()
+                    )
+
+            except Exception:
+                pass
 
         return None
 
     # ==================================================
-    # Generic Target Resolution
+    # GENERIC TARGET RESOLUTION
     # ==================================================
 
     def resolve_target(
@@ -631,52 +1100,62 @@ class FileSystemAgent:
         target: str,
         target_type: str = "auto",
     ) -> Optional[str]:
-        """
-        Resolve either a file or folder.
 
-        target_type:
+        target = self._clean(
+            target
+        )
 
-            file
-            folder
-            auto
-        """
-
-        target = self._clean(target)
-        target_type = self._clean(target_type).lower()
+        target_type = (
+            self._clean(
+                target_type
+            ).lower()
+        )
 
         if not target:
             return None
 
         if target_type == "file":
-            return self.resolve_file(target)
+            return self.resolve_file(
+                target
+            )
 
         if target_type == "folder":
-            return self.resolve_folder(target)
+            return self.resolve_folder(
+                target
+            )
 
-        # ----------------------------------------------
-        # Auto detection
-        # ----------------------------------------------
-
-        direct_path = Path(target).expanduser()
+        # Direct path.
+        direct = Path(
+            target
+        ).expanduser()
 
         try:
-            if direct_path.exists():
-                return str(direct_path.resolve())
 
-        except (OSError, RuntimeError):
+            if direct.exists():
+
+                return str(
+                    direct.resolve()
+                )
+
+        except (
+            OSError,
+            RuntimeError,
+        ):
             pass
 
-        # Try file first.
-        file_path = self.resolve_file(target)
+        file_path = self.resolve_file(
+            target
+        )
 
         if file_path:
             return file_path
 
-        # Then folder.
-        return self.resolve_folder(target)
+        return self.resolve_folder(
+            target
+        )
 
     # ==================================================
-    # File Operations
+    # FILE OPERATIONS
     # ==================================================
 
     def open_file(
@@ -684,40 +1163,56 @@ class FileSystemAgent:
         filename: str,
         selection: Optional[int | str] = None,
     ) -> dict:
-        """
-        Find and open a file.
-        """
 
-        path_result = self.resolve_file_selection(
-            filename,
-            selection,
+        path_result = (
+            self.resolve_file_selection(
+                filename,
+                selection,
+            )
         )
 
-        if path_result.get("requires_selection"):
+        if path_result.get(
+            "requires_selection"
+        ):
             return path_result
 
-        path = path_result.get("path")
+        path = path_result.get(
+            "path"
+        )
 
         if not path:
+
             return self._result(
                 False,
                 "open_file",
                 f"File not found: {filename}",
-                candidates=path_result.get("candidates", []),
+                candidates=path_result.get(
+                    "candidates",
+                    [],
+                ),
             )
 
         try:
-            success = self.file_manager.open_file(path)
 
-            if success:
-                return self._result(
-                    True,
-                    "open_file",
-                    f"File opened: {path}",
-                    path=path,
-                )
+            success = (
+                self.file_manager
+                .open_file(path)
+            )
+
+            return self._result(
+                success,
+                "open_file",
+                (
+                    f"File opened: {path}"
+                    if success
+                    else
+                    f"Unable to open file: {path}"
+                ),
+                path=path,
+            )
 
         except Exception as error:
+
             return self._result(
                 False,
                 "open_file",
@@ -725,27 +1220,20 @@ class FileSystemAgent:
                 path=path,
             )
 
-        return self._result(
-            False,
-            "open_file",
-            f"Unable to open file: {path}",
-            path=path,
-        )
+    # --------------------------------------------------
 
     def create_file(
         self,
         file_path: str,
         content: str = "",
     ) -> dict:
-        """
-        Create a file.
 
-        Delegates the actual operation to FileManager.
-        """
-
-        file_path = self._clean(file_path)
+        file_path = self._clean(
+            file_path
+        )
 
         if not file_path:
+
             return self._result(
                 False,
                 "create_file",
@@ -753,20 +1241,29 @@ class FileSystemAgent:
             )
 
         try:
-            success = self.file_manager.create_file(
-                file_path,
-                content,
+
+            success = (
+                self.file_manager
+                .create_file(
+                    file_path,
+                    content,
+                )
             )
 
-            if success:
-                return self._result(
-                    True,
-                    "create_file",
-                    f"File created: {file_path}",
-                    path=file_path,
-                )
+            return self._result(
+                success,
+                "create_file",
+                (
+                    f"File created: {file_path}"
+                    if success
+                    else
+                    f"Unable to create file: {file_path}"
+                ),
+                path=file_path,
+            )
 
         except Exception as error:
+
             return self._result(
                 False,
                 "create_file",
@@ -774,12 +1271,7 @@ class FileSystemAgent:
                 path=file_path,
             )
 
-        return self._result(
-            False,
-            "create_file",
-            f"Unable to create file: {file_path}",
-            path=file_path,
-        )
+    # --------------------------------------------------
 
     def rename_file(
         self,
@@ -787,42 +1279,59 @@ class FileSystemAgent:
         new_name: str,
         selection: Optional[int | str] = None,
     ) -> dict:
-        """
-        Rename an existing file.
-        """
 
-        filename = self._clean(filename)
-        new_name = self._clean(new_name)
+        filename = self._clean(
+            filename
+        )
+
+        new_name = self._clean(
+            new_name
+        )
 
         if not filename or not new_name:
+
             return self._result(
                 False,
                 "rename_file",
                 "Source file and new name are required.",
             )
 
-        path_result = self.resolve_file_selection(
-            filename,
-            selection,
+        path_result = (
+            self.resolve_file_selection(
+                filename,
+                selection,
+            )
         )
 
-        if path_result.get("requires_selection"):
+        if path_result.get(
+            "requires_selection"
+        ):
             return path_result
 
-        path = path_result.get("path")
+        path = path_result.get(
+            "path"
+        )
 
         if not path:
+
             return self._result(
                 False,
                 "rename_file",
                 f"File not found: {filename}",
-                candidates=path_result.get("candidates", []),
+                candidates=path_result.get(
+                    "candidates",
+                    [],
+                ),
             )
 
         try:
-            success = self.file_manager.rename_file(
-                path,
-                new_name,
+
+            success = (
+                self.file_manager
+                .rename_file(
+                    path,
+                    new_name,
+                )
             )
 
             return self._result(
@@ -831,14 +1340,18 @@ class FileSystemAgent:
                 (
                     f"File renamed: {new_name}"
                     if success
-                    else f"Unable to rename file: {path}"
+                    else
+                    f"Unable to rename file: {path}"
                 ),
                 path=path,
                 new_name=new_name,
-                selected_index=path_result.get("selected_index"),
+                selected_index=path_result.get(
+                    "selected_index"
+                ),
             )
 
         except Exception as error:
+
             return self._result(
                 False,
                 "rename_file",
@@ -847,59 +1360,80 @@ class FileSystemAgent:
                 new_name=new_name,
             )
 
+    # --------------------------------------------------
+
     def copy_file(
         self,
         filename: str,
         destination: str,
         selection: Optional[int | str] = None,
     ) -> dict:
-        """
-        Copy a file to a destination folder.
-        """
 
-        filename = self._clean(filename)
-        destination = self._clean(destination)
+        filename = self._clean(
+            filename
+        )
+
+        destination = self._clean(
+            destination
+        )
 
         if not filename or not destination:
+
             return self._result(
                 False,
                 "copy_file",
                 "Source file and destination are required.",
             )
 
-        source_result = self.resolve_file_selection(
-            filename,
-            selection,
+        source_result = (
+            self.resolve_file_selection(
+                filename,
+                selection,
+            )
         )
 
-        if source_result.get("requires_selection"):
+        if source_result.get(
+            "requires_selection"
+        ):
             return source_result
 
-        source = source_result.get("path")
+        source = source_result.get(
+            "path"
+        )
 
         if not source:
+
             return self._result(
                 False,
                 "copy_file",
                 f"File not found: {filename}",
-                candidates=source_result.get("candidates", []),
             )
 
-        destination_path = self.resolve_folder(
-            destination
+        destination_path = (
+            self.resolve_folder(
+                destination
+            )
         )
 
         if not destination_path:
+
             return self._result(
                 False,
                 "copy_file",
-                f"Destination folder not found: {destination}",
+                (
+                    "Destination folder "
+                    f"not found: {destination}"
+                ),
             )
 
         try:
-            success = self.file_manager.copy_file(
-                source,
-                destination_path,
+
+            success = (
+                self.file_manager
+                .copy_file(
+                    source,
+                    destination_path,
+                )
             )
 
             return self._result(
@@ -908,13 +1442,15 @@ class FileSystemAgent:
                 (
                     "File copied successfully."
                     if success
-                    else "Unable to copy file."
+                    else
+                    "Unable to copy file."
                 ),
                 source=source,
                 destination=destination_path,
             )
 
         except Exception as error:
+
             return self._result(
                 False,
                 "copy_file",
@@ -923,59 +1459,80 @@ class FileSystemAgent:
                 destination=destination_path,
             )
 
+    # --------------------------------------------------
+
     def move_file(
         self,
         filename: str,
         destination: str,
         selection: Optional[int | str] = None,
     ) -> dict:
-        """
-        Move a file to a destination folder.
-        """
 
-        filename = self._clean(filename)
-        destination = self._clean(destination)
+        filename = self._clean(
+            filename
+        )
+
+        destination = self._clean(
+            destination
+        )
 
         if not filename or not destination:
+
             return self._result(
                 False,
                 "move_file",
                 "Source file and destination are required.",
             )
 
-        source_result = self.resolve_file_selection(
-            filename,
-            selection,
+        source_result = (
+            self.resolve_file_selection(
+                filename,
+                selection,
+            )
         )
 
-        if source_result.get("requires_selection"):
+        if source_result.get(
+            "requires_selection"
+        ):
             return source_result
 
-        source = source_result.get("path")
+        source = source_result.get(
+            "path"
+        )
 
         if not source:
+
             return self._result(
                 False,
                 "move_file",
                 f"File not found: {filename}",
-                candidates=source_result.get("candidates", []),
             )
 
-        destination_path = self.resolve_folder(
-            destination
+        destination_path = (
+            self.resolve_folder(
+                destination
+            )
         )
 
         if not destination_path:
+
             return self._result(
                 False,
                 "move_file",
-                f"Destination folder not found: {destination}",
+                (
+                    "Destination folder "
+                    f"not found: {destination}"
+                ),
             )
 
         try:
-            success = self.file_manager.move_file(
-                source,
-                destination_path,
+
+            success = (
+                self.file_manager
+                .move_file(
+                    source,
+                    destination_path,
+                )
             )
 
             return self._result(
@@ -984,13 +1541,15 @@ class FileSystemAgent:
                 (
                     "File moved successfully."
                     if success
-                    else "Unable to move file."
+                    else
+                    "Unable to move file."
                 ),
                 source=source,
                 destination=destination_path,
             )
 
         except Exception as error:
+
             return self._result(
                 False,
                 "move_file",
@@ -999,45 +1558,55 @@ class FileSystemAgent:
                 destination=destination_path,
             )
 
+    # --------------------------------------------------
+
     def delete_file(
         self,
         filename: str,
         selection: Optional[int | str] = None,
     ) -> dict:
-        """
-        Delete an existing file.
-        """
 
-        filename = self._clean(filename)
+        filename = self._clean(
+            filename
+        )
 
         if not filename:
+
             return self._result(
                 False,
                 "delete_file",
                 "File name is required.",
             )
 
-        path_result = self.resolve_file_selection(
-            filename,
-            selection,
+        path_result = (
+            self.resolve_file_selection(
+                filename,
+                selection,
+            )
         )
 
-        if path_result.get("requires_selection"):
+        if path_result.get(
+            "requires_selection"
+        ):
             return path_result
 
-        path = path_result.get("path")
+        path = path_result.get(
+            "path"
+        )
 
         if not path:
+
             return self._result(
                 False,
                 "delete_file",
                 f"File not found: {filename}",
-                candidates=path_result.get("candidates", []),
             )
 
         try:
-            success = self.file_manager.delete_file(
-                path
+
+            success = (
+                self.file_manager
+                .delete_file(path)
             )
 
             return self._result(
@@ -1046,13 +1615,17 @@ class FileSystemAgent:
                 (
                     f"File deleted: {path}"
                     if success
-                    else f"Unable to delete file: {path}"
+                    else
+                    f"Unable to delete file: {path}"
                 ),
                 path=path,
-                selected_index=path_result.get("selected_index"),
+                selected_index=path_result.get(
+                    "selected_index"
+                ),
             )
 
         except Exception as error:
+
             return self._result(
                 False,
                 "delete_file",
@@ -1061,26 +1634,40 @@ class FileSystemAgent:
             )
 
     # ==================================================
-    # Folder Operations
+    # FOLDER OPERATIONS
     # ==================================================
 
     def open_folder(
         self,
         folder_name: str,
     ) -> dict:
-        """
-        Open a folder.
-        """
 
-        folder = self.resolve_folder(
-            folder_name
+        folder = (
+            self.resolve_folder(
+                folder_name
+            )
         )
 
-        # Special shell folder.
-        if folder and folder.startswith("shell:"):
+        if not folder:
+
+            return self._result(
+                False,
+                "open_folder",
+                f"Folder not found: {folder_name}",
+            )
+
+        # Shell location.
+        if folder.lower().startswith(
+            "shell:"
+        ):
+
             try:
-                success = self.folder_manager.open_folder(
-                    folder_name
+
+                success = (
+                    self.folder_manager
+                    .open_folder(
+                        folder_name
+                    )
                 )
 
                 return self._result(
@@ -1089,29 +1676,38 @@ class FileSystemAgent:
                     (
                         f"Folder opened: {folder_name}"
                         if success
-                        else f"Unable to open folder: {folder_name}"
+                        else
+                        f"Unable to open folder: {folder_name}"
                     ),
                     folder=folder_name,
                 )
 
             except Exception as error:
+
                 return self._result(
                     False,
                     "open_folder",
                     f"Open folder failed: {error}",
                 )
 
-        if not folder:
-            return self._result(
-                False,
-                "open_folder",
-                f"Folder not found: {folder_name}",
+        try:
+
+            # Prefer the complete resolved path.
+            success = (
+                self.folder_manager
+                .open_folder(folder)
             )
 
-        try:
-            success = self.folder_manager.open_folder(
-                Path(folder).name
-            )
+            # Compatibility fallback for managers
+            # expecting only a folder name.
+            if not success:
+
+                success = (
+                    self.folder_manager
+                    .open_folder(
+                        Path(folder).name
+                    )
+                )
 
             return self._result(
                 success,
@@ -1119,12 +1715,14 @@ class FileSystemAgent:
                 (
                     f"Folder opened: {folder}"
                     if success
-                    else f"Unable to open folder: {folder}"
+                    else
+                    f"Unable to open folder: {folder}"
                 ),
                 path=folder,
             )
 
         except Exception as error:
+
             return self._result(
                 False,
                 "open_folder",
@@ -1132,17 +1730,19 @@ class FileSystemAgent:
                 path=folder,
             )
 
+    # --------------------------------------------------
+
     def create_folder(
         self,
         folder_path: str,
     ) -> dict:
-        """
-        Create a folder.
-        """
 
-        folder_path = self._clean(folder_path)
+        folder_path = self._clean(
+            folder_path
+        )
 
         if not folder_path:
+
             return self._result(
                 False,
                 "create_folder",
@@ -1150,22 +1750,45 @@ class FileSystemAgent:
             )
 
         try:
-            success = self.folder_manager.create_folder(
+
+            success = (
+                self.folder_manager
+                .create_folder(
+                    folder_path
+                )
+            )
+
+            # Verify filesystem state.
+            created_path = Path(
                 folder_path
+            ).expanduser()
+
+            exists_after = (
+                created_path.exists()
+                and created_path.is_dir()
+            )
+
+            final_success = (
+                bool(success)
+                and exists_after
             )
 
             return self._result(
-                success,
+                final_success,
                 "create_folder",
                 (
                     f"Folder created: {folder_path}"
-                    if success
-                    else f"Unable to create folder: {folder_path}"
+                    if final_success
+                    else
+                    f"Unable to create folder: {folder_path}"
                 ),
-                path=folder_path,
+                path=str(
+                    created_path
+                ),
             )
 
         except Exception as error:
+
             return self._result(
                 False,
                 "create_folder",
@@ -1173,55 +1796,153 @@ class FileSystemAgent:
                 path=folder_path,
             )
 
+    # --------------------------------------------------
+
     def rename_folder(
         self,
         folder_name: str,
         new_name: str,
     ) -> dict:
-        """
-        Rename an existing folder.
-        """
 
-        folder_name = self._clean(folder_name)
-        new_name = self._clean(new_name)
+        folder_name = self._clean(
+            folder_name
+        )
+
+        new_name = self._clean(
+            new_name
+        )
 
         if not folder_name or not new_name:
+
             return self._result(
                 False,
                 "rename_folder",
                 "Source folder and new name are required.",
             )
 
-        source = self.resolve_folder(
-            folder_name
+        source = (
+            self.resolve_folder(
+                folder_name
+            )
         )
 
-        if not source or source.startswith("shell:"):
+        if not source:
+
             return self._result(
                 False,
                 "rename_folder",
                 f"Folder not found: {folder_name}",
             )
 
+        if source.lower().startswith(
+            "shell:"
+        ):
+
+            return self._result(
+                False,
+                "rename_folder",
+                (
+                    "Windows shell folders "
+                    "cannot be renamed by path."
+                ),
+            )
+
+        source_path = Path(
+            source
+        )
+
+        if not source_path.is_dir():
+
+            return self._result(
+                False,
+                "rename_folder",
+                f"Source is not a folder: {source}",
+            )
+
+        # Preserve source parent.
+        destination_path = (
+            source_path.parent / new_name
+        )
+
+        if destination_path.exists():
+
+            return self._result(
+                False,
+                "rename_folder",
+                (
+                    "A folder with the new name "
+                    "already exists."
+                ),
+                source=source,
+                destination=str(
+                    destination_path
+                ),
+            )
+
         try:
-            success = self.folder_manager.rename_folder(
-                source,
-                new_name,
+
+            print(
+                "\n========== FOLDER RENAME =========="
+            )
+
+            print(
+                f"Source      : {source}"
+            )
+
+            print(
+                f"New name    : {new_name}"
+            )
+
+            print(
+                f"Destination : {destination_path}"
+            )
+
+            print(
+                "====================================\n"
+            )
+
+            success = (
+                self.folder_manager
+                .rename_folder(
+                    source,
+                    new_name,
+                )
+            )
+
+            # Verify actual filesystem result.
+            renamed_exists = (
+                destination_path.exists()
+                and destination_path.is_dir()
+            )
+
+            source_exists = (
+                source_path.exists()
+            )
+
+            final_success = (
+                bool(success)
+                and renamed_exists
+                and not source_exists
             )
 
             return self._result(
-                success,
+                final_success,
                 "rename_folder",
                 (
                     f"Folder renamed to: {new_name}"
-                    if success
-                    else f"Unable to rename folder: {source}"
+                    if final_success
+                    else
+                    f"Unable to rename folder: {source}"
                 ),
                 source=source,
                 new_name=new_name,
+                destination=str(
+                    destination_path
+                ),
             )
 
         except Exception as error:
+
             return self._result(
                 False,
                 "rename_folder",
@@ -1230,66 +1951,121 @@ class FileSystemAgent:
                 new_name=new_name,
             )
 
+    # --------------------------------------------------
+
     def copy_folder(
         self,
         folder_name: str,
         destination: str,
     ) -> dict:
-        """
-        Copy a folder to a destination.
-        """
 
-        folder_name = self._clean(folder_name)
-        destination = self._clean(destination)
-
-        if not folder_name or not destination:
-            return self._result(
-                False,
-                "copy_folder",
-                "Source folder and destination are required.",
-            )
-
-        source = self.resolve_folder(
+        folder_name = self._clean(
             folder_name
         )
 
-        if not source or source.startswith("shell:"):
+        destination = self._clean(
+            destination
+        )
+
+        if not folder_name or not destination:
+
+            return self._result(
+                False,
+                "copy_folder",
+                (
+                    "Source folder and destination "
+                    "are required."
+                ),
+            )
+
+        source = (
+            self.resolve_folder(
+                folder_name
+            )
+        )
+
+        if not source:
+
             return self._result(
                 False,
                 "copy_folder",
                 f"Folder not found: {folder_name}",
             )
 
-        destination_path = self.resolve_folder(
-            destination
-        )
+        if source.lower().startswith(
+            "shell:"
+        ):
 
-        if not destination_path:
             return self._result(
                 False,
                 "copy_folder",
-                f"Destination folder not found: {destination}",
+                (
+                    "Windows shell folders "
+                    "cannot be copied directly."
+                ),
+            )
+
+        destination_path = (
+            self.resolve_folder(
+                destination
+            )
+        )
+
+        if not destination_path:
+
+            return self._result(
+                False,
+                "copy_folder",
+                (
+                    "Destination folder "
+                    f"not found: {destination}"
+                ),
             )
 
         try:
-            success = self.folder_manager.copy_folder(
-                source,
-                destination_path,
+
+            success = (
+                self.folder_manager
+                .copy_folder(
+                    source,
+                    destination_path,
+                )
+            )
+
+            # Typical copy result:
+            expected = (
+                Path(destination_path)
+                / Path(source).name
+            )
+
+            copied_exists = (
+                expected.exists()
+                and expected.is_dir()
+            )
+
+            final_success = (
+                bool(success)
+                and copied_exists
             )
 
             return self._result(
-                success,
+                final_success,
                 "copy_folder",
                 (
                     "Folder copied successfully."
-                    if success
-                    else "Unable to copy folder."
+                    if final_success
+                    else
+                    "Unable to copy folder."
                 ),
                 source=source,
                 destination=destination_path,
+                copied_path=str(
+                    expected
+                ),
             )
 
         except Exception as error:
+
             return self._result(
                 False,
                 "copy_folder",
@@ -1298,66 +2074,125 @@ class FileSystemAgent:
                 destination=destination_path,
             )
 
+    # --------------------------------------------------
+
     def move_folder(
         self,
         folder_name: str,
         destination: str,
     ) -> dict:
-        """
-        Move a folder to a destination.
-        """
 
-        folder_name = self._clean(folder_name)
-        destination = self._clean(destination)
-
-        if not folder_name or not destination:
-            return self._result(
-                False,
-                "move_folder",
-                "Source folder and destination are required.",
-            )
-
-        source = self.resolve_folder(
+        folder_name = self._clean(
             folder_name
         )
 
-        if not source or source.startswith("shell:"):
+        destination = self._clean(
+            destination
+        )
+
+        if not folder_name or not destination:
+
+            return self._result(
+                False,
+                "move_folder",
+                (
+                    "Source folder and destination "
+                    "are required."
+                ),
+            )
+
+        source = (
+            self.resolve_folder(
+                folder_name
+            )
+        )
+
+        if not source:
+
             return self._result(
                 False,
                 "move_folder",
                 f"Folder not found: {folder_name}",
             )
 
-        destination_path = self.resolve_folder(
-            destination
-        )
+        if source.lower().startswith(
+            "shell:"
+        ):
 
-        if not destination_path:
             return self._result(
                 False,
                 "move_folder",
-                f"Destination folder not found: {destination}",
+                (
+                    "Windows shell folders "
+                    "cannot be moved directly."
+                ),
+            )
+
+        destination_path = (
+            self.resolve_folder(
+                destination
+            )
+        )
+
+        if not destination_path:
+
+            return self._result(
+                False,
+                "move_folder",
+                (
+                    "Destination folder "
+                    f"not found: {destination}"
+                ),
             )
 
         try:
-            success = self.folder_manager.move_folder(
-                source,
-                destination_path,
+
+            success = (
+                self.folder_manager
+                .move_folder(
+                    source,
+                    destination_path,
+                )
+            )
+
+            expected = (
+                Path(destination_path)
+                / Path(source).name
+            )
+
+            moved_exists = (
+                expected.exists()
+                and expected.is_dir()
+            )
+
+            source_exists = (
+                Path(source).exists()
+            )
+
+            final_success = (
+                bool(success)
+                and moved_exists
+                and not source_exists
             )
 
             return self._result(
-                success,
+                final_success,
                 "move_folder",
                 (
                     "Folder moved successfully."
-                    if success
-                    else "Unable to move folder."
+                    if final_success
+                    else
+                    "Unable to move folder."
                 ),
                 source=source,
                 destination=destination_path,
+                moved_path=str(
+                    expected
+                ),
             )
 
         except Exception as error:
+
             return self._result(
                 False,
                 "move_folder",
@@ -1366,51 +2201,84 @@ class FileSystemAgent:
                 destination=destination_path,
             )
 
+    # --------------------------------------------------
+
     def delete_folder(
         self,
         folder_name: str,
     ) -> dict:
-        """
-        Delete an existing folder.
-        """
 
-        folder_name = self._clean(folder_name)
+        folder_name = self._clean(
+            folder_name
+        )
 
         if not folder_name:
+
             return self._result(
                 False,
                 "delete_folder",
                 "Folder name is required.",
             )
 
-        source = self.resolve_folder(
-            folder_name
+        source = (
+            self.resolve_folder(
+                folder_name
+            )
         )
 
-        if not source or source.startswith("shell:"):
+        if not source:
+
             return self._result(
                 False,
                 "delete_folder",
                 f"Folder not found: {folder_name}",
             )
 
+        if source.lower().startswith(
+            "shell:"
+        ):
+
+            return self._result(
+                False,
+                "delete_folder",
+                (
+                    "Windows shell folders "
+                    "cannot be deleted directly."
+                ),
+            )
+
         try:
-            success = self.folder_manager.delete_folder(
+
+            success = (
+                self.folder_manager
+                .delete_folder(
+                    source
+                )
+            )
+
+            deleted = not Path(
                 source
+            ).exists()
+
+            final_success = (
+                bool(success)
+                and deleted
             )
 
             return self._result(
-                success,
+                final_success,
                 "delete_folder",
                 (
                     f"Folder deleted: {source}"
-                    if success
-                    else f"Unable to delete folder: {source}"
+                    if final_success
+                    else
+                    f"Unable to delete folder: {source}"
                 ),
                 path=source,
             )
 
         except Exception as error:
+
             return self._result(
                 False,
                 "delete_folder",
@@ -1419,7 +2287,7 @@ class FileSystemAgent:
             )
 
     # ==================================================
-    # Generic Action Executor
+    # GENERIC EXECUTOR
     # ==================================================
 
     def execute(
@@ -1428,37 +2296,44 @@ class FileSystemAgent:
         parameters: Optional[dict] = None,
     ) -> dict:
         """
-        Execute a filesystem action.
-
-        This provides one stable entry point for
-        CommandDispatcher and MultiCommandExecutor.
-
-        Supports multiple parameter aliases so that
-        planner,
-        dispatcher,
-        tests,
-        and direct API calls can use
-        different parameter names.
+        Stable entry point used by CommandDispatcher.
         """
 
-        action = self._clean(action).lower()
+        action = self._clean(
+            action
+        ).lower()
+
         parameters = parameters or {}
 
         try:
 
-            # Optional explicit candidate selection. This is used
-            # when a filename exists in more than one location.
-            selection = parameters.get("selection")
+            # --------------------------------------------------
+            # Selection
+            # --------------------------------------------------
+
+            selection = parameters.get(
+                "selection"
+            )
 
             if selection is None:
-                selection = parameters.get("selected_index")
+
+                selection = (
+                    parameters.get(
+                        "selected_index"
+                    )
+                )
 
             if selection is None:
-                selection = parameters.get("file_selection")
 
-            # --------------------------------------------------
-            # FILE OPERATIONS
-            # --------------------------------------------------
+                selection = (
+                    parameters.get(
+                        "file_selection"
+                    )
+                )
+
+            # ==================================================
+            # FILE ACTIONS
+            # ==================================================
 
             if action == "open_file":
 
@@ -1475,8 +2350,6 @@ class FileSystemAgent:
                     selection,
                 )
 
-            # --------------------------------------------------
-
             if action == "create_file":
 
                 file_path = (
@@ -1487,17 +2360,13 @@ class FileSystemAgent:
                     or parameters.get("entity")
                 )
 
-                content = parameters.get(
-                    "content",
-                    ""
-                )
-
                 return self.create_file(
                     file_path,
-                    content,
+                    parameters.get(
+                        "content",
+                        "",
+                    ),
                 )
-
-            # --------------------------------------------------
 
             if action == "rename_file":
 
@@ -1522,8 +2391,6 @@ class FileSystemAgent:
                     new_name,
                     selection,
                 )
-
-            # --------------------------------------------------
 
             if action == "copy_file":
 
@@ -1550,8 +2417,6 @@ class FileSystemAgent:
                     selection,
                 )
 
-            # --------------------------------------------------
-
             if action == "move_file":
 
                 source = (
@@ -1577,8 +2442,6 @@ class FileSystemAgent:
                     selection,
                 )
 
-            # --------------------------------------------------
-
             if action == "delete_file":
 
                 filename = (
@@ -1595,11 +2458,14 @@ class FileSystemAgent:
                     selection,
                 )
 
-            # --------------------------------------------------
-            # ZIP OPERATIONS
-            # --------------------------------------------------
+            # ==================================================
+            # ZIP ACTIONS
+            # ==================================================
 
-            if action in ("compress_file", "compress_zip"):
+            if action in (
+                "compress_file",
+                "compress_zip",
+            ):
 
                 filename = (
                     parameters.get("filename")
@@ -1609,21 +2475,30 @@ class FileSystemAgent:
                     or parameters.get("entity")
                 )
 
-                source_result = self.resolve_file_selection(
-                    filename,
-                    selection,
+                source_result = (
+                    self.resolve_file_selection(
+                        filename,
+                        selection,
+                    )
                 )
 
-                if source_result.get("requires_selection"):
+                if source_result.get(
+                    "requires_selection"
+                ):
                     return source_result
 
-                source = source_result.get("path")
+                source = source_result.get(
+                    "path"
+                )
 
                 if not source:
                     return source_result
 
-                success = self.file_manager.compress_file(
-                    source
+                success = (
+                    self.file_manager
+                    .compress_file(
+                        source
+                    )
                 )
 
                 return self._result(
@@ -1632,14 +2507,16 @@ class FileSystemAgent:
                     (
                         "ZIP archive created successfully."
                         if success
-                        else "Unable to create ZIP archive."
+                        else
+                        "Unable to create ZIP archive."
                     ),
                     path=source,
                 )
 
-            # --------------------------------------------------
-
-            if action in ("extract_zip", "unzip"):
+            if action in (
+                "extract_zip",
+                "unzip",
+            ):
 
                 filename = (
                     parameters.get("filename")
@@ -1649,21 +2526,30 @@ class FileSystemAgent:
                     or parameters.get("entity")
                 )
 
-                source_result = self.resolve_file_selection(
-                    filename,
-                    selection,
+                source_result = (
+                    self.resolve_file_selection(
+                        filename,
+                        selection,
+                    )
                 )
 
-                if source_result.get("requires_selection"):
+                if source_result.get(
+                    "requires_selection"
+                ):
                     return source_result
 
-                source = source_result.get("path")
+                source = source_result.get(
+                    "path"
+                )
 
                 if not source:
                     return source_result
 
-                success = self.file_manager.extract_zip(
-                    source
+                success = (
+                    self.file_manager
+                    .extract_zip(
+                        source
+                    )
                 )
 
                 return self._result(
@@ -1672,15 +2558,18 @@ class FileSystemAgent:
                     (
                         "ZIP archive extracted successfully."
                         if success
-                        else "Unable to extract ZIP archive."
+                        else
+                        "Unable to extract ZIP archive."
                     ),
                     path=source,
-                    selected_index=source_result.get("selected_index"),
+                    selected_index=source_result.get(
+                        "selected_index"
+                    ),
                 )
 
-            # --------------------------------------------------
-            # FOLDER OPERATIONS
-            # --------------------------------------------------
+            # ==================================================
+            # FOLDER ACTIONS
+            # ==================================================
 
             if action == "open_folder":
 
@@ -1696,8 +2585,6 @@ class FileSystemAgent:
                     folder
                 )
 
-            # --------------------------------------------------
-
             if action == "create_folder":
 
                 folder_path = (
@@ -1711,8 +2598,6 @@ class FileSystemAgent:
                 return self.create_folder(
                     folder_path
                 )
-
-            # --------------------------------------------------
 
             if action == "rename_folder":
 
@@ -1728,16 +2613,14 @@ class FileSystemAgent:
                 new_name = (
                     parameters.get("new_name")
                     or parameters.get("newName")
-                    or parameters.get("destination")
                     or parameters.get("destination_name")
+                    or parameters.get("destination")
                 )
 
                 return self.rename_folder(
                     source,
                     new_name,
                 )
-
-            # --------------------------------------------------
 
             if action == "copy_folder":
 
@@ -1763,8 +2646,6 @@ class FileSystemAgent:
                     destination,
                 )
 
-            # --------------------------------------------------
-
             if action == "move_folder":
 
                 source = (
@@ -1789,8 +2670,6 @@ class FileSystemAgent:
                     destination,
                 )
 
-            # --------------------------------------------------
-
             if action == "delete_folder":
 
                 folder = (
@@ -1806,14 +2685,17 @@ class FileSystemAgent:
                     folder
                 )
 
-            # --------------------------------------------------
-            # UNSUPPORTED ACTION
-            # --------------------------------------------------
+            # ==================================================
+            # UNSUPPORTED
+            # ==================================================
 
             return self._result(
                 False,
                 action,
-                f"Unsupported filesystem action: {action}",
+                (
+                    "Unsupported filesystem "
+                    f"action: {action}"
+                ),
             )
 
         except Exception as error:
@@ -1821,26 +2703,38 @@ class FileSystemAgent:
             return self._result(
                 False,
                 action,
-                f"Filesystem action failed: {error}",
+                (
+                    "Filesystem action "
+                    f"failed: {error}"
+                ),
             )
 
     # ==================================================
-    # Close
+    # CLOSE
     # ==================================================
 
     def close(self):
         """
-        Close resources owned by the agent.
+        Release resources owned by the agent.
         """
 
         try:
+
             self.file_finder.close()
 
         except Exception:
             pass
 
         try:
+
             self.file_manager.close()
+
+        except Exception:
+            pass
+
+        try:
+
+            self.folder_manager.close()
 
         except Exception:
             pass

@@ -3422,6 +3422,24 @@ class MainWindow(QMainWindow):
         # Folder Commands
         # ---------------------------------
 
+        elif intent == "rename_folder":
+
+            entity = self.entity_extractor.extract_rename_folder(
+                text
+            )
+
+        elif intent == "copy_folder":
+
+            entity = self.entity_extractor.extract_copy_folder(
+                text
+            )
+
+        elif intent == "move_folder":
+
+            entity = self.entity_extractor.extract_move_folder(
+                text
+            )
+
         elif intent in {
 
             "open_folder",
@@ -3430,19 +3448,15 @@ class MainWindow(QMainWindow):
 
             "delete_folder",
 
-            "rename_folder",
-
-            "move_folder",
-
-            "copy_folder",
-
-            "empty_recycle_bin"
-
         }:
 
             entity = self.entity_extractor.extract_folder(
                 text
             )
+
+        elif intent == "empty_recycle_bin":
+
+            entity = None
 
         # ---------------------------------
         # Application Commands
@@ -6484,15 +6498,38 @@ class MainWindow(QMainWindow):
             # Folder Commands
             # -----------------------------------------------
 
+            elif intent == "rename_folder":
+
+                entity = (
+                    self.entity_extractor
+                    .extract_rename_folder(
+                        text
+                    )
+                )
+
+            elif intent == "copy_folder":
+
+                entity = (
+                    self.entity_extractor
+                    .extract_copy_folder(
+                        text
+                    )
+                )
+
+            elif intent == "move_folder":
+
+                entity = (
+                    self.entity_extractor
+                    .extract_move_folder(
+                        text
+                    )
+                )
+
             elif intent in {
 
                 "open_folder",
                 "create_folder",
                 "delete_folder",
-                "rename_folder",
-                "move_folder",
-                "copy_folder",
-                "empty_recycle_bin",
 
             }:
 
@@ -6502,6 +6539,10 @@ class MainWindow(QMainWindow):
                         text
                     )
                 )
+
+            elif intent == "empty_recycle_bin":
+
+                entity = None
 
             # -----------------------------------------------
             # Default Application Extraction

@@ -5,6 +5,8 @@ Routes the detected intent
 to the appropriate controller.
 """
 
+from pathlib import Path
+
 from ai.gemini_client import GeminiClient
 from automation.screen_recorder import ScreenRecorder
 from automation.file_system_agent import FileSystemAgent
@@ -126,6 +128,354 @@ class CommandDispatcher:
         return self.file_system_agent.resolve_file_selection(
             filename,
             selection
+        )
+
+    # --------------------------------------------------
+    # Helper : Resolve Folder Candidates
+    # --------------------------------------------------
+
+    def resolve_folder_selection(
+        self,
+        folder_name,
+        selection=None
+    ):
+        """
+        Resolve a folder with explicit multiple-match handling.
+
+        A single folder is resolved directly.
+
+        Multiple folders with the same name are returned to
+        MainWindow so the user can choose a numbered candidate.
+
+        The selected folder path is preserved in the dispatcher
+        payload and reused after confirmation.
+        """
+
+        if folder_name is None:
+            return {
+                "success": False,
+                "message": "Folder name is required.",
+                "candidates": [],
+                "requires_selection": False,
+            }
+
+        folder_name = str(folder_name).strip().strip('"').strip("'")
+
+        if not folder_name:
+            return {
+                "success": False,
+                "message": "Folder name is required.",
+                "candidates": [],
+                "requires_selection": False,
+            }
+
+        # --------------------------------------------------
+        # Direct / special folder resolution
+        # --------------------------------------------------
+
+        direct = Path(folder_name).expanduser()
+
+        try:
+            if direct.exists() and direct.is_dir():
+                path = str(direct.resolve())
+                return {
+                    "success": True,
+                    "path": path,
+                    "candidates": [
+                        {
+                            "index": 1,
+                            "name": direct.name or path,
+                            "path": path,
+                        }
+                    ],
+                    "requires_selection": False,
+                }
+        except (OSError, RuntimeError):
+            pass
+
+        special = self.file_system_agent.resolve_special_folder(
+            folder_name
+        )
+
+        if special and not str(special).lower().startswith("shell:"):
+            path = str(special)
+            return {
+                "success": True,
+                "path": path,
+                "candidates": [
+                    {
+                        "index": 1,
+                        "name": Path(path).name or folder_name,
+                        "path": path,
+                    }
+                ],
+                "requires_selection": False,
+            }
+
+        # --------------------------------------------------
+        # Search known user roots.
+        # --------------------------------------------------
+
+        home = Path.home()
+
+        roots = [
+            home,
+            home / "Desktop",
+            home / "Documents",
+            home / "Downloads",
+            home / "Pictures",
+            home / "Videos",
+            home / "Music",
+            home / "OneDrive",
+            home / "OneDrive" / "Desktop",
+            home / "OneDrive" / "Documents",
+            home / "OneDrive" / "Downloads",
+            home / "OneDrive" / "Pictures",
+            Path.cwd(),
+        ]
+
+        normalized = folder_name.lower().rstrip("\\/")
+
+        candidates_by_path = {}
+
+        for root in roots:
+
+            try:
+                if not root.exists() or not root.is_dir():
+                    continue
+            except OSError:
+                continue
+
+            # Search direct children first.
+            try:
+                for child in root.iterdir():
+
+                    try:
+                        if (
+                            child.is_dir()
+                            and child.name.lower() == normalized
+                        ):
+                            candidates_by_path[
+                                str(child.resolve())
+                            ] = child
+                    except (OSError, RuntimeError):
+                        continue
+            except (OSError, PermissionError):
+                pass
+
+        # --------------------------------------------------
+        # Bounded recursive search.
+        # This catches nested folders without scanning an
+        # unbounded number of directories.
+        # --------------------------------------------------
+
+        if not candidates_by_path:
+
+            max_depth = 4
+
+            for root in roots:
+
+                try:
+                    root = root.resolve()
+                except (OSError, RuntimeError):
+                    continue
+
+                try:
+                    root_parts = len(root.parts)
+
+                    for current, dirs, _files in __import__(
+                        "os"
+                    ).walk(root):
+
+                        current_path = Path(current)
+
+                        try:
+                            depth = len(current_path.parts) - root_parts
+                        except Exception:
+                            depth = max_depth + 1
+
+                        if depth > max_depth:
+                            dirs[:] = []
+                            continue
+
+                        for dirname in list(dirs):
+
+                            if dirname.lower() != normalized:
+                                continue
+
+                            candidate = current_path / dirname
+
+                            try:
+                                candidates_by_path[
+                                    str(candidate.resolve())
+                                ] = candidate
+                            except (OSError, RuntimeError):
+                                pass
+
+                except (OSError, PermissionError):
+                    continue
+
+        candidates = [
+            {
+                "index": index,
+                "name": path.name,
+                "path": str(path),
+            }
+            for index, path in enumerate(
+                sorted(
+                    candidates_by_path.values(),
+                    key=lambda p: str(p).lower()
+                ),
+                start=1
+            )
+        ]
+
+        # --------------------------------------------------
+        # No match
+        # --------------------------------------------------
+
+        if not candidates:
+
+            return {
+                "success": False,
+                "message": f"Folder not found: {folder_name}",
+                "candidates": [],
+                "requires_selection": False,
+            }
+
+        # --------------------------------------------------
+        # Single match
+        # --------------------------------------------------
+
+        if len(candidates) == 1:
+
+            return {
+                "success": True,
+                "path": candidates[0]["path"],
+                "candidates": candidates,
+                "requires_selection": False,
+            }
+
+        # --------------------------------------------------
+        # Multiple matches -> ask UI for numbered selection.
+        # --------------------------------------------------
+
+        if selection is None:
+
+            return {
+                "success": False,
+                "message": (
+                    f"Multiple folders found for "
+                    f"'{folder_name}'. Please select one."
+                ),
+                "candidates": candidates,
+                "requires_selection": True,
+            }
+
+        try:
+            selected_index = int(
+                str(selection).strip()
+            )
+        except (TypeError, ValueError):
+
+            return {
+                "success": False,
+                "message": "Invalid folder selection.",
+                "candidates": candidates,
+                "requires_selection": True,
+            }
+
+        if not (
+            1
+            <= selected_index
+            <= len(candidates)
+        ):
+
+            return {
+                "success": False,
+                "message": (
+                    f"Invalid selection. Choose a number "
+                    f"between 1 and {len(candidates)}."
+                ),
+                "candidates": candidates,
+                "requires_selection": True,
+            }
+
+        selected = candidates[
+            selected_index - 1
+        ]
+
+        return {
+            "success": True,
+            "path": selected["path"],
+            "candidates": candidates,
+            "selected_index": selected_index,
+            "requires_selection": False,
+        }
+
+    # --------------------------------------------------
+    # Helper : Multiple Target Selection Response
+    # --------------------------------------------------
+
+    def multiple_target_response(
+        self,
+        result,
+        action_name,
+        target_type="file",
+        pending_payload=None,
+    ):
+        """
+        Return a numbered target-selection response to MainWindow.
+
+        The same response contract is used for files and folders so
+        the existing UI selection flow remains unchanged.
+        """
+
+        candidates = result.get(
+            "candidates",
+            []
+        )
+
+        if not candidates:
+
+            return self.response(
+                False,
+                "",
+                f"Status : {target_type.title()} Selection Failed",
+                result.get(
+                    "message",
+                    f"No matching {target_type} was found."
+                ),
+            )
+
+        payload = (
+            dict(pending_payload)
+            if isinstance(
+                pending_payload,
+                dict
+            )
+            else dict(
+                getattr(
+                    self,
+                    "_current_selection_payload",
+                    {}
+                )
+            )
+        )
+
+        return self.response(
+            False,
+            "",
+            f"Status : {target_type.title()} Selection Required",
+            (
+                f"Please choose a {target_type} from the list."
+            ),
+            requires_selection=True,
+            selection_required=True,
+            candidates=candidates,
+            pending_action=action_name,
+            pending_payload=payload,
+            selection_type=target_type,
         )
 
     # --------------------------------------------------
@@ -2366,9 +2716,11 @@ class CommandDispatcher:
 
                 if resolution.get("requires_selection"):
 
-                    return self.multiple_file_response(
+                    return self.multiple_target_response(
                         resolution,
-                        "open_file"
+                        "open_file",
+                        target_type="file",
+                        pending_payload=self._current_selection_payload
                     )
 
                 if not resolution.get("success"):
@@ -2430,14 +2782,59 @@ class CommandDispatcher:
                 and entity
             ):
 
+                folder_name = (
+                    entity.get("folder")
+                    or entity.get("folder_name")
+                    or entity.get("folder_path")
+                    or entity.get("source")
+                    if isinstance(entity, dict)
+                    else str(entity)
+                )
+
+                resolution = self.resolve_folder_selection(
+                    folder_name,
+                    selection
+                )
+
+                if resolution.get("requires_selection"):
+
+                    return self.multiple_target_response(
+                        resolution,
+                        "open_folder",
+                        target_type="folder",
+                        pending_payload=self._current_selection_payload
+                    )
+
+                if not resolution.get("success"):
+
+                    reply = self.speak(
+                        resolution.get(
+                            "message",
+                            f"Folder not found: {folder_name}"
+                        )
+                    )
+
+                    return self.response(
+                        False,
+                        "",
+                        "Status : Folder Not Found",
+                        reply
+                    )
+
+                selected_path = resolution.get(
+                    "path",
+                    folder_name
+                )
+
                 reply = self.speak(
-                    f"Opening {entity}"
+                    f"Opening {folder_name}"
                 )
 
                 result = self.file_system_agent.execute(
                     "open_folder",
                     {
-                        "entity": entity
+                        "entity": selected_path,
+                        "selection": selection
                     }
                 )
 
@@ -2448,16 +2845,19 @@ class CommandDispatcher:
                 if success:
                     self.keyboard.activate_window()
 
+                else:
+                    reply = self.speak(
+                        result.get(
+                            "message",
+                            "Unable to open the folder."
+                        )
+                    )
+
                 return self.response(
-
                     success,
-
                     "Status : Folder Opened",
-
                     "Status : Folder Not Found",
-
                     reply
-
                 )
 
             # -------------------------
@@ -2669,7 +3069,8 @@ class CommandDispatcher:
 
                     return self.multiple_file_response(
                         resolution,
-                        "rename_file"
+                        "rename_file",
+                        pending_payload=self._current_selection_payload
                     )
 
                 if not resolution.get("success"):
@@ -2688,31 +3089,28 @@ class CommandDispatcher:
                         reply
                     )
 
-                print(
-                    "\\n==================================="
-                )
-                print("RENAME CONFIRMATION")
-                print("===================================")
-                print()
-                print(old_name)
-                print()
-                print("Rename To")
-                print()
-                print(new_name)
+                # ---------------------------------
+                # Confirmation
+                # ---------------------------------
 
-                if not self.confirm_action(
-                    "Do you want to rename this file?"
-                ):
+                if not skip_confirmation:
 
-                    reply = self.speak(
-                        "Rename cancelled."
-                    )
-
-                    return self.response(
-                        False,
-                        "",
-                        "Status : Rename Cancelled",
-                        reply
+                    return self.confirmation_response(
+                        (
+                            f"Do you want to rename "
+                            f"{old_name} to {new_name}?"
+                        ),
+                        intent="rename_file",
+                        entity=entity,
+                        typed_text=typed_text,
+                        browser=browser,
+                        website=website,
+                        search_query=search_query,
+                        profile=profile,
+                        user_text=user_text,
+                        multi_command=multi_command,
+                        selection=selection,
+                        confirmation_action="rename_file",
                     )
 
                 result = self.file_system_agent.execute(
@@ -3205,6 +3603,10 @@ class CommandDispatcher:
                     reply
                 )
 
+            # ==================================================
+            # FOLDER SYSTEM OPERATIONS
+            # ==================================================
+
             # -------------------------
             # Create Folder
             # -------------------------
@@ -3213,6 +3615,11 @@ class CommandDispatcher:
                 intent == "create_folder"
                 and entity
             ):
+
+                # ---------------------------------
+                # Create directly
+                # No confirmation required
+                # ---------------------------------
 
                 reply = self.speak(
                     f"Creating {entity} folder."
@@ -3245,16 +3652,12 @@ class CommandDispatcher:
                     )
 
                 return self.response(
-
                     success,
-
                     "Status : Folder Created",
-
                     "Status : Create Failed",
-
                     reply
-
                 )
+
 
             # -------------------------
             # Rename Folder
@@ -3292,61 +3695,72 @@ class CommandDispatcher:
                     )
 
                     return self.response(
-
                         False,
-
                         "",
-
                         "Status : Rename Information Missing",
-
                         reply
-
                     )
 
-                print(
-                    "\n==================================="
+                resolution = self.resolve_folder_selection(
+                    source,
+                    selection
                 )
 
-                print(
-                    "FOLDER RENAME CONFIRMATION"
-                )
+                if resolution.get("requires_selection"):
 
-                print(
-                    "==================================="
-                )
+                    return self.multiple_target_response(
+                        resolution,
+                        "rename_folder",
+                        target_type="folder",
+                        pending_payload=self._current_selection_payload
+                    )
 
-                print(
-                    f"\nFolder : {source}"
-                )
-
-                print(
-                    f"\nRename To : {new_name}"
-                )
-
-                if not self.confirm_action(
-                    "Do you want to rename this folder?"
-                ):
+                if not resolution.get("success"):
 
                     reply = self.speak(
-                        "Rename cancelled."
+                        resolution.get(
+                            "message",
+                            f"Folder not found: {source}"
+                        )
                     )
 
                     return self.response(
-
                         False,
-
                         "",
-
-                        "Status : Rename Cancelled",
-
+                        "Status : Folder Not Found",
                         reply
+                    )
 
+                resolved_source = resolution.get(
+                    "path",
+                    source
+                )
+
+                if not skip_confirmation:
+
+                    return self.confirmation_response(
+                        (
+                            f"Do you want to rename "
+                            f"{Path(resolved_source).name} "
+                            f"to {new_name}?"
+                        ),
+                        intent="rename_folder",
+                        entity=entity,
+                        typed_text=typed_text,
+                        browser=browser,
+                        website=website,
+                        search_query=search_query,
+                        profile=profile,
+                        user_text=user_text,
+                        multi_command=multi_command,
+                        selection=selection,
+                        confirmation_action="rename_folder",
                     )
 
                 result = self.file_system_agent.execute(
                     "rename_folder",
                     {
-                        "source": source,
+                        "source": resolved_source,
                         "new_name": new_name
                     }
                 )
@@ -3371,15 +3785,10 @@ class CommandDispatcher:
                     )
 
                 return self.response(
-
                     success,
-
                     "Status : Folder Renamed",
-
                     "Status : Rename Failed",
-
                     reply
-
                 )
 
             # -------------------------
@@ -3391,30 +3800,74 @@ class CommandDispatcher:
                 and entity
             ):
 
-                if not self.confirm_action(
-                    "Do you want to delete this folder?"
-                ):
+                folder_name = (
+                    entity.get("folder")
+                    or entity.get("folder_name")
+                    or entity.get("folder_path")
+                    or entity.get("source")
+                    if isinstance(entity, dict)
+                    else str(entity)
+                )
+
+                resolution = self.resolve_folder_selection(
+                    folder_name,
+                    selection
+                )
+
+                if resolution.get("requires_selection"):
+
+                    return self.multiple_target_response(
+                        resolution,
+                        "delete_folder",
+                        target_type="folder",
+                        pending_payload=self._current_selection_payload
+                    )
+
+                if not resolution.get("success"):
 
                     reply = self.speak(
-                        "Deletion cancelled."
+                        resolution.get(
+                            "message",
+                            f"Folder not found: {folder_name}"
+                        )
                     )
 
                     return self.response(
-
                         False,
-
                         "",
-
-                        "Status : Delete Cancelled",
-
+                        "Status : Folder Not Found",
                         reply
+                    )
 
+                resolved_source = resolution.get(
+                    "path",
+                    folder_name
+                )
+
+                if not skip_confirmation:
+
+                    return self.confirmation_response(
+                        (
+                            f"Do you want to delete the folder "
+                            f"{Path(resolved_source).name}?"
+                        ),
+                        intent="delete_folder",
+                        entity=entity,
+                        typed_text=typed_text,
+                        browser=browser,
+                        website=website,
+                        search_query=search_query,
+                        profile=profile,
+                        user_text=user_text,
+                        multi_command=multi_command,
+                        selection=selection,
+                        confirmation_action="delete_folder",
                     )
 
                 result = self.file_system_agent.execute(
                     "delete_folder",
                     {
-                        "entity": entity
+                        "entity": resolved_source
                     }
                 )
 
@@ -3438,15 +3891,10 @@ class CommandDispatcher:
                     )
 
                 return self.response(
-
                     success,
-
                     "Status : Folder Deleted",
-
                     "Status : Delete Failed",
-
                     reply
-
                 )
 
             # -------------------------
@@ -3462,6 +3910,7 @@ class CommandDispatcher:
 
                     source = (
                         entity.get("source")
+                        or entity.get("foldername")
                         or entity.get("folder")
                         or entity.get("folder_path")
                     )
@@ -3484,62 +3933,92 @@ class CommandDispatcher:
                     )
 
                     return self.response(
-
                         False,
-
                         "",
-
                         "Status : Move Information Missing",
-
                         reply
-
                     )
 
-                print(
-                    "\n==================================="
+                source_resolution = self.resolve_folder_selection(
+                    source,
+                    selection
                 )
 
-                print(
-                    "FOLDER MOVE CONFIRMATION"
-                )
+                if source_resolution.get("requires_selection"):
 
-                print(
-                    "==================================="
-                )
+                    return self.multiple_target_response(
+                        source_resolution,
+                        "move_folder",
+                        target_type="folder",
+                        pending_payload=self._current_selection_payload
+                    )
 
-                print(
-                    f"\nFolder : {source}"
-                )
-
-                print(
-                    f"\nDestination : {destination}"
-                )
-
-                if not self.confirm_action(
-                    "Do you want to move this folder?"
-                ):
+                if not source_resolution.get("success"):
 
                     reply = self.speak(
-                        "Move cancelled."
+                        source_resolution.get(
+                            "message",
+                            f"Folder not found: {source}"
+                        )
                     )
 
                     return self.response(
-
                         False,
-
                         "",
-
-                        "Status : Move Cancelled",
-
+                        "Status : Folder Not Found",
                         reply
+                    )
 
+                destination_path = (
+                    self.file_system_agent.resolve_folder(
+                        destination
+                    )
+                )
+
+                if not destination_path:
+
+                    reply = self.speak(
+                        f"Destination folder not found: {destination}"
+                    )
+
+                    return self.response(
+                        False,
+                        "",
+                        "Status : Destination Folder Not Found",
+                        reply
+                    )
+
+                resolved_source = source_resolution.get(
+                    "path",
+                    source
+                )
+
+                if not skip_confirmation:
+
+                    return self.confirmation_response(
+                        (
+                            f"Do you want to move "
+                            f"{Path(resolved_source).name} "
+                            f"to {destination}?"
+                        ),
+                        intent="move_folder",
+                        entity=entity,
+                        typed_text=typed_text,
+                        browser=browser,
+                        website=website,
+                        search_query=search_query,
+                        profile=profile,
+                        user_text=user_text,
+                        multi_command=multi_command,
+                        selection=selection,
+                        confirmation_action="move_folder",
                     )
 
                 result = self.file_system_agent.execute(
                     "move_folder",
                     {
-                        "source": source,
-                        "destination": destination
+                        "source": resolved_source,
+                        "destination": destination_path
                     }
                 )
 
@@ -3563,15 +4042,10 @@ class CommandDispatcher:
                     )
 
                 return self.response(
-
                     success,
-
                     "Status : Folder Moved",
-
                     "Status : Move Failed",
-
                     reply
-
                 )
 
             # -------------------------
@@ -3587,6 +4061,7 @@ class CommandDispatcher:
 
                     source = (
                         entity.get("source")
+                        or entity.get("foldername")
                         or entity.get("folder")
                         or entity.get("folder_path")
                     )
@@ -3609,62 +4084,92 @@ class CommandDispatcher:
                     )
 
                     return self.response(
-
                         False,
-
                         "",
-
                         "Status : Copy Information Missing",
-
                         reply
-
                     )
 
-                print(
-                    "\n==================================="
+                source_resolution = self.resolve_folder_selection(
+                    source,
+                    selection
                 )
 
-                print(
-                    "FOLDER COPY CONFIRMATION"
-                )
+                if source_resolution.get("requires_selection"):
 
-                print(
-                    "==================================="
-                )
+                    return self.multiple_target_response(
+                        source_resolution,
+                        "copy_folder",
+                        target_type="folder",
+                        pending_payload=self._current_selection_payload
+                    )
 
-                print(
-                    f"\nFolder : {source}"
-                )
-
-                print(
-                    f"\nDestination : {destination}"
-                )
-
-                if not self.confirm_action(
-                    "Do you want to copy this folder?"
-                ):
+                if not source_resolution.get("success"):
 
                     reply = self.speak(
-                        "Copy cancelled."
+                        source_resolution.get(
+                            "message",
+                            f"Folder not found: {source}"
+                        )
                     )
 
                     return self.response(
-
                         False,
-
                         "",
-
-                        "Status : Copy Cancelled",
-
+                        "Status : Folder Not Found",
                         reply
+                    )
 
+                destination_path = (
+                    self.file_system_agent.resolve_folder(
+                        destination
+                    )
+                )
+
+                if not destination_path:
+
+                    reply = self.speak(
+                        f"Destination folder not found: {destination}"
+                    )
+
+                    return self.response(
+                        False,
+                        "",
+                        "Status : Destination Folder Not Found",
+                        reply
+                    )
+
+                resolved_source = source_resolution.get(
+                    "path",
+                    source
+                )
+
+                if not skip_confirmation:
+
+                    return self.confirmation_response(
+                        (
+                            f"Do you want to copy "
+                            f"{Path(resolved_source).name} "
+                            f"to {destination}?"
+                        ),
+                        intent="copy_folder",
+                        entity=entity,
+                        typed_text=typed_text,
+                        browser=browser,
+                        website=website,
+                        search_query=search_query,
+                        profile=profile,
+                        user_text=user_text,
+                        multi_command=multi_command,
+                        selection=selection,
+                        confirmation_action="copy_folder",
                     )
 
                 result = self.file_system_agent.execute(
                     "copy_folder",
                     {
-                        "source": source,
-                        "destination": destination
+                        "source": resolved_source,
+                        "destination": destination_path
                     }
                 )
 
@@ -3688,22 +4193,21 @@ class CommandDispatcher:
                     )
 
                 return self.response(
-
                     success,
-
                     "Status : Folder Copied",
-
                     "Status : Copy Failed",
-
                     reply
-
                 )
-            
+
             # -------------------------
             # Empty Recycle Bin
             # -------------------------
 
             elif intent == "empty_recycle_bin":
+
+                # ---------------------------------
+                # Confirmation
+                # ---------------------------------
 
                 if not skip_confirmation:
 
@@ -3722,34 +4226,13 @@ class CommandDispatcher:
                         confirmation_action="empty_recycle_bin",
                     )
 
-                if not self.confirm_action(
-
-                    "Do you want to empty the recycle bin?"
-
-                ):
-
-                    reply = self.speak(
-                        "Operation cancelled."
-                    )
-
-                    return self.response(
-
-                        False,
-
-                        "",
-
-                        "Status : Cancelled",
-
-                        reply
-
-                    )
+                # ---------------------------------
+                # Execute after YES
+                # ---------------------------------
 
                 success = (
-
                     self.folder_manager
-
                     .empty_recycle_bin()
-
                 )
 
                 if success:
@@ -3765,15 +4248,10 @@ class CommandDispatcher:
                     )
 
                 return self.response(
-
                     success,
-
                     "Status : Recycle Bin Emptied",
-
-                    "Status : Failed",
-
+                    "Status : Recycle Bin Empty Failed",
                     reply
-
                 )
 
             # -------------------------

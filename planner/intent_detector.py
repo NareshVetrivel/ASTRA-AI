@@ -536,157 +536,193 @@ class IntentDetector:
         # HIGH PRIORITY FILE SYSTEM COMMANDS
         # ==================================================
         #
-        # These commands must be detected BEFORE:
+        # IMPORTANT:
         #
-        #   - application detection
-        #   - folder special-name detection
-        #   - search detection
-        #   - fuzzy intent matching
+        # Folder operations MUST be detected before
+        # generic file operations.
         #
-        # This prevents commands such as:
+        # This prevents:
         #
-        #   create, file demo
-        #   create a file demo
-        #   make a file demo
+        #   rename test folder to demo folder
         #
-        # from being incorrectly classified as
-        # open_file or another intent.
+        # from becoming:
+        #
+        #   rename_file
+        #
+        # It must become:
+        #
+        #   rename_folder
+        #
+        # ==================================================
+
+        # ==================================================
+        # FOLDER OPERATIONS
         # ==================================================
 
         # ---------------------------------
-        # STRUCTURAL FILE COMMANDS
-        # ---------------------------------
-        #
-        # Voice commands often omit the literal word "file":
-        #
-        #   copy astro test to desktop
-        #   move resume to documents
-        #
-        # Also, the filename can appear between the verb and
-        # the word "file":
-        #
-        #   rename astra file 2 astra demo
-        #
-        # These must be detected before generic "open/file"
-        # handling and before clipboard "copy".
-        # ---------------------------------
-
-        # RENAME FILE
-        if (
-            text.startswith("rename ")
-            and (
-                " to " in f" {text} "
-                or " 2 " in f" {text} "
-                or " into " in f" {text} "
-            )
-            and (
-                "file" in text
-                or "document" in text
-            )
-        ):
-            return "rename_file"
-
-        # COPY FILE
-        if (
-            text.startswith("copy ")
-            and (
-                " to " in f" {text} "
-                or " into " in f" {text} "
-                or " 2 " in f" {text} "
-            )
-            and "folder" not in text
-        ):
-            return "copy_file"
-
-        # MOVE FILE
-        if (
-            text.startswith("move ")
-            and (
-                " to " in f" {text} "
-                or " into " in f" {text} "
-                or " 2 " in f" {text} "
-            )
-            and "folder" not in text
-        ):
-            return "move_file"
-
-        # ---------------------------------
-        # CREATE FILE
-        # ---------------------------------
-        #
-        # Supports:
-        #
-        # create file demo
-        # create a file demo
-        # create the file demo
-        # create a test file demo
-        # create a new file demo
-        # make file demo
-        # make a file demo
-        # make a test file demo
-        # new file demo
-        # new a file demo
-        #
-        # IMPORTANT:
-        # The command must start with create/make/new
-        # and contain the word "file".
-        #
-        # This prevents unrelated sentences such as:
-        #
-        #   open file demo
-        #   find file demo
-        #
-        # from becoming create_file.
-        # ---------------------------------
-
-        create_file_starters = (
-            "create ",
-            "make ",
-            "new ",
-        )
-
-        if (
-            text.startswith(create_file_starters)
-            and
-            "file" in text.split()
-        ):
-
-            return "create_file"
-
-        # ---------------------------------
-        # DELETE FILE
-        # ---------------------------------
-
-        if (
-            "delete file" in text
-            or
-            "delete a file" in text
-            or
-            "delete the file" in text
-            or
-            "remove file" in text
-            or
-            "remove a file" in text
-            or
-            "remove the file" in text
-        ):
-
-            return "delete_file"
-
-        # ---------------------------------
-        # RENAME FILE
+        # CREATE FOLDER
         # ---------------------------------
 
         if (
             (
-                text.startswith("rename ")
-                and (
-                    " to " in f" {text} "
-                    or " 2 " in f" {text} "
-                    or " into " in f" {text} "
-                )
+                text.startswith("create ")
+                or
+                text.startswith("make ")
+                or
+                text.startswith("new ")
             )
+            and
+            "folder" in text
+        ):
+
+            return "create_folder"
+
+        # ---------------------------------
+        # RENAME FOLDER
+        # ---------------------------------
+        #
+        # Supports:
+        #
+        # rename folder test to demo
+        # rename test folder to demo folder
+        # rename the test folder to demo folder
+        # rename folder test into demo
+        # rename test folder 2 demo folder
+        # rename folder, test folder, 2 demo folder
+        #
+        # ---------------------------------
+
+        if (
+            "rename" in text
+            and
+            "folder" in text
+            and
+            (
+                " to " in f" {text} "
+                or
+                " into " in f" {text} "
+                or
+                " 2 " in f" {text} "
+            )
+        ):
+
+            return "rename_folder"
+
+        # ---------------------------------
+        # DELETE FOLDER
+        # ---------------------------------
+
+        if (
+            (
+                text.startswith("delete ")
+                or
+                text.startswith("remove ")
+            )
+            and
+            "folder" in text
+        ):
+
+            return "delete_folder"
+
+        # ---------------------------------
+        # MOVE FOLDER
+        # ---------------------------------
+        #
+        # Supports:
+        #
+        # move folder source to destination
+        # move source folder to destination
+        # move the source folder into destination
+        #
+        # ---------------------------------
+
+        if (
+            text.startswith("move ")
+            and
+            "folder" in text
+            and
+            (
+                " to " in f" {text} "
+                or
+                " into " in f" {text} "
+                or
+                " 2 " in f" {text} "
+            )
+        ):
+
+            return "move_folder"
+
+        # ---------------------------------
+        # COPY FOLDER
+        # ---------------------------------
+        #
+        # Supports:
+        #
+        # copy folder source to destination
+        # copy source folder to destination
+        # copy the source folder into destination
+        #
+        # ---------------------------------
+
+        if (
+            text.startswith("copy ")
+            and
+            "folder" in text
+            and
+            (
+                " to " in f" {text} "
+                or
+                " into " in f" {text} "
+                or
+                " 2 " in f" {text} "
+            )
+        ):
+
+            return "copy_folder"
+
+        # ---------------------------------
+        # OPEN FOLDER
+        # ---------------------------------
+
+        if (
+            "open folder" in text
             or
+            "open a folder" in text
+            or
+            "open the folder" in text
+            or
+            "open your folder" in text
+        ):
+
+            return "open_folder"
+
+        # ==================================================
+        # FILE OPERATIONS
+        # ==================================================
+
+        # ---------------------------------
+        # RENAME FILE
+        # ---------------------------------
+
+        if (
+            text.startswith("rename ")
+            and
+            (
+                " to " in f" {text} "
+                or
+                " into " in f" {text} "
+                or
+                " 2 " in f" {text} "
+            )
+            and
+            "folder" not in text
+        ):
+
+            return "rename_file"
+
+        # Explicit file rename
+
+        if (
             "rename file" in text
             or
             "rename a file" in text
@@ -701,16 +737,22 @@ class IntentDetector:
         # ---------------------------------
 
         if (
+            text.startswith("copy ")
+            and
             (
-                text.startswith("copy ")
-                and (
-                    " to " in f" {text} "
-                    or " into " in f" {text} "
-                    or " 2 " in f" {text} "
-                )
-                and "folder" not in text
+                " to " in f" {text} "
+                or
+                " into " in f" {text} "
+                or
+                " 2 " in f" {text} "
             )
-            or
+            and
+            "folder" not in text
+        ):
+
+            return "copy_file"
+
+        if (
             "copy file" in text
             or
             "copy a file" in text
@@ -731,16 +773,22 @@ class IntentDetector:
         # ---------------------------------
 
         if (
+            text.startswith("move ")
+            and
             (
-                text.startswith("move ")
-                and (
-                    " to " in f" {text} "
-                    or " into " in f" {text} "
-                    or " 2 " in f" {text} "
-                )
-                and "folder" not in text
+                " to " in f" {text} "
+                or
+                " into " in f" {text} "
+                or
+                " 2 " in f" {text} "
             )
-            or
+            and
+            "folder" not in text
+        ):
+
+            return "move_file"
+
+        if (
             "move file" in text
             or
             "move a file" in text
@@ -757,108 +805,102 @@ class IntentDetector:
             return "move_file"
 
         # ---------------------------------
-        # CREATE FOLDER
+        # CREATE FILE
+        # ---------------------------------
+
+        create_file_starters = (
+            "create ",
+            "make ",
+            "new ",
+        )
+
+        if (
+            text.startswith(create_file_starters)
+            and
+            "file" in text.split()
+            and
+            "folder" not in text
+        ):
+
+            return "create_file"
+
+        # ---------------------------------
+        # DELETE FILE
         # ---------------------------------
 
         if (
-            "create folder" in text
-            or
-            "create a folder" in text
-            or
-            "create the folder" in text
-            or
-            "create your folder" in text
-            or
-            "make folder" in text
-            or
-            "make a folder" in text
-            or
-            "make the folder" in text
-            or
-            "make your folder" in text
-            or
-            "new folder" in text
-            or
-            "new a folder" in text
-            or
-            "new the folder" in text
-            or
-            "new your folder" in text
+            (
+                text.startswith("delete ")
+                or
+                text.startswith("remove ")
+            )
+            and
+            "file" in text
+            and
+            "folder" not in text
         ):
 
-            return "create_folder"
+            return "delete_file"
+
+        # ==================================================
+        # ZIP / FILE ARCHIVE OPERATIONS
+        # ==================================================
 
         # ---------------------------------
-        # RENAME FOLDER
+        # EXTRACT ZIP
         # ---------------------------------
 
         if (
-            "rename folder" in text
+            "extract zip" in text
             or
-            "rename a folder" in text
+            "extract file" in text
             or
-            "rename the folder" in text
+            "extract archive" in text
             or
-            "rename your folder" in text
+            "unzip" in text
+            or
+            "un zip" in text
+            or
+            "open zip" in text
         ):
 
-            return "rename_folder"
+            return "extract_zip"
 
         # ---------------------------------
-        # DELETE FOLDER
+        # COMPRESS FILE
         # ---------------------------------
 
         if (
-            "delete folder" in text
+            "compress file" in text
             or
-            "delete a folder" in text
+            "compress " in text
             or
-            "delete the folder" in text
+            text == "compress"
             or
-            "delete your folder" in text
+            "zip file" in text
             or
-            "remove folder" in text
+            "create zip" in text
             or
-            "remove a folder" in text
+            "zip this file" in text
             or
-            "remove the folder" in text
+            "make zip" in text
             or
-            "remove your folder" in text
+            "archive file" in text
         ):
 
-            return "delete_folder"
+            return "compress_file"
 
-        # ---------------------------------
-        # MOVE FOLDER
-        # ---------------------------------
+        # ==================================================
+        # EMPTY RECYCLE BIN
+        # ==================================================
 
         if (
-            "move folder" in text
+            "empty recycle bin" in text
             or
-            "move a folder" in text
-            or
-            "move the folder" in text
-            or
-            "move your folder" in text
+            "clear recycle bin" in text
         ):
 
-            return "move_folder"
-
-        # ---------------------------------
-        # COPY FOLDER
-        # ---------------------------------
-
-        if (
-            "copy folder" in text
-            or
-            "copy a folder" in text
-            or
-            "copy the folder" in text
-            or
-            "copy your folder" in text
-        ):
-
-            return "copy_folder"
+            return "empty_recycle_bin"
 
         # ---------------------------------
         # System Automation Priority

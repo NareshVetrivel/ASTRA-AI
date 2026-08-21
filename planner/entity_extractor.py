@@ -172,10 +172,19 @@ class EntityExtractor:
         replacements = {
 
             # ---------------------------------
-            # Numbers
+            # Numbers / STT
             # ---------------------------------
 
-            " 2 ": " to ",
+            # IMPORTANT:
+            # Do NOT globally convert numeric "2" to "to".
+            #
+            # "2" can be a real part of a filename/folder name:
+            # test 2
+            # project 2
+            # folder 2
+            #
+            # Rename/copy/move extractors handle STT "2" contextually.
+
             " too ": " to ",
             " tu ": " to ",
 
@@ -2133,6 +2142,573 @@ class EntityExtractor:
             "filename": filename,
             "destination": destination
         }
+
+    # --------------------------------------------------
+    # Extract Rename Folder
+    # --------------------------------------------------
+
+    def extract_rename_folder(
+        self,
+        text
+    ):
+        """
+        Extract old and new folder names.
+
+        Supports:
+
+            rename folder test to demo
+            rename folder test into demo
+            rename test folder to demo
+            rename test 2 demo
+
+        Important:
+            Numeric "2" can be part of the folder name.
+
+        Examples:
+
+            rename folder test 2 demo
+
+            becomes:
+
+            old_name = "test 2"
+            new_name = "demo"
+        """
+
+        if not text:
+
+            return None
+
+        text = self.normalize_text(
+            text
+        )
+
+        text = (
+            text
+            .strip()
+            .strip("\"'")
+            .rstrip(".,!?;:")
+            .strip()
+        )
+
+        if not text:
+
+            return None
+
+        words = text.split()
+
+        # ---------------------------------------------
+        # Remove rename command
+        # ---------------------------------------------
+
+        if words and words[0] == "rename":
+
+            words = words[1:]
+
+        # ---------------------------------------------
+        # Remove leading filler words
+        # ---------------------------------------------
+
+        while words and words[0] in {
+
+            "a",
+            "an",
+            "the",
+            "my",
+            "your",
+            "folder",
+            "directory",
+
+        }:
+
+            words.pop(0)
+
+        if not words:
+
+            return None
+
+        # ---------------------------------------------
+        # Explicit separator
+        #
+        # rename folder test 2 to demo
+        #
+        # Here "2" is part of old folder name.
+        # ---------------------------------------------
+
+        separator = None
+
+        if "to" in words:
+
+            separator = "to"
+
+        elif "into" in words:
+
+            separator = "into"
+
+        # ---------------------------------------------
+        # Normal explicit command
+        # ---------------------------------------------
+
+        if separator is not None:
+
+            index = words.index(
+                separator
+            )
+
+            old_words = words[:index]
+
+            new_words = words[
+                index + 1:
+            ]
+
+        else:
+
+            # -----------------------------------------
+            # STT fallback
+            #
+            # Example:
+            #
+            # rename folder test 2 demo
+            #
+            # We MUST NOT treat "2" as "to".
+            #
+            # Therefore:
+            #
+            # old folder = test 2
+            # new folder = demo
+            #
+            # Last word becomes the new folder name.
+            # -----------------------------------------
+
+            if len(words) < 2:
+
+                return None
+
+            old_words = words[:-1]
+
+            new_words = words[-1:]
+
+        # ---------------------------------------------
+        # Remove folder/directory connector words
+        # ---------------------------------------------
+
+        old_words = [
+
+            word
+
+            for word in old_words
+
+            if word not in {
+                "folder",
+                "directory",
+            }
+
+        ]
+
+        new_words = [
+
+            word
+
+            for word in new_words
+
+            if word not in {
+                "folder",
+                "directory",
+            }
+
+        ]
+
+        old_name = (
+            " ".join(old_words)
+            .strip()
+            .strip("\"'")
+            .rstrip(".,!?;:")
+            .strip()
+        )
+
+        new_name = (
+            " ".join(new_words)
+            .strip()
+            .strip("\"'")
+            .rstrip(".,!?;:")
+            .strip()
+        )
+
+        if not old_name:
+
+            return None
+
+        if not new_name:
+
+            return None
+
+        print(
+            "\n========== FOLDER RENAME ENTITY =========="
+        )
+
+        print(
+            f"Old Folder : {old_name}"
+        )
+
+        print(
+            f"New Folder : {new_name}"
+        )
+
+        print(
+            "==========================================\n"
+        )
+
+        return {
+
+            "old_name": old_name,
+
+            "new_name": new_name,
+
+            # Compatibility keys
+            "source": old_name,
+
+            "folder": old_name,
+
+            "destination_name": new_name,
+
+        }
+
+
+    # --------------------------------------------------
+    # Extract Copy Folder
+    # --------------------------------------------------
+
+    def extract_copy_folder(
+        self,
+        text
+    ):
+        """
+        Extract folder name and destination.
+
+        Supports:
+
+            copy folder project to desktop
+            copy project folder to desktop
+            copy the project folder into documents
+            copy folder project 2 desktop
+        """
+
+        if not text:
+            return None
+
+        text = self.normalize_text(text)
+
+        text = (
+            text
+            .strip()
+            .strip("\"'")
+            .rstrip(".,!?;:")
+            .strip()
+        )
+
+        words = text.split()
+
+        # Remove copy
+        if words and words[0] == "copy":
+            words = words[1:]
+
+        # Remove leading fillers
+        while words and words[0] in {
+            "a",
+            "an",
+            "the",
+            "my",
+            "your",
+        }:
+            words.pop(0)
+
+        # ---------------------------------------------
+        # STT fallback
+        #
+        # "2" is treated as "to" ONLY when there is
+        # no explicit separator.
+        #
+        # Example:
+        #
+        # copy folder project 2 desktop
+        #
+        # -> project to desktop
+        #
+        # Numeric folder names remain supported when
+        # an explicit "to"/"into" separator exists.
+        # ---------------------------------------------
+
+        if "to" not in words and "into" not in words:
+
+            if "2" in words:
+
+                index = words.index("2")
+
+                # Only treat "2" as the separator if
+                # something exists after it.
+
+                if index < len(words) - 1:
+
+                    words[index] = "to"
+
+        separator = None
+
+        if "to" in words:
+            separator = "to"
+
+        elif "into" in words:
+            separator = "into"
+
+        if separator is None:
+            return None
+
+        index = words.index(separator)
+
+        folder_words = words[:index]
+        destination_words = words[index + 1:]
+
+        # Remove folder/directory words
+        folder_words = [
+            word
+            for word in folder_words
+            if word not in {
+                "folder",
+                "directory",
+            }
+        ]
+
+        destination_words = [
+            word
+            for word in destination_words
+            if word not in {
+                "folder",
+                "directory",
+            }
+        ]
+
+        folder_name = " ".join(
+            folder_words
+        ).strip()
+
+        destination = " ".join(
+            destination_words
+        ).strip()
+
+        folder_name = folder_name.rstrip(
+            ".,!?;:"
+        )
+
+        destination = destination.rstrip(
+            ".,!?;:"
+        )
+
+        if not folder_name or not destination:
+            return None
+
+        return {
+            "foldername": folder_name,
+            "destination": destination
+        }
+
+
+    # --------------------------------------------------
+    # Extract Move Folder
+    # --------------------------------------------------
+
+    def extract_move_folder(
+        self,
+        text
+    ):
+        """
+        Extract folder name and destination.
+
+        Supports:
+
+            move folder project to desktop
+            move project folder to documents
+            move folder project into downloads
+            move project folder 2 desktop
+        """
+
+        if not text:
+            return None
+
+        text = self.normalize_text(text)
+
+        text = (
+            text
+            .strip()
+            .strip("\"'")
+            .rstrip(".,!?;:")
+            .strip()
+        )
+
+        words = text.split()
+
+        # Remove move
+        if words and words[0] == "move":
+            words = words[1:]
+
+        # Remove leading fillers
+        while words and words[0] in {
+            "a",
+            "an",
+            "the",
+            "my",
+            "your",
+        }:
+            words.pop(0)
+
+        # ---------------------------------------------
+        # STT fallback
+        #
+        # move folder project 2 desktop
+        #
+        # -> project to desktop
+        # ---------------------------------------------
+
+        if "to" not in words and "into" not in words:
+
+            if "2" in words:
+
+                index = words.index("2")
+
+                if index < len(words) - 1:
+
+                    words[index] = "to"
+
+        separator = None
+
+        if "to" in words:
+            separator = "to"
+
+        elif "into" in words:
+            separator = "into"
+
+        if separator is None:
+            return None
+
+        index = words.index(separator)
+
+        folder_words = words[:index]
+        destination_words = words[index + 1:]
+
+        # Remove folder/directory words
+        folder_words = [
+            word
+            for word in folder_words
+            if word not in {
+                "folder",
+                "directory",
+            }
+        ]
+
+        destination_words = [
+            word
+            for word in destination_words
+            if word not in {
+                "folder",
+                "directory",
+            }
+        ]
+
+        folder_name = " ".join(
+            folder_words
+        ).strip()
+
+        destination = " ".join(
+            destination_words
+        ).strip()
+
+        folder_name = folder_name.rstrip(
+            ".,!?;:"
+        )
+
+        destination = destination.rstrip(
+            ".,!?;:"
+        )
+
+        if not folder_name or not destination:
+            return None
+
+        return {
+            "foldername": folder_name,
+            "destination": destination
+        }
+
+
+    # --------------------------------------------------
+    # Extract Delete Folder
+    # --------------------------------------------------
+
+    def extract_delete_folder(
+        self,
+        text
+    ):
+        """
+        Extract folder name.
+
+        Supports:
+
+            delete folder project
+            delete the project folder
+            remove folder project
+            remove project folder
+        """
+
+        if not text:
+            return None
+
+        text = self.normalize_text(text)
+
+        text = (
+            text
+            .strip()
+            .strip("\"'")
+            .rstrip(".,!?;:")
+            .strip()
+        )
+
+        words = text.split()
+
+        # Remove command
+        if words and words[0] in {
+            "delete",
+            "remove",
+        }:
+            words = words[1:]
+
+        # Remove fillers
+        while words and words[0] in {
+            "a",
+            "an",
+            "the",
+            "my",
+            "your",
+        }:
+            words.pop(0)
+
+        # Remove folder/directory keyword
+        words = [
+            word
+            for word in words
+            if word not in {
+                "folder",
+                "directory",
+            }
+        ]
+
+        folder_name = " ".join(
+            words
+        ).strip()
+
+        folder_name = folder_name.rstrip(
+            ".,!?;:"
+        )
+
+        if not folder_name:
+            return None
+
+        return folder_name
 
     # --------------------------------------------------
     # Extract Compress File
