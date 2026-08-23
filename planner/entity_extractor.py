@@ -24,6 +24,37 @@ class EntityExtractor:
     and file names.
     """
 
+    def normalize_to_separator(
+        self,
+        words
+    ):
+        """
+        Normalize common speech-to-text variations of the
+        command separator "to".
+
+        ASTRA treats:
+            to
+            too
+            2
+
+        as "to" while parsing commands.
+
+        A standalone STT result "2" is treated as the command
+        separator. If the user wants the literal number 2 in a
+        file or folder name, they should explicitly say "number 2".
+        """
+
+        return [
+            "to"
+            if word.strip(".,!?;:").lower() in {
+                "to",
+                "too",
+                "2",
+            }
+            else word
+            for word in words
+        ]
+
     def __init__(self):
 
         self.database = DatabaseManager()
@@ -1668,21 +1699,7 @@ class EntityExtractor:
 
         ]
 
-        # ---------------------------------
-        # Handle "2" -> "to"
-        # ---------------------------------
-
-        if "2" in words:
-
-            words = [
-
-                "to"
-                if word == "2"
-                else word
-
-                for word in words
-
-            ]
+        words = self.normalize_to_separator(words)
 
         # ---------------------------------
         # Build filename
@@ -1913,13 +1930,7 @@ class EntityExtractor:
         }:
             words.pop(0)
 
-        # "rename astra file 2 astra demo" may normalize 2 -> to.
-        if "to" not in words and "into" not in words:
-            if "2" in words:
-                words = [
-                    "to" if word == "2" else word
-                    for word in words
-                ]
+        words = self.normalize_to_separator(words)
 
         separator = None
 
@@ -2011,11 +2022,7 @@ class EntityExtractor:
         }:
             words.pop(0)
 
-        if "2" in words and "to" not in words and "into" not in words:
-            words = [
-                "to" if word == "2" else word
-                for word in words
-            ]
+        words = self.normalize_to_separator(words)
 
         separator = None
 
@@ -2102,11 +2109,7 @@ class EntityExtractor:
         }:
             words.pop(0)
 
-        if "2" in words and "to" not in words and "into" not in words:
-            words = [
-                "to" if word == "2" else word
-                for word in words
-            ]
+        words = self.normalize_to_separator(words)
 
         separator = None
 
@@ -2155,32 +2158,22 @@ class EntityExtractor:
         Extract old and new folder names.
 
         Supports:
-
             rename folder test to demo
-            rename folder test into demo
-            rename test folder to demo
-            rename test 2 demo
-
-        Important:
-            Numeric "2" can be part of the folder name.
-
-        Examples:
-
+            rename folder test too demo
             rename folder test 2 demo
+            rename folder test into demo
 
-            becomes:
+        ASTRA normalizes:
+            to / too / 2 -> to
 
-            old_name = "test 2"
-            new_name = "demo"
+        If the literal number is required in a folder name, the user
+        should explicitly say "number 2".
         """
 
         if not text:
-
             return None
 
-        text = self.normalize_text(
-            text
-        )
+        text = self.normalize_text(text)
 
         text = (
             text
@@ -2191,25 +2184,14 @@ class EntityExtractor:
         )
 
         if not text:
-
             return None
 
         words = text.split()
 
-        # ---------------------------------------------
-        # Remove rename command
-        # ---------------------------------------------
-
         if words and words[0] == "rename":
-
             words = words[1:]
 
-        # ---------------------------------------------
-        # Remove leading filler words
-        # ---------------------------------------------
-
         while words and words[0] in {
-
             "a",
             "an",
             "the",
@@ -2217,104 +2199,47 @@ class EntityExtractor:
             "your",
             "folder",
             "directory",
-
         }:
-
             words.pop(0)
 
         if not words:
-
             return None
 
-        # ---------------------------------------------
-        # Explicit separator
-        #
-        # rename folder test 2 to demo
-        #
-        # Here "2" is part of old folder name.
-        # ---------------------------------------------
+        # Normalize STT variations consistently with file/copy/move
+        # operations: to / too / 2 -> to.
+        words = self.normalize_to_separator(words)
 
         separator = None
 
         if "to" in words:
-
             separator = "to"
-
         elif "into" in words:
-
             separator = "into"
 
-        # ---------------------------------------------
-        # Normal explicit command
-        # ---------------------------------------------
+        if separator is None:
+            return None
 
-        if separator is not None:
+        index = words.index(separator)
 
-            index = words.index(
-                separator
-            )
-
-            old_words = words[:index]
-
-            new_words = words[
-                index + 1:
-            ]
-
-        else:
-
-            # -----------------------------------------
-            # STT fallback
-            #
-            # Example:
-            #
-            # rename folder test 2 demo
-            #
-            # We MUST NOT treat "2" as "to".
-            #
-            # Therefore:
-            #
-            # old folder = test 2
-            # new folder = demo
-            #
-            # Last word becomes the new folder name.
-            # -----------------------------------------
-
-            if len(words) < 2:
-
-                return None
-
-            old_words = words[:-1]
-
-            new_words = words[-1:]
-
-        # ---------------------------------------------
-        # Remove folder/directory connector words
-        # ---------------------------------------------
+        old_words = words[:index]
+        new_words = words[index + 1:]
 
         old_words = [
-
             word
-
             for word in old_words
-
             if word not in {
                 "folder",
                 "directory",
             }
-
         ]
 
         new_words = [
-
             word
-
             for word in new_words
-
             if word not in {
                 "folder",
                 "directory",
             }
-
         ]
 
         old_name = (
@@ -2333,43 +2258,26 @@ class EntityExtractor:
             .strip()
         )
 
-        if not old_name:
-
-            return None
-
-        if not new_name:
-
+        if not old_name or not new_name:
             return None
 
         print(
             "\n========== FOLDER RENAME ENTITY =========="
         )
-
-        print(
-            f"Old Folder : {old_name}"
-        )
-
-        print(
-            f"New Folder : {new_name}"
-        )
-
+        print(f"Old Folder : {old_name}")
+        print(f"New Folder : {new_name}")
         print(
             "==========================================\n"
         )
 
         return {
-
             "old_name": old_name,
-
             "new_name": new_name,
 
             # Compatibility keys
             "source": old_name,
-
             "folder": old_name,
-
             "destination_name": new_name,
-
         }
 
 
@@ -2389,7 +2297,18 @@ class EntityExtractor:
             copy folder project to desktop
             copy project folder to desktop
             copy the project folder into documents
+
+            Whisper/STT fallback:
+
             copy folder project 2 desktop
+            -> foldername = project
+            -> destination = desktop
+
+        Numeric folder names remain supported:
+
+            copy folder test 2 to downloads
+            -> foldername = test 2
+            -> destination = downloads
         """
 
         if not text:
@@ -2405,13 +2324,22 @@ class EntityExtractor:
             .strip()
         )
 
+        if not text:
+            return None
+
         words = text.split()
 
-        # Remove copy
+        # ---------------------------------------------
+        # Remove copy command
+        # ---------------------------------------------
+
         if words and words[0] == "copy":
             words = words[1:]
 
-        # Remove leading fillers
+        # ---------------------------------------------
+        # Remove leading filler words
+        # ---------------------------------------------
+
         while words and words[0] in {
             "a",
             "an",
@@ -2419,71 +2347,83 @@ class EntityExtractor:
             "my",
             "your",
         }:
+
             words.pop(0)
 
+        if not words:
+            return None
+
         # ---------------------------------------------
-        # STT fallback
+        # Normalize STT variations:
         #
-        # "2" is treated as "to" ONLY when there is
-        # no explicit separator.
-        #
-        # Example:
-        #
-        # copy folder project 2 desktop
-        #
-        # -> project to desktop
-        #
-        # Numeric folder names remain supported when
-        # an explicit "to"/"into" separator exists.
+        # to / too / 2 -> to
         # ---------------------------------------------
 
-        if "to" not in words and "into" not in words:
-
-            if "2" in words:
-
-                index = words.index("2")
-
-                # Only treat "2" as the separator if
-                # something exists after it.
-
-                if index < len(words) - 1:
-
-                    words[index] = "to"
+        words = self.normalize_to_separator(words)
 
         separator = None
 
         if "to" in words:
+
             separator = "to"
 
         elif "into" in words:
+
             separator = "into"
 
+        # ---------------------------------------------
+        # No separator found
+        # ---------------------------------------------
+
         if separator is None:
+
             return None
 
-        index = words.index(separator)
+        separator_index = words.index(
+            separator
+        )
 
-        folder_words = words[:index]
-        destination_words = words[index + 1:]
+        folder_words = words[
+            :separator_index
+        ]
 
-        # Remove folder/directory words
+        destination_words = words[
+            separator_index + 1:
+        ]
+
+        # ---------------------------------------------
+        # Remove folder/directory keyword
+        # ---------------------------------------------
+
         folder_words = [
+
             word
+
             for word in folder_words
+
             if word not in {
                 "folder",
                 "directory",
             }
+
         ]
 
         destination_words = [
+
             word
+
             for word in destination_words
+
             if word not in {
                 "folder",
                 "directory",
             }
+
         ]
+
+        # ---------------------------------------------
+        # Build values
+        # ---------------------------------------------
 
         folder_name = " ".join(
             folder_words
@@ -2493,20 +2433,58 @@ class EntityExtractor:
             destination_words
         ).strip()
 
-        folder_name = folder_name.rstrip(
-            ".,!?;:"
+        folder_name = (
+            folder_name
+            .strip("\"'")
+            .rstrip(".,!?;:")
+            .strip()
         )
 
-        destination = destination.rstrip(
-            ".,!?;:"
+        destination = (
+            destination
+            .strip("\"'")
+            .rstrip(".,!?;:")
+            .strip()
         )
 
-        if not folder_name or not destination:
+        # ---------------------------------------------
+        # Validate
+        # ---------------------------------------------
+
+        if not folder_name:
+
             return None
 
+        if not destination:
+
+            return None
+
+        # ---------------------------------------------
+        # Debug
+        # ---------------------------------------------
+
+        print(
+            "\n========== COPY FOLDER ENTITY =========="
+        )
+
+        print(
+            f"Folder Name : {folder_name}"
+        )
+
+        print(
+            f"Destination : {destination}"
+        )
+
+        print(
+            "========================================\n"
+        )
+
         return {
+
             "foldername": folder_name,
+
             "destination": destination
+
         }
 
 
@@ -2558,23 +2536,7 @@ class EntityExtractor:
         }:
             words.pop(0)
 
-        # ---------------------------------------------
-        # STT fallback
-        #
-        # move folder project 2 desktop
-        #
-        # -> project to desktop
-        # ---------------------------------------------
-
-        if "to" not in words and "into" not in words:
-
-            if "2" in words:
-
-                index = words.index("2")
-
-                if index < len(words) - 1:
-
-                    words[index] = "to"
+        words = self.normalize_to_separator(words)
 
         separator = None
 
@@ -3182,4 +3144,4 @@ class EntityExtractor:
         Close database connection.
         """
 
-        self.database.close()
+        self.database.close()   

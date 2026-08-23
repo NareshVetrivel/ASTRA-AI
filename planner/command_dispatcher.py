@@ -10,6 +10,7 @@ from pathlib import Path
 from ai.gemini_client import GeminiClient
 from automation.screen_recorder import ScreenRecorder
 from automation.file_system_agent import FileSystemAgent
+from ff_agent import FileFolderAgent
 
 class CommandDispatcher:
 
@@ -66,7 +67,456 @@ class CommandDispatcher:
             file_manager=self.file_manager,
             folder_manager=self.folder_manager,
         )
-        
+
+        # --------------------------------------------------
+        # Intelligent File & Folder Agent
+        # --------------------------------------------------
+        # The smart agent wraps the existing FileSystemAgent.
+        # It does not replace the existing filesystem engine.
+        self.file_folder_agent = FileFolderAgent(
+            file_system_agent=self.file_system_agent
+        )
+
+
+    # --------------------------------------------------
+    # Helper : Intelligent File & Folder Agent
+    # --------------------------------------------------
+
+    def process_file_folder_agent(
+        self,
+        intent,
+        entity=None,
+        user_text=None,
+        typed_text=None,
+        browser=None,
+        website=None,
+        search_query=None,
+        profile=None,
+        multi_command=False,
+        selection=None,
+        skip_confirmation=False,
+    ):
+        """
+        Route supported file and folder commands through the FF Agent.
+
+        Selection is resolved here before the smart agent is called.
+        This guarantees that after the user chooses option 1/2/3..., the
+        selected filesystem path is preserved and the same candidate list is
+        not shown again.
+        """
+
+        supported_intents = {
+            "open_file", "create_file", "rename_file", "copy_file",
+            "move_file", "delete_file", "open_folder", "create_folder",
+            "rename_folder", "copy_folder", "move_folder", "delete_folder",
+            "compress_file", "compress_zip", "extract_zip", "unzip",
+        }
+
+        if intent not in supported_intents:
+            return None
+
+        command = user_text or typed_text or ""
+
+        if entity is None:
+            entities = {}
+        elif isinstance(entity, dict):
+            entities = dict(entity)
+        else:
+            entities = {"entity": entity}
+
+        # --------------------------------------------------
+        # Normalize aliases produced by EntityExtractor.
+        # --------------------------------------------------
+        if intent.endswith("_folder"):
+            source_value = (
+                entities.get("source")
+                or entities.get("source_path")
+                or entities.get("folder_path")
+                or entities.get("folder")
+                or entities.get("foldername")
+                or entities.get("old_name")
+                or entities.get("target")
+                or entities.get("entity")
+            )
+            if source_value and intent not in {"create_folder"}:
+                entities.setdefault("source", source_value)
+                entities.setdefault("target", source_value)
+        else:
+            source_value = (
+                entities.get("source")
+                or entities.get("source_path")
+                or entities.get("file_path")
+                or entities.get("file")
+                or entities.get("filename")
+                or entities.get("old_name")
+                or entities.get("target")
+                or entities.get("entity")
+            )
+            if source_value and intent not in {"create_file"}:
+                entities.setdefault("source", source_value)
+                entities.setdefault("target", source_value)
+
+        if not entities.get("destination"):
+            destination = (
+                entities.get("destination_path")
+                or entities.get("to")
+            )
+            if destination:
+                entities["destination"] = destination
+
+        # --------------------------------------------------
+        # Normalize archive aliases.
+        # --------------------------------------------------
+        if intent in {"compress_file", "compress_zip", "extract_zip", "unzip"}:
+            archive_source = (
+                entities.get("source")
+                or entities.get("source_path")
+                or entities.get("file_path")
+                or entities.get("filename")
+                or entities.get("file")
+                or entities.get("zip_file")
+                or entities.get("archive")
+                or entities.get("target")
+                or entities.get("entity")
+            )
+            if archive_source:
+                entities.setdefault("source", archive_source)
+                entities.setdefault("target", archive_source)
+                entities.setdefault("entity", archive_source)
+
+        # --------------------------------------------------
+        # Normalize open targets.
+        # --------------------------------------------------
+        if intent in {"open_file", "open_folder"}:
+            open_target = (
+                entities.get("target")
+                or entities.get("entity")
+                or entities.get("name")
+            )
+            if isinstance(open_target, str):
+                cleaned_target = open_target.strip()
+                for prefix in (
+                    "open the folder ", "open the file ",
+                    "open folder ", "open file ", "open ",
+                ):
+                    if cleaned_target.lower().startswith(prefix):
+                        cleaned_target = cleaned_target[len(prefix):].strip()
+                        break
+                if cleaned_target:
+                    entities["target"] = cleaned_target
+                    entities["entity"] = cleaned_target
+                    entities["source"] = cleaned_target
+
+        # --------------------------------------------------
+        # Resolve ambiguous existing source BEFORE FF Agent.
+        # --------------------------------------------------
+        selection_intents = {
+            "rename_file", "copy_file", "move_file", "delete_file",
+            "rename_folder", "copy_folder", "move_folder", "delete_folder",
+            "compress_file", "compress_zip", "extract_zip", "unzip",
+        }
+
+        if intent in selection_intents:
+            source_query = entities.get("source") or entities.get("target")
+
+            if source_query:
+                is_folder = intent.endswith("_folder")
+
+                # A selection from MainWindow is always 1-based.
+                if selection is not None:
+                    resolver = (
+                        self.resolve_folder_selection
+                        if is_folder
+                        else self.resolve_file_candidate
+                    )
+                    resolution = resolver(source_query, selection)
+                else:
+                    resolver = (
+                        self.resolve_folder_selection
+                        if is_folder
+                        else self.resolve_file_candidate
+                    )
+                    resolution = resolver(source_query, None)
+
+                if resolution.get("requires_selection"):
+                    pending_payload = self.build_selection_payload(
+                        intent=intent,
+                        entity=entities,
+                        typed_text=typed_text,
+                        browser=browser,
+                        website=website,
+                        search_query=search_query,
+                        profile=profile,
+                        user_text=user_text,
+                        multi_command=multi_command,
+                    )
+
+                    target_type = "folder" if is_folder else "file"
+
+                    return self.response(
+                        False,
+                        "",
+                        f"Status : {target_type.title()} Selection Required",
+                        resolution.get("message")
+                        or f"Please select the correct {target_type}.",
+                        requires_selection=True,
+                        selection_required=True,
+                        requires_clarification=True,
+                        candidates=resolution.get("candidates", []),
+                        pending_action=intent,
+                        pending_payload=pending_payload,
+                        selection_type=target_type,
+                    )
+
+                if not resolution.get("success"):
+                    return self.response(
+                        False,
+                        "",
+                        "Status : File/Folder Not Found",
+                        resolution.get("message")
+                        or "The selected file or folder could not be found.",
+                    )
+
+                resolved_path = resolution.get("path")
+                if resolved_path:
+                    # Preserve exact path for every later stage:
+                    # selection -> confirmation -> confirmed execution.
+                    entities["source"] = resolved_path
+                    entities["target"] = resolved_path
+                    entities["entity"] = resolved_path
+                    if is_folder:
+                        entities["folder_path"] = resolved_path
+                    else:
+                        entities["file_path"] = resolved_path
+
+        # Do not pass a stale numeric selection to the smart agent once
+        # the exact path has already been resolved.
+        entities.pop("selection", None)
+        entities.pop("selected_index", None)
+
+        result = self.file_folder_agent.execute(
+            command=command,
+            intent=intent,
+            entities=entities,
+            confirmed=skip_confirmation,
+        )
+
+        if result.requires_clarification:
+            candidates = list(result.candidates or [])
+            selection_required = bool(
+                result.data.get("selection_required", False)
+            )
+
+            if candidates or selection_required:
+                pending_payload = self.build_selection_payload(
+                    intent=intent,
+                    entity=entities,
+                    typed_text=typed_text,
+                    browser=browser,
+                    website=website,
+                    search_query=search_query,
+                    profile=profile,
+                    user_text=user_text,
+                    multi_command=multi_command,
+                )
+                target_type = "folder" if "folder" in str(intent).lower() else "file"
+                return self.response(
+                    False,
+                    "",
+                    f"Status : {target_type.title()} Selection Required",
+                    result.message or f"Please select the correct {target_type}.",
+                    requires_selection=True,
+                    selection_required=True,
+                    requires_clarification=True,
+                    candidates=candidates,
+                    pending_action=intent,
+                    pending_payload=pending_payload,
+                    selection_type=target_type,
+                    agent_status=result.status.value,
+                    agent_data=result.data,
+                )
+
+            return self.response(
+                False,
+                "",
+                "Status : Information Required",
+                result.message,
+                requires_information=True,
+                requires_clarification=True,
+                agent_status=result.status.value,
+                agent_data=result.data,
+                candidates=[],
+            )
+
+        if result.requires_confirmation:
+            confirmation_payload = self.build_selection_payload(
+                intent=intent,
+                entity=entities,
+                typed_text=typed_text,
+                browser=browser,
+                website=website,
+                search_query=search_query,
+                profile=profile,
+                user_text=user_text,
+                multi_command=multi_command,
+            )
+            return self.confirmation_response(
+                message=result.message,
+                intent=intent,
+                entity=entities,
+                typed_text=typed_text,
+                browser=browser,
+                website=website,
+                search_query=search_query,
+                profile=profile,
+                user_text=user_text,
+                multi_command=multi_command,
+                selection=None,
+                confirmation_action=intent,
+                confirmation_payload=confirmation_payload,
+            )
+
+        if not result.success:
+            return self.response(
+                False,
+                "",
+                "Status : File/Folder Operation Failed",
+                result.message,
+                agent_status=result.status.value,
+                agent_data=result.data,
+                error=result.error,
+            )
+
+        success_message = self._format_file_operation_success(
+            intent=intent,
+            entities=entities,
+            agent_result=result,
+        )
+
+        return self.response(
+            True,
+            self._file_operation_success_status(intent),
+            "Status : File/Folder Operation Failed",
+            success_message,
+            agent_status=result.status.value,
+            agent_data=result.data,
+            verified_items=result.data.get("verified_items", []),
+        )
+
+
+    # --------------------------------------------------
+    # Helper : Human-Friendly Filesystem Success Message
+    # --------------------------------------------------
+
+    def _format_file_operation_success(
+        self,
+        intent,
+        entities,
+        agent_result,
+    ):
+        """Build one exact success message for UI and TTS."""
+
+        entities = entities or {}
+        data = getattr(agent_result, "data", {}) or {}
+        execution = data.get("execution_result", {})
+        if not isinstance(execution, dict):
+            execution = {}
+
+        source = (
+            execution.get("source")
+            or entities.get("source")
+            or entities.get("target")
+            or entities.get("entity")
+            or entities.get("file_path")
+            or entities.get("folder_path")
+        )
+        destination = (
+            execution.get("destination")
+            or execution.get("destination_path")
+            or execution.get("copied_path")
+            or entities.get("destination")
+        )
+        result_path = (
+            execution.get("path")
+            or execution.get("result_path")
+            or execution.get("new_path")
+            or execution.get("copied_path")
+        )
+        new_name = (
+            execution.get("new_name")
+            or entities.get("new_name")
+            or entities.get("destination_name")
+            or entities.get("rename_to")
+        )
+
+        def name_of(value):
+            if not value:
+                return "item"
+            try:
+                return Path(str(value)).name or str(value)
+            except Exception:
+                return str(value)
+
+        item_type = "folder" if "folder" in str(intent) else "file"
+        source_name = name_of(source)
+        destination_name = name_of(destination)
+
+        if intent in {"rename_file", "rename_folder"}:
+            target_name = name_of(new_name or result_path)
+            return (
+                f'{item_type.title()} "{source_name}" renamed successfully '
+                f'to "{target_name}".'
+            )
+
+        if intent in {"copy_file", "copy_folder"}:
+            return (
+                f'{item_type.title()} "{source_name}" copied successfully '
+                f'to "{destination_name}".'
+            )
+
+        if intent in {"move_file", "move_folder"}:
+            return (
+                f'{item_type.title()} "{source_name}" moved successfully '
+                f'to "{destination_name}".'
+            )
+
+        if intent in {"compress_file", "compress_zip"}:
+            archive_name = name_of(result_path)
+            if archive_name == "item":
+                archive_name = f"{Path(source_name).stem}.zip"
+            return (
+                f'"{source_name}" compressed successfully as '
+                f'"{archive_name}".'
+            )
+
+        if intent in {"extract_zip", "unzip"}:
+            extracted_to = name_of(result_path or destination)
+            if extracted_to == "item":
+                extracted_to = Path(source_name).stem
+            return (
+                f'Archive "{source_name}" extracted successfully '
+                f'to "{extracted_to}".'
+            )
+
+        return getattr(agent_result, "message", "Operation completed successfully.")
+
+    def _file_operation_success_status(self, intent):
+        """Return a clear UI status for supported filesystem operations."""
+
+        statuses = {
+            "rename_file": "Status : File Renamed",
+            "rename_folder": "Status : Folder Renamed",
+            "copy_file": "Status : File Copied",
+            "copy_folder": "Status : Folder Copied",
+            "move_file": "Status : File Moved",
+            "move_folder": "Status : Folder Moved",
+            "compress_file": "Status : ZIP Created",
+            "compress_zip": "Status : ZIP Created",
+            "extract_zip": "Status : ZIP Extracted",
+            "unzip": "Status : ZIP Extracted",
+        }
+        return statuses.get(intent, "Status : File/Folder Operation Completed")
+
 
     # --------------------------------------------------
     # Helper : Standard Response
@@ -746,6 +1196,32 @@ class CommandDispatcher:
                     multi_command=multi_command,
                 )
             )
+
+            # ==================================================
+            # INTELLIGENT FILE & FOLDER AGENT
+            # ==================================================
+            # Always route supported file/folder intents through the
+            # FF Agent. On confirmed re-entry, skip_confirmation is
+            # passed as confirmed=True so safety confirmation is not
+            # requested again, while execution and verification still
+            # happen inside the FF Agent pipeline.
+
+            agent_result = self.process_file_folder_agent(
+                intent=intent,
+                entity=entity,
+                user_text=user_text,
+                typed_text=typed_text,
+                browser=browser,
+                website=website,
+                search_query=search_query,
+                profile=profile,
+                multi_command=multi_command,
+                selection=selection,
+                skip_confirmation=skip_confirmation,
+            )
+
+            if agent_result is not None:
+                return agent_result
 
             # -------------------------
             # AI Conversation

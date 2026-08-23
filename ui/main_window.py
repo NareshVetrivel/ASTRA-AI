@@ -1599,12 +1599,16 @@ class MainWindow(QMainWindow):
         # UI
         # --------------------------------------------------
 
+        # The user has selected the exact candidate, but the
+        # filesystem operation must NOT execute from the UI at this
+        # point. Resume the original command and let the dispatcher
+        # return a confirmation request when required.
         self.status_label.setText(
-            "Status : Executing Selected File"
+            "Status : File Selected"
         )
 
         self.mic_widget.update_ai_message(
-            f"Selected option {selection}. Executing..."
+            f"Selected option {selection}. Preparing confirmation..."
         )
 
         self.conversation_label.setText(
@@ -1624,7 +1628,7 @@ class MainWindow(QMainWindow):
             )
 
             self.left_panel.set_thinking(
-                "Executing"
+                "Preparing Confirmation"
             )
 
             self.left_panel.set_speaking(
@@ -1685,6 +1689,24 @@ class MainWindow(QMainWindow):
                     False
                 ),
             }
+
+        # Preserve the exact candidate path selected by the user.
+        # CommandDispatcher still receives the numeric selection for
+        # backward compatibility, while this metadata prevents the
+        # selected candidate from being lost during confirmation.
+        if selected_path:
+            selected_entity = payload.get("entity")
+
+            if isinstance(selected_entity, dict):
+                selected_entity = dict(selected_entity)
+            else:
+                selected_entity = {
+                    "entity": selected_entity
+                } if selected_entity else {}
+
+            selected_entity["selected_path"] = selected_path
+            selected_entity["selection_path"] = selected_path
+            payload["entity"] = selected_entity
 
         try:
 
