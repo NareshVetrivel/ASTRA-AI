@@ -25,6 +25,19 @@ from automation.file_indexer import (
 class InitializationWorker(QThread):
     """
     Background initialization worker.
+
+    Responsibilities:
+
+    - Load Whisper model
+    - Scan installed applications
+    - Synchronize file index
+
+    Live File Monitor is intentionally
+    NOT started here.
+
+    MainWindow owns the FileMonitor so
+    only one monitor runs during the
+    ASTRA application lifetime.
     """
 
     status_changed = Signal(str)
@@ -63,6 +76,10 @@ class InitializationWorker(QThread):
     # -------------------------------------------------
 
     def should_stop(self):
+        """
+        Return True when initialization
+        should stop safely.
+        """
 
         return (
 
@@ -86,9 +103,12 @@ class InitializationWorker(QThread):
 
         try:
 
-            print("\n========== INITIALIZATION ==========")
+            print(
+                "\n========== INITIALIZATION =========="
+            )
 
             if self.should_stop():
+
                 return
 
             # ------------------------------------------
@@ -102,6 +122,7 @@ class InitializationWorker(QThread):
             )
 
             if self.should_stop():
+
                 return
 
             # ------------------------------------------
@@ -114,14 +135,19 @@ class InitializationWorker(QThread):
                 "Loading Whisper Model..."
             )
 
-            print("Loading Whisper model...")
+            print(
+                "Loading Whisper model..."
+            )
 
             self.recognizer.load_model()
 
             if self.should_stop():
+
                 return
 
-            print("Whisper model loaded.")
+            print(
+                "Whisper model loaded."
+            )
 
             # ------------------------------------------
             # Scan Applications
@@ -133,19 +159,24 @@ class InitializationWorker(QThread):
                 "Scanning Applications..."
             )
 
-            print("Scanning applications...")
+            print(
+                "Scanning applications..."
+            )
 
             scanner = ApplicationScanner()
 
             scanner.scan()
 
             if self.should_stop():
+
                 return
 
-            print("Application scan completed.")
+            print(
+                "Application scan completed."
+            )
 
             # ------------------------------------------
-            # Preparing
+            # Preparing File Index
             # ------------------------------------------
 
             self.progress_changed.emit(55)
@@ -155,10 +186,11 @@ class InitializationWorker(QThread):
             )
 
             if self.should_stop():
+
                 return
 
             # ------------------------------------------
-            # File Indexing
+            # File Indexing / Synchronization
             # ------------------------------------------
 
             self.progress_changed.emit(70)
@@ -167,16 +199,36 @@ class InitializationWorker(QThread):
                 "Indexing Files..."
             )
 
-            print("Indexing files...")
+            print(
+                "Indexing files..."
+            )
 
             indexer = FileIndexer()
 
             indexer.index_files()
 
             if self.should_stop():
+
                 return
 
-            print("File indexing completed.")
+            print(
+                "File indexing completed."
+            )
+
+            # ------------------------------------------
+            # Important
+            # ------------------------------------------
+            #
+            # Live File Monitor is NOT started here.
+            #
+            # MainWindow owns and starts the
+            # FileMonitor after initialization
+            # completes successfully.
+            #
+            # This prevents duplicate watchdog
+            # observers and duplicate database
+            # event processing.
+            # ------------------------------------------
 
             # ------------------------------------------
             # Preparing ASTRA
@@ -188,16 +240,21 @@ class InitializationWorker(QThread):
                 "Preparing ASTRA..."
             )
 
-            print("Initialization worker completed.")
+            print(
+                "Initialization worker completed."
+            )
 
             if self.should_stop():
+
                 return
 
             # ------------------------------------------
             # Completed
             # ------------------------------------------
 
-            print("Initialization completed.")
+            print(
+                "Initialization completed."
+            )
 
             self.status_changed.emit(
                 "Initialization Complete"
@@ -205,7 +262,9 @@ class InitializationWorker(QThread):
 
             self.progress_changed.emit(100)
 
-            print("====================================\n")
+            print(
+                "====================================\n"
+            )
 
             self.finished_success.emit()
 
@@ -223,6 +282,10 @@ class InitializationWorker(QThread):
 
         finally:
 
+            # ------------------------------------------
+            # Close Application Scanner
+            # ------------------------------------------
+
             try:
 
                 if scanner:
@@ -230,7 +293,12 @@ class InitializationWorker(QThread):
                     scanner.close()
 
             except Exception:
+
                 pass
+
+            # ------------------------------------------
+            # Close File Indexer
+            # ------------------------------------------
 
             try:
 
@@ -239,4 +307,5 @@ class InitializationWorker(QThread):
                     indexer.close()
 
             except Exception:
+
                 pass

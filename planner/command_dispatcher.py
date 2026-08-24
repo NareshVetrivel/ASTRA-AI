@@ -393,6 +393,12 @@ class CommandDispatcher:
             agent_result=result,
         )
 
+        # Speak the final successful operation acknowledgement.
+        # The same message is returned to MainWindow for the UI.
+        success_message = self.speak(
+            success_message
+        )
+
         return self.response(
             True,
             self._file_operation_success_status(intent),
@@ -400,7 +406,10 @@ class CommandDispatcher:
             success_message,
             agent_status=result.status.value,
             agent_data=result.data,
-            verified_items=result.data.get("verified_items", []),
+            verified_items=result.data.get(
+                "verified_items",
+                []
+            ),
         )
 
 

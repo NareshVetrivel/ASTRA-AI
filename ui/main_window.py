@@ -67,6 +67,7 @@ from automation.file_finder import FileFinder
 from automation.folder_manager import FolderManager
 from automation.file_manager import FileManager
 from automation.browser_controller import BrowserController
+from automation.file_monitor import FileMonitor
 
 from workers.initialization_worker import InitializationWorker
 
@@ -372,6 +373,8 @@ class MainWindow(QMainWindow):
         self.file_manager = None
 
         self.browser_controller = None
+
+        self.file_monitor = None
 
         self.gemini = None
 
@@ -4415,6 +4418,87 @@ class MainWindow(QMainWindow):
         self.fade_animation = fade
 
     # --------------------------------------------------
+    # Start Live File Monitor
+    # --------------------------------------------------
+
+    def start_file_monitor(self):
+        """
+        Start live file and folder monitoring.
+
+        The monitor keeps the SQLite file index
+        synchronized while ASTRA is running.
+
+        This method is intentionally idempotent:
+        repeated calls must never create a second
+        watchdog observer.
+        """
+
+        # ----------------------------------
+        # Prevent Duplicate Monitor
+        # ----------------------------------
+
+        existing_monitor = self.file_monitor
+
+        if existing_monitor is not None:
+
+            try:
+
+                if existing_monitor.running:
+
+                    print(
+                        "Live File Monitor already running."
+                    )
+
+                    return
+
+            except Exception:
+
+                pass
+
+            # A stale monitor reference can remain after
+            # a failed startup. Close it before replacing it.
+
+            try:
+
+                existing_monitor.close()
+
+            except Exception:
+
+                pass
+
+            self.file_monitor = None
+
+        try:
+
+            monitor = FileMonitor()
+
+            monitor.start()
+
+            # Store the reference only after startup so the
+            # MainWindow remains the owner of the live monitor.
+            self.file_monitor = monitor
+
+            if monitor.running:
+
+                print(
+                    "Live File Monitor Started."
+                )
+
+            else:
+
+                print(
+                    "Live File Monitor did not start."
+                )
+
+        except Exception as error:
+
+            self.file_monitor = None
+
+            print(
+                f"File Monitor Start Error : {error}"
+            )
+
+    # --------------------------------------------------
     # Enable Main UI
     # --------------------------------------------------
 
@@ -4456,6 +4540,12 @@ class MainWindow(QMainWindow):
         except Exception:
 
             pass
+
+        # ----------------------------------
+        # Start Live File Monitor
+        # ----------------------------------
+
+        self.start_file_monitor()
 
         # ----------------------------------
         # Start DHEEPTHI Wake Word Mode
@@ -5057,42 +5147,10 @@ class MainWindow(QMainWindow):
             # while the manual worker is still unwinding. Start the
             # confirmation listener only after this worker has fully
             # finished, otherwise two voice workers could overlap.
-            if self._pending_confirmation:
 
-                print(
-                    "Manual listening finished. "
-                    "Pending confirmation is active."
-                )
-
-                self.status_label.setText(
-                    "Status : Waiting for Confirmation"
-                )
-
-                try:
-                    self.left_panel.set_listening(
-                        "Say Yes or No"
-                    )
-
-                    self.left_panel.set_thinking(
-                        "Waiting for Confirmation"
-                    )
-
-                    self.left_panel.set_speaking(
-                        "Silent"
-                    )
-                except Exception:
-                    pass
-
-                QTimer.singleShot(
-                    120,
-                    self._wait_for_confirmation_prompt
-                )
-
-                return
-
-            # --------------------------------------------------
-            # Pending file selection
-            # --------------------------------------------------
+            # =================================================
+            # Pending File Selection - FIRST PRIORITY
+            # =================================================
 
             if self._pending_file_selection:
 
@@ -5125,18 +5183,58 @@ class MainWindow(QMainWindow):
                         False
                     )
 
-                except Exception:
-                    pass
+                except Exception as error:
 
-                # ----------------------------------
-                # Start selection listener only after
-                # the previous manual worker has fully
-                # finished.
-                # ----------------------------------
+                    print(
+                        f"File Selection State Error : {error}"
+                    )
 
                 QTimer.singleShot(
                     150,
                     self._wait_for_speech_then_start_selection
+                )
+
+                return
+
+
+            # =================================================
+            # Pending Confirmation - SECOND PRIORITY
+            # =================================================
+
+            if self._pending_confirmation:
+
+                print(
+                    "Manual listening finished. "
+                    "Pending confirmation is active."
+                )
+
+                self.status_label.setText(
+                    "Status : Waiting for Confirmation"
+                )
+
+                try:
+
+                    self.left_panel.set_listening(
+                        "Say Yes or No"
+                    )
+
+                    self.left_panel.set_thinking(
+                        "Waiting for Confirmation"
+                    )
+
+                    self.left_panel.set_speaking(
+                        "Silent"
+                    )
+
+                except Exception as error:
+
+                    print(
+                        f"Confirmation State Error : {error}"
+                    )
+
+                QTimer.singleShot(
+                    120,
+                    self._wait_for_confirmation_prompt
                 )
 
                 return
@@ -6802,27 +6900,11 @@ class MainWindow(QMainWindow):
         result = result or {}
 
         # =================================================
-        # Confirmation
+        # File Selection - MUST BE FIRST
         # =================================================
 
-        if (
-            result.get(
-                "requires_confirmation"
-            )
-            or
-            result.get(
-                "confirmation_required"
-            )
-        ):
-
-            self._begin_confirmation_flow(
-                result
-            )
-
-            return
-
         # =================================================
-        # File Selection
+        # File Selection - FIRST PRIORITY
         # =================================================
 
         if result.get(
@@ -6846,14 +6928,42 @@ class MainWindow(QMainWindow):
                         message
                     )
 
-                except Exception:
-                    pass
+                except Exception as error:
+
+                    print(
+                        f"File Selection Error UI Error : {error}"
+                    )
 
                 self.status_label.setText(
                     "Status : File Selection Failed"
                 )
 
+                try:
+
+                    self.tts.speak(
+                        message
+                    )
+
+                except Exception as error:
+
+                    print(
+                        f"File Selection TTS Error : {error}"
+                    )
+
+                self._unlock_after_speech(
+                    restart_wake=True
+                )
+
                 return
+
+
+            # ---------------------------------------------
+            # A new selection request must clear any old
+            # confirmation state.
+            # ---------------------------------------------
+
+            self._pending_confirmation = None
+
 
             # ---------------------------------------------
             # Preserve dispatcher payload
@@ -6896,6 +7006,8 @@ class MainWindow(QMainWindow):
 
                     "user_text": text,
 
+                    "multi_command": False,
+
                 }
 
             else:
@@ -6903,6 +7015,11 @@ class MainWindow(QMainWindow):
                 pending_payload = dict(
                     pending_payload
                 )
+
+
+            # ---------------------------------------------
+            # Ensure current command context exists
+            # ---------------------------------------------
 
             pending_payload.setdefault(
                 "intent",
@@ -6919,8 +7036,22 @@ class MainWindow(QMainWindow):
                 text
             )
 
+
             # ---------------------------------------------
-            # Store pending state
+            # Resolve operation name
+            # ---------------------------------------------
+
+            operation = result.get(
+                "pending_action"
+            )
+
+            if not operation:
+
+                operation = intent or "file"
+
+
+            # ---------------------------------------------
+            # Store pending selection state
             # ---------------------------------------------
 
             self._pending_file_selection = {
@@ -6929,20 +7060,13 @@ class MainWindow(QMainWindow):
 
                 "candidates": candidates,
 
-                "operation": result.get(
-                    "pending_action",
-                    "file"
-                ),
+                "operation": operation,
 
             }
 
-            operation = result.get(
-                "pending_action",
-                "file"
-            )
 
             # ---------------------------------------------
-            # Show existing selection panel
+            # Show selection panel
             # ---------------------------------------------
 
             self.show_file_selection(
@@ -6950,9 +7074,14 @@ class MainWindow(QMainWindow):
                 operation=operation
             )
 
+
+            # ---------------------------------------------
+            # UI message
+            # ---------------------------------------------
+
             message = (
                 f"I found {len(candidates)} matching "
-                f"{operation}s. Please choose a number."
+                f"items. Please choose a number."
             )
 
             try:
@@ -6961,11 +7090,91 @@ class MainWindow(QMainWindow):
                     message
                 )
 
-            except Exception:
-                pass
+            except Exception as error:
+
+                print(
+                    f"File Selection UI Error : {error}"
+                )
+
+
+            # ---------------------------------------------
+            # Update status
+            # ---------------------------------------------
 
             self.status_label.setText(
                 "Status : Waiting for File Selection"
+            )
+
+
+            try:
+
+                self.left_panel.set_listening(
+                    "Waiting for File Number"
+                )
+
+                self.left_panel.set_thinking(
+                    "Select a File"
+                )
+
+                self.left_panel.set_speaking(
+                    "Speaking"
+                )
+
+            except Exception as error:
+
+                print(
+                    f"File Selection Panel Error : {error}"
+                )
+
+
+            # ---------------------------------------------
+            # Speak prompt
+            # ---------------------------------------------
+
+            try:
+
+                self.tts.speak(
+                    message
+                )
+
+            except Exception as error:
+
+                print(
+                    f"File Selection Prompt Error : {error}"
+                )
+
+
+            # ---------------------------------------------
+            # Start selection microphone after TTS
+            # ---------------------------------------------
+
+            self._wait_for_speech_then_start_selection()
+
+            return
+
+
+        # =================================================
+        # Confirmation - SECOND PRIORITY
+        # =================================================
+
+        if (
+            result.get(
+                "requires_confirmation"
+            )
+            or
+            result.get(
+                "confirmation_required"
+            )
+        ):
+
+            # Selection is complete.
+            # Clear it before waiting for YES / NO.
+
+            self._pending_file_selection = None
+
+
+            self._begin_confirmation_flow(
+                result
             )
 
             return
@@ -6980,12 +7189,21 @@ class MainWindow(QMainWindow):
         ):
 
             reply = result.get(
-                "message",
-                result.get(
+                "assistant_reply"
+            )
+
+            if not reply:
+
+                reply = result.get(
+                    "message"
+                )
+
+            if not reply:
+
+                reply = result.get(
                     "status",
                     "Done."
                 )
-            )
 
             reply = str(
                 reply or "Done."
@@ -8259,6 +8477,34 @@ class MainWindow(QMainWindow):
 
                 print(
                     f"InitializationWorker Cleanup Error : {error}"
+                )
+
+        # ==================================================
+        # File Monitor
+        # ==================================================
+
+        file_monitor = self.file_monitor
+
+        if file_monitor is not None:
+
+            try:
+
+                print(
+                    "Stopping Live File Monitor..."
+                )
+
+                file_monitor.close()
+
+                self.file_monitor = None
+
+                print(
+                    "Live File Monitor stopped successfully."
+                )
+
+            except Exception as error:
+
+                print(
+                    f"File Monitor Cleanup Error : {error}"
                 )
 
         # ==================================================

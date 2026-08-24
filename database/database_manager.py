@@ -3,118 +3,128 @@ Database Manager Module
 
 Handles all SQLite database operations
 for ASTRA-AI.
+
+Supports:
+
+- Installed applications
+- Application aliases
+- Indexed files
+- Indexed folders
+- File and folder synchronization
+- Thread-safe database access
+
+ASTRA-AI V1
 """
 
 import sqlite3
+import threading
+
 from pathlib import Path
 from datetime import datetime
 
 
 class DatabaseManager:
     """
-    SQLite Database Manager.
+    Thread-safe SQLite Database Manager.
     """
 
     def __init__(self):
 
-        # Project Root
-        project_root = Path(__file__).resolve().parent.parent
+        # --------------------------------------
+        # Database Lock
+        # --------------------------------------
 
+        self.lock = threading.RLock()
+
+        # --------------------------------------
+        # Project Root
+        # --------------------------------------
+
+        project_root = (
+            Path(__file__)
+            .resolve()
+            .parent
+            .parent
+        )
+
+        # --------------------------------------
         # Database Path
+        # --------------------------------------
+
         self.database_path = (
             project_root /
             "database" /
             "astra.db"
         )
 
+        # --------------------------------------
+        # Ensure Database Directory Exists
+        # --------------------------------------
+
+        self.database_path.parent.mkdir(
+            parents=True,
+            exist_ok=True
+        )
+
+        # --------------------------------------
         # Connect Database
+        #
+        # check_same_thread=False is required
+        # because:
+        #
+        # - Main application uses SQLite
+        # - InitializationWorker uses SQLite
+        # - Watchdog FileMonitor uses SQLite
+        # --------------------------------------
+
         self.connection = sqlite3.connect(
-            self.database_path
+            self.database_path,
+            check_same_thread=False,
+            timeout=30
+        )
+
+        # Improve SQLite behavior for
+        # concurrent read/write operations.
+        self.connection.execute(
+            "PRAGMA journal_mode=WAL"
+        )
+
+        self.connection.execute(
+            "PRAGMA synchronous=NORMAL"
         )
 
         self.cursor = self.connection.cursor()
 
+        # --------------------------------------
         # Create Required Tables
+        # --------------------------------------
+
         self.create_tables()
 
-    # --------------------------------------------------
-    # Create Tables
-    # --------------------------------------------------
+    # ==================================================
+    # INTERNAL HELPERS
+    # ==================================================
 
-    def create_tables(self):
+    def _normalize_path(
+        self,
+        full_path
+    ):
         """
-        Create required database tables.
+        Return a normalized absolute path.
         """
 
-        # --------------------------------------
-        # Installed Applications
-        # --------------------------------------
+        try:
 
-        self.cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS applications (
-
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-
-                name TEXT UNIQUE NOT NULL,
-
-                exe_name TEXT NOT NULL,
-
-                full_path TEXT NOT NULL,
-
-                source TEXT,
-
-                last_scanned TEXT
-
+            return str(
+                Path(full_path)
+                .resolve()
             )
-            """
-        )
 
-        # --------------------------------------
-        # Application Aliases
-        # --------------------------------------
+        except Exception:
 
-        self.cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS aliases (
-
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-
-                alias TEXT UNIQUE NOT NULL,
-
-                application_name TEXT NOT NULL
-
+            return str(
+                Path(full_path)
             )
-            """
-        )
-
-        # --------------------------------------
-        # Indexed Files
-        # --------------------------------------
-
-        self.cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS files (
-
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-
-                name TEXT NOT NULL,
-
-                extension TEXT,
-
-                full_path TEXT UNIQUE,
-
-                file_size INTEGER,
-
-                last_modified TEXT,
-
-                last_scanned TEXT
-
-            )
-            """
-        )
-
-        self.commit()
 
     # --------------------------------------------------
     # Commit
@@ -125,7 +135,9 @@ class DatabaseManager:
         Commit all pending database changes.
         """
 
-        self.connection.commit()
+        with self.lock:
+
+            self.connection.commit()
 
     # --------------------------------------------------
     # Batch Commit
@@ -136,11 +148,152 @@ class DatabaseManager:
         Commit pending bulk inserts.
         """
 
-        self.connection.commit()
+        with self.lock:
 
-    # --------------------------------------------------
-    # Insert Application
-    # --------------------------------------------------
+            self.connection.commit()
+
+    # ==================================================
+    # DATABASE SETUP
+    # ==================================================
+
+    def create_tables(self):
+        """
+        Create all required ASTRA-AI tables.
+        """
+
+        with self.lock:
+
+            # --------------------------------------
+            # Installed Applications
+            # --------------------------------------
+
+            self.cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS applications (
+
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+                    name TEXT UNIQUE NOT NULL,
+
+                    exe_name TEXT NOT NULL,
+
+                    full_path TEXT NOT NULL,
+
+                    source TEXT,
+
+                    last_scanned TEXT
+
+                )
+                """
+            )
+
+            # --------------------------------------
+            # Application Aliases
+            # --------------------------------------
+
+            self.cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS aliases (
+
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+                    alias TEXT UNIQUE NOT NULL,
+
+                    application_name TEXT NOT NULL
+
+                )
+                """
+            )
+
+            # --------------------------------------
+            # Indexed Files
+            # --------------------------------------
+
+            self.cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS files (
+
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+                    name TEXT NOT NULL,
+
+                    extension TEXT,
+
+                    full_path TEXT UNIQUE,
+
+                    file_size INTEGER,
+
+                    last_modified TEXT,
+
+                    last_scanned TEXT
+
+                )
+                """
+            )
+
+            # --------------------------------------
+            # Indexed Folders
+            # --------------------------------------
+
+            self.cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS folders (
+
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+                    name TEXT NOT NULL,
+
+                    full_path TEXT UNIQUE,
+
+                    last_modified TEXT,
+
+                    last_scanned TEXT
+
+                )
+                """
+            )
+
+            # --------------------------------------
+            # Useful Indexes
+            # --------------------------------------
+
+            self.cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS
+                idx_files_name
+                ON files(name)
+                """
+            )
+
+            self.cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS
+                idx_files_path
+                ON files(full_path)
+                """
+            )
+
+            self.cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS
+                idx_folders_name
+                ON folders(name)
+                """
+            )
+
+            self.cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS
+                idx_folders_path
+                ON folders(full_path)
+                """
+            )
+
+            self.connection.commit()
+
+    # ==================================================
+    # APPLICATION METHODS
+    # ==================================================
 
     def insert_application(
         self,
@@ -155,29 +308,33 @@ class DatabaseManager:
 
         try:
 
-            self.cursor.execute(
-                """
-                INSERT OR REPLACE INTO
-                applications
-                (
-                    name,
-                    exe_name,
-                    full_path,
-                    source,
-                    last_scanned
-                )
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (
-                    name.lower(),
-                    exe_name,
-                    full_path,
-                    source,
-                    datetime.now().isoformat()
-                )
-            )
+            with self.lock:
 
-            self.commit()
+                self.cursor.execute(
+                    """
+                    INSERT OR REPLACE INTO
+                    applications
+                    (
+                        name,
+                        exe_name,
+                        full_path,
+                        source,
+                        last_scanned
+                    )
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        name.lower(),
+                        exe_name,
+                        self._normalize_path(
+                            full_path
+                        ),
+                        source,
+                        datetime.now().isoformat()
+                    )
+                )
+
+                self.connection.commit()
 
             return True
 
@@ -189,8 +346,6 @@ class DatabaseManager:
 
             return False
 
-    # --------------------------------------------------
-    # Insert Alias
     # --------------------------------------------------
 
     def insert_alias(
@@ -204,23 +359,25 @@ class DatabaseManager:
 
         try:
 
-            self.cursor.execute(
-                """
-                INSERT OR REPLACE INTO
-                aliases
-                (
-                    alias,
-                    application_name
-                )
-                VALUES (?, ?)
-                """,
-                (
-                    alias.lower(),
-                    application_name.lower()
-                )
-            )
+            with self.lock:
 
-            self.commit()
+                self.cursor.execute(
+                    """
+                    INSERT OR REPLACE INTO
+                    aliases
+                    (
+                        alias,
+                        application_name
+                    )
+                    VALUES (?, ?)
+                    """,
+                    (
+                        alias.lower(),
+                        application_name.lower()
+                    )
+                )
+
+                self.connection.commit()
 
             return True
 
@@ -233,8 +390,130 @@ class DatabaseManager:
             return False
 
     # --------------------------------------------------
-    # Insert File
+
+    def get_application(
+        self,
+        name
+    ):
+        """
+        Return application details.
+        """
+
+        with self.lock:
+
+            self.cursor.execute(
+                """
+                SELECT
+                    name,
+                    exe_name,
+                    full_path
+                FROM applications
+                WHERE name = ?
+                """,
+                (
+                    name.lower(),
+                )
+            )
+
+            return self.cursor.fetchone()
+
     # --------------------------------------------------
+
+    def get_alias(
+        self,
+        alias
+    ):
+        """
+        Return application alias.
+        """
+
+        with self.lock:
+
+            self.cursor.execute(
+                """
+                SELECT
+                    application_name
+                FROM aliases
+                WHERE alias = ?
+                """,
+                (
+                    alias.lower(),
+                )
+            )
+
+            return self.cursor.fetchone()
+
+    # --------------------------------------------------
+
+    def get_all_applications(self):
+        """
+        Return all applications.
+        """
+
+        with self.lock:
+
+            self.cursor.execute(
+                """
+                SELECT
+                    name,
+                    exe_name,
+                    full_path
+                FROM applications
+                ORDER BY name
+                """
+            )
+
+            return self.cursor.fetchall()
+
+    # --------------------------------------------------
+
+    def application_exists(
+        self,
+        name
+    ):
+        """
+        Check whether application exists.
+        """
+
+        with self.lock:
+
+            self.cursor.execute(
+                """
+                SELECT 1
+                FROM applications
+                WHERE name = ?
+                """,
+                (
+                    name.lower(),
+                )
+            )
+
+            return (
+                self.cursor.fetchone()
+                is not None
+            )
+
+    # --------------------------------------------------
+
+    def application_count(self):
+        """
+        Return total applications.
+        """
+
+        with self.lock:
+
+            self.cursor.execute(
+                """
+                SELECT COUNT(*)
+                FROM applications
+                """
+            )
+
+            return self.cursor.fetchone()[0]
+
+    # ==================================================
+    # FILE METHODS
+    # ==================================================
 
     def insert_file(
         self,
@@ -246,38 +525,58 @@ class DatabaseManager:
         commit=True
     ):
         """
-        Store indexed file.
+        Insert or update indexed file.
         """
 
         try:
 
-            self.cursor.execute(
-                """
-                INSERT OR REPLACE INTO
-                files
-                (
-                    name,
-                    extension,
-                    full_path,
-                    file_size,
-                    last_modified,
-                    last_scanned
-                )
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    name.lower(),
-                    extension.lower(),
-                    full_path,
-                    file_size,
-                    last_modified,
-                    datetime.now().isoformat()
+            full_path = (
+                self._normalize_path(
+                    full_path
                 )
             )
 
-            if commit:
+            with self.lock:
 
-                self.commit()
+                self.cursor.execute(
+                    """
+                    INSERT INTO files
+                    (
+                        name,
+                        extension,
+                        full_path,
+                        file_size,
+                        last_modified,
+                        last_scanned
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?)
+
+                    ON CONFLICT(full_path)
+                    DO UPDATE SET
+
+                        name = excluded.name,
+
+                        extension = excluded.extension,
+
+                        file_size = excluded.file_size,
+
+                        last_modified = excluded.last_modified,
+
+                        last_scanned = excluded.last_scanned
+                    """,
+                    (
+                        name.lower(),
+                        extension.lower(),
+                        full_path,
+                        file_size,
+                        last_modified,
+                        datetime.now().isoformat()
+                    )
+                )
+
+                if commit:
+
+                    self.connection.commit()
 
             return True
 
@@ -288,63 +587,7 @@ class DatabaseManager:
             )
 
             return False
-        
-    # --------------------------------------------------
-    # Get Application
-    # --------------------------------------------------
 
-    def get_application(
-        self,
-        name
-    ):
-        """
-        Return application details.
-        """
-
-        self.cursor.execute(
-            """
-            SELECT
-                name,
-                exe_name,
-                full_path
-            FROM applications
-            WHERE name = ?
-            """,
-            (
-                name.lower(),
-            )
-        )
-
-        return self.cursor.fetchone()
-
-    # --------------------------------------------------
-    # Get Alias
-    # --------------------------------------------------
-
-    def get_alias(
-        self,
-        alias
-    ):
-        """
-        Return application alias.
-        """
-
-        self.cursor.execute(
-            """
-            SELECT
-                application_name
-            FROM aliases
-            WHERE alias = ?
-            """,
-            (
-                alias.lower(),
-            )
-        )
-
-        return self.cursor.fetchone()
-
-    # --------------------------------------------------
-    # Get File
     # --------------------------------------------------
 
     def get_file(
@@ -355,25 +598,60 @@ class DatabaseManager:
         Return indexed file.
         """
 
-        self.cursor.execute(
-            """
-            SELECT
-                name,
-                extension,
+        with self.lock:
+
+            self.cursor.execute(
+                """
+                SELECT
+                    name,
+                    extension,
+                    full_path
+                FROM files
+                WHERE name LIKE ?
+                LIMIT 1
+                """,
+                (
+                    f"%{name.lower()}%",
+                )
+            )
+
+            return self.cursor.fetchone()
+
+    # --------------------------------------------------
+
+    def get_file_by_path(
+        self,
+        full_path
+    ):
+        """
+        Return indexed file
+        using its full path.
+        """
+
+        full_path = (
+            self._normalize_path(
                 full_path
-            FROM files
-            WHERE name LIKE ?
-            LIMIT 1
-            """,
-            (
-                f"%{name.lower()}%",
             )
         )
 
-        return self.cursor.fetchone()
+        with self.lock:
 
-    # --------------------------------------------------
-    # Search Files
+            self.cursor.execute(
+                """
+                SELECT
+                    name,
+                    extension,
+                    full_path
+                FROM files
+                WHERE full_path = ?
+                """,
+                (
+                    full_path,
+                )
+            )
+
+            return self.cursor.fetchone()
+
     # --------------------------------------------------
 
     def search_files(
@@ -384,49 +662,26 @@ class DatabaseManager:
         Search matching files.
         """
 
-        self.cursor.execute(
-            """
-            SELECT
-                name,
-                extension,
-                full_path
-            FROM files
-            WHERE
-                name LIKE ?
-            ORDER BY name
-            LIMIT 20
-            """,
-            (
-                f"%{keyword.lower()}%",
+        with self.lock:
+
+            self.cursor.execute(
+                """
+                SELECT
+                    name,
+                    extension,
+                    full_path
+                FROM files
+                WHERE name LIKE ?
+                ORDER BY name
+                LIMIT 20
+                """,
+                (
+                    f"%{keyword.lower()}%",
+                )
             )
-        )
 
-        return self.cursor.fetchall()
+            return self.cursor.fetchall()
 
-    # --------------------------------------------------
-    # Get All Applications
-    # --------------------------------------------------
-
-    def get_all_applications(self):
-        """
-        Return all applications.
-        """
-
-        self.cursor.execute(
-            """
-            SELECT
-                name,
-                exe_name,
-                full_path
-            FROM applications
-            ORDER BY name
-            """
-        )
-
-        return self.cursor.fetchall()
-
-    # --------------------------------------------------
-    # Get All Files
     # --------------------------------------------------
 
     def get_all_files(self):
@@ -434,21 +689,21 @@ class DatabaseManager:
         Return all indexed files.
         """
 
-        self.cursor.execute(
-            """
-            SELECT
-                name,
-                extension,
-                full_path
-            FROM files
-            ORDER BY name
-            """
-        )
+        with self.lock:
 
-        return self.cursor.fetchall()
+            self.cursor.execute(
+                """
+                SELECT
+                    name,
+                    extension,
+                    full_path
+                FROM files
+                ORDER BY name
+                """
+            )
 
-    # --------------------------------------------------
-    # Search By Extension
+            return self.cursor.fetchall()
+
     # --------------------------------------------------
 
     def search_by_extension(
@@ -459,50 +714,31 @@ class DatabaseManager:
         Search files by extension.
         """
 
-        self.cursor.execute(
-            """
-            SELECT
-                name,
-                extension,
-                full_path
-            FROM files
-            WHERE extension = ?
-            ORDER BY name
-            """,
-            (
-                extension.lower(),
+        extension = extension.lower()
+
+        if not extension.startswith("."):
+
+            extension = "." + extension
+
+        with self.lock:
+
+            self.cursor.execute(
+                """
+                SELECT
+                    name,
+                    extension,
+                    full_path
+                FROM files
+                WHERE extension = ?
+                ORDER BY name
+                """,
+                (
+                    extension,
+                )
             )
-        )
 
-        return self.cursor.fetchall()
+            return self.cursor.fetchall()
 
-    # --------------------------------------------------
-    # Application Exists
-    # --------------------------------------------------
-
-    def application_exists(
-        self,
-        name
-    ):
-        """
-        Check application exists.
-        """
-
-        self.cursor.execute(
-            """
-            SELECT 1
-            FROM applications
-            WHERE name = ?
-            """,
-            (
-                name.lower(),
-            )
-        )
-
-        return self.cursor.fetchone() is not None
-
-    # --------------------------------------------------
-    # File Exists
     # --------------------------------------------------
 
     def file_exists(
@@ -510,24 +746,34 @@ class DatabaseManager:
         full_path
     ):
         """
-        Check file exists.
+        Check whether file exists
+        in database.
         """
 
-        self.cursor.execute(
-            """
-            SELECT 1
-            FROM files
-            WHERE full_path = ?
-            """,
-            (
-                full_path,
+        full_path = (
+            self._normalize_path(
+                full_path
             )
         )
 
-        return self.cursor.fetchone() is not None
+        with self.lock:
 
-    # --------------------------------------------------
-    # Search By Size
+            self.cursor.execute(
+                """
+                SELECT 1
+                FROM files
+                WHERE full_path = ?
+                """,
+                (
+                    full_path,
+                )
+            )
+
+            return (
+                self.cursor.fetchone()
+                is not None
+            )
+
     # --------------------------------------------------
 
     def search_by_size(
@@ -539,27 +785,31 @@ class DatabaseManager:
         the given size.
         """
 
-        minimum_size = minimum_size_mb * 1024 * 1024
-
-        self.cursor.execute(
-            """
-            SELECT
-                name,
-                extension,
-                full_path
-            FROM files
-            WHERE file_size >= ?
-            ORDER BY file_size DESC
-            """,
-            (
-                minimum_size,
-            )
+        minimum_size = (
+            minimum_size_mb
+            * 1024
+            * 1024
         )
 
-        return self.cursor.fetchall()
+        with self.lock:
 
-    # --------------------------------------------------
-    # Search By Date
+            self.cursor.execute(
+                """
+                SELECT
+                    name,
+                    extension,
+                    full_path
+                FROM files
+                WHERE file_size >= ?
+                ORDER BY file_size DESC
+                """,
+                (
+                    minimum_size,
+                )
+            )
+
+            return self.cursor.fetchall()
+
     # --------------------------------------------------
 
     def search_by_date(
@@ -570,45 +820,27 @@ class DatabaseManager:
         Search recently modified files.
         """
 
-        self.cursor.execute(
-            """
-            SELECT
-                name,
-                extension,
-                full_path
-            FROM files
-            WHERE
-                julianday('now') -
-                julianday(last_modified) <= ?
-            ORDER BY last_modified DESC
-            """,
-            (
-                days,
+        with self.lock:
+
+            self.cursor.execute(
+                """
+                SELECT
+                    name,
+                    extension,
+                    full_path
+                FROM files
+                WHERE
+                    julianday('now') -
+                    julianday(last_modified) <= ?
+                ORDER BY last_modified DESC
+                """,
+                (
+                    days,
+                )
             )
-        )
 
-        return self.cursor.fetchall()
+            return self.cursor.fetchall()
 
-    # --------------------------------------------------
-    # Application Count
-    # --------------------------------------------------
-
-    def application_count(self):
-        """
-        Return total applications.
-        """
-
-        self.cursor.execute(
-            """
-            SELECT COUNT(*)
-            FROM applications
-            """
-        )
-
-        return self.cursor.fetchone()[0]
-
-    # --------------------------------------------------
-    # File Count
     # --------------------------------------------------
 
     def file_count(self):
@@ -616,63 +848,17 @@ class DatabaseManager:
         Return total indexed files.
         """
 
-        self.cursor.execute(
-            """
-            SELECT COUNT(*)
-            FROM files
-            """
-        )
+        with self.lock:
 
-        return self.cursor.fetchone()[0]
+            self.cursor.execute(
+                """
+                SELECT COUNT(*)
+                FROM files
+                """
+            )
 
-    # --------------------------------------------------
-    # Clear Files
-    # --------------------------------------------------
+            return self.cursor.fetchone()[0]
 
-    def clear_files(self):
-        """
-       Remove only indexed files.
-        """
-
-        self.cursor.execute(
-            """
-            DELETE FROM files
-            """
-        )
-
-        self.commit()
-
-    # --------------------------------------------------
-    # Clear Database
-    # --------------------------------------------------
-
-    def clear_database(self):
-        """
-        Remove all stored data.
-        """
-
-        self.cursor.execute(
-            """
-            DELETE FROM applications
-            """
-        )
-
-        self.cursor.execute(
-            """
-            DELETE FROM aliases
-            """
-        )
-
-        self.cursor.execute(
-            """
-            DELETE FROM files
-            """
-        )
-
-        self.commit()
-
-    # --------------------------------------------------
-    # Update File Name
     # --------------------------------------------------
 
     def update_file_name(
@@ -687,30 +873,89 @@ class DatabaseManager:
 
         try:
 
-            extension = Path(new_path).suffix.lower()
-
-            self.cursor.execute(
-                """
-                UPDATE files
-                SET
-                    name = ?,
-                    extension = ?,
-                    full_path = ?,
-                    last_modified = ?,
-                    last_scanned = ?
-                WHERE full_path = ?
-                """,
-                (
-                    Path(new_path).stem.lower(),
-                    extension,
-                    new_path,
-                    datetime.now().isoformat(),
-                    datetime.now().isoformat(),
+            old_path = (
+                self._normalize_path(
                     old_path
                 )
             )
 
-            self.commit()
+            new_path = (
+                self._normalize_path(
+                    new_path
+                )
+            )
+
+            new_file = Path(
+                new_path
+            )
+
+            if new_file.exists():
+
+                file_size = (
+                    new_file.stat()
+                    .st_size
+                )
+
+                last_modified = (
+                    datetime.fromtimestamp(
+                        new_file.stat()
+                        .st_mtime
+                    )
+                    .isoformat()
+                )
+
+            else:
+
+                file_size = None
+
+                last_modified = (
+                    datetime.now()
+                    .isoformat()
+                )
+
+            with self.lock:
+
+                self.cursor.execute(
+                    """
+                    UPDATE files
+                    SET
+
+                        name = ?,
+
+                        extension = ?,
+
+                        full_path = ?,
+
+                        file_size = ?,
+
+                        last_modified = ?,
+
+                        last_scanned = ?
+
+                    WHERE full_path = ?
+                    """,
+                    (
+                        (
+                            new_name
+                            or
+                            new_file.stem
+                        ).lower(),
+
+                        new_file.suffix.lower(),
+
+                        new_path,
+
+                        file_size,
+
+                        last_modified,
+
+                        datetime.now().isoformat(),
+
+                        old_path
+                    )
+                )
+
+                self.connection.commit()
 
             return True
 
@@ -722,8 +967,6 @@ class DatabaseManager:
 
             return False
 
-    # --------------------------------------------------
-    # Update File Path
     # --------------------------------------------------
 
     def update_file_path(
@@ -737,24 +980,85 @@ class DatabaseManager:
 
         try:
 
-            self.cursor.execute(
-                """
-                UPDATE files
-                SET
-                    full_path = ?,
-                    last_modified = ?,
-                    last_scanned = ?
-                WHERE full_path = ?
-                """,
-                (
-                    new_path,
-                    datetime.now().isoformat(),
-                    datetime.now().isoformat(),
+            old_path = (
+                self._normalize_path(
                     old_path
                 )
             )
 
-            self.commit()
+            new_path = (
+                self._normalize_path(
+                    new_path
+                )
+            )
+
+            new_file = Path(
+                new_path
+            )
+
+            if new_file.exists():
+
+                file_size = (
+                    new_file.stat()
+                    .st_size
+                )
+
+                last_modified = (
+                    datetime.fromtimestamp(
+                        new_file.stat()
+                        .st_mtime
+                    )
+                    .isoformat()
+                )
+
+            else:
+
+                file_size = None
+
+                last_modified = (
+                    datetime.now()
+                    .isoformat()
+                )
+
+            with self.lock:
+
+                self.cursor.execute(
+                    """
+                    UPDATE files
+                    SET
+
+                        name = ?,
+
+                        extension = ?,
+
+                        full_path = ?,
+
+                        file_size = ?,
+
+                        last_modified = ?,
+
+                        last_scanned = ?
+
+                    WHERE full_path = ?
+                    """,
+                    (
+                        new_file.stem.lower(),
+
+                        new_file.suffix.lower(),
+
+                        new_path,
+
+                        file_size,
+
+                        last_modified,
+
+                        datetime.now().isoformat(),
+
+                        old_path
+                    )
+                )
+
+                self.connection.commit()
 
             return True
 
@@ -767,8 +1071,6 @@ class DatabaseManager:
             return False
 
     # --------------------------------------------------
-    # Delete File
-    # --------------------------------------------------
 
     def delete_file(
         self,
@@ -780,17 +1082,25 @@ class DatabaseManager:
 
         try:
 
-            self.cursor.execute(
-                """
-                DELETE FROM files
-                WHERE full_path = ?
-                """,
-                (
-                    full_path,
+            full_path = (
+                self._normalize_path(
+                    full_path
                 )
             )
 
-            self.commit()
+            with self.lock:
+
+                self.cursor.execute(
+                    """
+                    DELETE FROM files
+                    WHERE full_path = ?
+                    """,
+                    (
+                        full_path,
+                    )
+                )
+
+                self.connection.commit()
 
             return True
 
@@ -803,27 +1113,31 @@ class DatabaseManager:
             return False
 
     # --------------------------------------------------
-    # Refresh File
-    # --------------------------------------------------
 
     def refresh_file(
         self,
-        file_path
+        file_path,
+        commit=True
     ):
         """
-        Insert or refresh
-        one file entry.
+        Insert or refresh one file entry.
         """
 
         try:
 
-            file = Path(file_path)
+            file = Path(
+                file_path
+            )
 
             if not file.exists():
 
                 return False
 
-            self.insert_file(
+            if not file.is_file():
+
+                return False
+
+            return self.insert_file(
 
                 name=file.stem,
 
@@ -831,15 +1145,21 @@ class DatabaseManager:
 
                 full_path=str(file),
 
-                file_size=file.stat().st_size,
+                file_size=(
+                    file.stat()
+                    .st_size
+                ),
 
-                last_modified=datetime.fromtimestamp(
-                    file.stat().st_mtime
-                ).isoformat()
+                last_modified=(
+                    datetime.fromtimestamp(
+                        file.stat()
+                        .st_mtime
+                    )
+                    .isoformat()
+                ),
 
+                commit=commit
             )
-
-            return True
 
         except Exception as error:
 
@@ -849,8 +1169,6 @@ class DatabaseManager:
 
             return False
 
-    # --------------------------------------------------
-    # Delete Missing File
     # --------------------------------------------------
 
     def delete_missing_file(
@@ -867,12 +1185,739 @@ class DatabaseManager:
         )
 
     # --------------------------------------------------
-    # Close Database
+
+    def clear_files(self):
+        """
+        Remove only indexed files.
+        """
+
+        with self.lock:
+
+            self.cursor.execute(
+                """
+                DELETE FROM files
+                """
+            )
+
+            self.connection.commit()
+
+    # ==================================================
+    # FOLDER METHODS
+    # ==================================================
+
+    def insert_folder(
+        self,
+        name,
+        full_path,
+        last_modified=None,
+        commit=True
+    ):
+        """
+        Insert or update indexed folder.
+        """
+
+        try:
+
+            full_path = (
+                self._normalize_path(
+                    full_path
+                )
+            )
+
+            folder_path = Path(
+                full_path
+            )
+
+            if last_modified is None:
+
+                if folder_path.exists():
+
+                    last_modified = (
+                        datetime.fromtimestamp(
+                            folder_path.stat()
+                            .st_mtime
+                        )
+                        .isoformat()
+                    )
+
+                else:
+
+                    last_modified = (
+                        datetime.now()
+                        .isoformat()
+                    )
+
+            with self.lock:
+
+                self.cursor.execute(
+                    """
+                    INSERT INTO folders
+                    (
+                        name,
+                        full_path,
+                        last_modified,
+                        last_scanned
+                    )
+                    VALUES (?, ?, ?, ?)
+
+                    ON CONFLICT(full_path)
+                    DO UPDATE SET
+
+                        name = excluded.name,
+
+                        last_modified =
+                        excluded.last_modified,
+
+                        last_scanned =
+                        excluded.last_scanned
+                    """,
+                    (
+                        name.lower(),
+
+                        full_path,
+
+                        last_modified,
+
+                        datetime.now().isoformat()
+                    )
+                )
+
+                if commit:
+
+                    self.connection.commit()
+
+            return True
+
+        except Exception as error:
+
+            print(
+                f"Folder Insert Error : {error}"
+            )
+
+            return False
+
     # --------------------------------------------------
+
+    def refresh_folder(
+        self,
+        folder_path,
+        commit=True
+    ):
+        """
+        Insert or refresh one folder entry.
+        """
+
+        try:
+
+            folder = Path(
+                folder_path
+            )
+
+            if not folder.exists():
+
+                return False
+
+            if not folder.is_dir():
+
+                return False
+
+            return self.insert_folder(
+
+                name=folder.name,
+
+                full_path=str(folder),
+
+                last_modified=(
+                    datetime.fromtimestamp(
+                        folder.stat()
+                        .st_mtime
+                    )
+                    .isoformat()
+                ),
+
+                commit=commit
+            )
+
+        except Exception as error:
+
+            print(
+                f"Refresh Folder Error : {error}"
+            )
+
+            return False
+
+    # --------------------------------------------------
+
+    def get_folder(
+        self,
+        name
+    ):
+        """
+        Return indexed folder.
+        """
+
+        with self.lock:
+
+            self.cursor.execute(
+                """
+                SELECT
+                    name,
+                    full_path
+                FROM folders
+                WHERE name LIKE ?
+                LIMIT 1
+                """,
+                (
+                    f"%{name.lower()}%",
+                )
+            )
+
+            return self.cursor.fetchone()
+
+    # --------------------------------------------------
+
+    def get_folder_by_path(
+        self,
+        full_path
+    ):
+        """
+        Return folder using its path.
+        """
+
+        full_path = (
+            self._normalize_path(
+                full_path
+            )
+        )
+
+        with self.lock:
+
+            self.cursor.execute(
+                """
+                SELECT
+                    name,
+                    full_path
+                FROM folders
+                WHERE full_path = ?
+                """,
+                (
+                    full_path,
+                )
+            )
+
+            return self.cursor.fetchone()
+
+    # --------------------------------------------------
+
+    def search_folders(
+        self,
+        keyword
+    ):
+        """
+        Search matching folders.
+        """
+
+        with self.lock:
+
+            self.cursor.execute(
+                """
+                SELECT
+                    name,
+                    full_path
+                FROM folders
+                WHERE name LIKE ?
+                ORDER BY name
+                LIMIT 20
+                """,
+                (
+                    f"%{keyword.lower()}%",
+                )
+            )
+
+            return self.cursor.fetchall()
+
+    # --------------------------------------------------
+
+    def get_all_folders(self):
+        """
+        Return all indexed folders.
+        """
+
+        with self.lock:
+
+            self.cursor.execute(
+                """
+                SELECT
+                    name,
+                    full_path
+                FROM folders
+                ORDER BY name
+                """
+            )
+
+            return self.cursor.fetchall()
+
+    # --------------------------------------------------
+
+    def folder_exists(
+        self,
+        full_path
+    ):
+        """
+        Check whether folder exists
+        in database.
+        """
+
+        full_path = (
+            self._normalize_path(
+                full_path
+            )
+        )
+
+        with self.lock:
+
+            self.cursor.execute(
+                """
+                SELECT 1
+                FROM folders
+                WHERE full_path = ?
+                """,
+                (
+                    full_path,
+                )
+            )
+
+            return (
+                self.cursor.fetchone()
+                is not None
+            )
+
+    # --------------------------------------------------
+
+    def folder_count(self):
+        """
+        Return total indexed folders.
+        """
+
+        with self.lock:
+
+            self.cursor.execute(
+                """
+                SELECT COUNT(*)
+                FROM folders
+                """
+            )
+
+            return self.cursor.fetchone()[0]
+
+    # --------------------------------------------------
+
+    def update_folder_name(
+        self,
+        old_path,
+        new_name,
+        new_path
+    ):
+        """
+        Update renamed folder.
+        """
+
+        try:
+
+            old_path = (
+                self._normalize_path(
+                    old_path
+                )
+            )
+
+            new_path = (
+                self._normalize_path(
+                    new_path
+                )
+            )
+
+            with self.lock:
+
+                self.cursor.execute(
+                    """
+                    UPDATE folders
+                    SET
+
+                        name = ?,
+
+                        full_path = ?,
+
+                        last_modified = ?,
+
+                        last_scanned = ?
+
+                    WHERE full_path = ?
+                    """,
+                    (
+                        new_name.lower(),
+
+                        new_path,
+
+                        datetime.now().isoformat(),
+
+                        datetime.now().isoformat(),
+
+                        old_path
+                    )
+                )
+
+                self.connection.commit()
+
+            return True
+
+        except Exception as error:
+
+            print(
+                f"Update Folder Name Error : {error}"
+            )
+
+            return False
+
+    # --------------------------------------------------
+
+    def update_folder_path(
+        self,
+        old_path,
+        new_path
+    ):
+        """
+        Update moved folder path.
+        """
+
+        try:
+
+            old_path = (
+                self._normalize_path(
+                    old_path
+                )
+            )
+
+            new_path = (
+                self._normalize_path(
+                    new_path
+                )
+            )
+
+            folder = Path(
+                new_path
+            )
+
+            with self.lock:
+
+                self.cursor.execute(
+                    """
+                    UPDATE folders
+                    SET
+
+                        name = ?,
+
+                        full_path = ?,
+
+                        last_modified = ?,
+
+                        last_scanned = ?
+
+                    WHERE full_path = ?
+                    """,
+                    (
+                        folder.name.lower(),
+
+                        new_path,
+
+                        (
+                            datetime.fromtimestamp(
+                                folder.stat()
+                                .st_mtime
+                            )
+                            .isoformat()
+
+                            if folder.exists()
+
+                            else
+
+                            datetime.now()
+                            .isoformat()
+                        ),
+
+                        datetime.now().isoformat(),
+
+                        old_path
+                    )
+                )
+
+                self.connection.commit()
+
+            return True
+
+        except Exception as error:
+
+            print(
+                f"Update Folder Path Error : {error}"
+            )
+
+            return False
+
+    # --------------------------------------------------
+
+    def delete_folder(
+        self,
+        full_path
+    ):
+        """
+        Remove folder from database.
+        """
+
+        try:
+
+            full_path = (
+                self._normalize_path(
+                    full_path
+                )
+            )
+
+            with self.lock:
+
+                self.cursor.execute(
+                    """
+                    DELETE FROM folders
+                    WHERE full_path = ?
+                    """,
+                    (
+                        full_path,
+                    )
+                )
+
+                self.connection.commit()
+
+            return True
+
+        except Exception as error:
+
+            print(
+                f"Delete Folder DB Error : {error}"
+            )
+
+            return False
+
+    # --------------------------------------------------
+
+    def delete_missing_folder(
+        self,
+        full_path
+    ):
+        """
+        Remove missing folder
+        from database.
+        """
+
+        return self.delete_folder(
+            full_path
+        )
+
+    # --------------------------------------------------
+
+    def clear_folders(self):
+        """
+        Remove only indexed folders.
+        """
+
+        with self.lock:
+
+            self.cursor.execute(
+                """
+                DELETE FROM folders
+                """
+            )
+
+            self.connection.commit()
+
+    # ==================================================
+    # CLEANUP / SYNCHRONIZATION
+    # ==================================================
+
+    def remove_missing_files(
+        self,
+        commit=True
+    ):
+        """
+        Remove database entries for
+        files that no longer exist.
+        """
+
+        try:
+
+            with self.lock:
+
+                self.cursor.execute(
+                    """
+                    SELECT full_path
+                    FROM files
+                    """
+                )
+
+                paths = (
+                    self.cursor.fetchall()
+                )
+
+                removed_count = 0
+
+                for (full_path,) in paths:
+
+                    if not Path(
+                        full_path
+                    ).is_file():
+
+                        self.cursor.execute(
+                            """
+                            DELETE FROM files
+                            WHERE full_path = ?
+                            """,
+                            (
+                                full_path,
+                            )
+                        )
+
+                        removed_count += 1
+
+                if commit:
+
+                    self.connection.commit()
+
+            return removed_count
+
+        except Exception as error:
+
+            print(
+                f"Remove Missing Files Error : "
+                f"{error}"
+            )
+
+            return 0
+
+    # --------------------------------------------------
+
+    def remove_missing_folders(
+        self,
+        commit=True
+    ):
+        """
+        Remove database entries for
+        folders that no longer exist.
+        """
+
+        try:
+
+            with self.lock:
+
+                self.cursor.execute(
+                    """
+                    SELECT full_path
+                    FROM folders
+                    """
+                )
+
+                paths = (
+                    self.cursor.fetchall()
+                )
+
+                removed_count = 0
+
+                for (full_path,) in paths:
+
+                    if not Path(
+                        full_path
+                    ).is_dir():
+
+                        self.cursor.execute(
+                            """
+                            DELETE FROM folders
+                            WHERE full_path = ?
+                            """,
+                            (
+                                full_path,
+                            )
+                        )
+
+                        removed_count += 1
+
+                if commit:
+
+                    self.connection.commit()
+
+            return removed_count
+
+        except Exception as error:
+
+            print(
+                f"Remove Missing Folders Error : "
+                f"{error}"
+            )
+
+            return 0
+
+    # ==================================================
+    # DATABASE CLEANUP
+    # ==================================================
+
+    def clear_database(self):
+        """
+        Remove all stored ASTRA data.
+        """
+
+        with self.lock:
+
+            self.cursor.execute(
+                """
+                DELETE FROM applications
+                """
+            )
+
+            self.cursor.execute(
+                """
+                DELETE FROM aliases
+                """
+            )
+
+            self.cursor.execute(
+                """
+                DELETE FROM files
+                """
+            )
+
+            self.cursor.execute(
+                """
+                DELETE FROM folders
+                """
+            )
+
+            self.connection.commit()
+
+    # ==================================================
+    # CLOSE DATABASE
+    # ==================================================
 
     def close(self):
         """
-        Close SQLite connection.
+        Close SQLite connection safely.
         """
 
-        self.connection.close()
+        try:
+
+            with self.lock:
+
+                if self.connection:
+
+                    self.connection.commit()
+
+                    self.connection.close()
+
+                    self.connection = None
+
+        except Exception:
+
+            pass

@@ -1296,7 +1296,7 @@ class FileSystemAgent:
             return self._result(
                 False,
                 "create_file",
-                "File path is required.",
+                "File name is required.",
             )
 
         try:
@@ -1305,21 +1305,155 @@ class FileSystemAgent:
                 path
             ).expanduser()
 
+            # ----------------------------------------------
+            # Convert relative path to absolute path
+            # ----------------------------------------------
+
+            if not target.is_absolute():
+
+                target = (
+                    Path.cwd()
+                    / target
+                )
+
+            target = target.resolve()
+
+            # ----------------------------------------------
+            # Prevent conflict with existing item
+            # ----------------------------------------------
+
+            if target.exists():
+
+                if target.is_file():
+
+                    return self._result(
+                        False,
+                        "create_file",
+                        (
+                            f"Cannot create file '{target.name}'. "
+                            "A file with this name already exists."
+                        ),
+                        path=str(
+                            target
+                        ),
+                        exists=True,
+                    )
+
+                if target.is_dir():
+
+                    return self._result(
+                        False,
+                        "create_file",
+                        (
+                            f"Cannot create file '{target.name}'. "
+                            "A folder with the same name already exists."
+                        ),
+                        path=str(
+                            target
+                        ),
+                        exists=True,
+                    )
+
+                return self._result(
+                    False,
+                    "create_file",
+                    (
+                        f"Cannot create file '{target.name}'. "
+                        "An item with the same name already exists."
+                    ),
+                    path=str(
+                        target
+                    ),
+                    exists=True,
+                )
+
+            # ----------------------------------------------
+            # Ensure parent directory exists
+            # ----------------------------------------------
+
             target.parent.mkdir(
                 parents=True,
                 exist_ok=True,
             )
 
+            # ----------------------------------------------
+            # Create actual file
+            # ----------------------------------------------
+
             target.touch(
-                exist_ok=True
+                exist_ok=False
             )
+
+            # ----------------------------------------------
+            # Verify actual creation
+            # ----------------------------------------------
+
+            if not target.exists():
+
+                return self._result(
+                    False,
+                    "create_file",
+                    (
+                        f"File creation failed. "
+                        f"The file '{target.name}' was not found "
+                        "after the operation."
+                    ),
+                    path=str(
+                        target
+                    ),
+                )
+
+            if not target.is_file():
+
+                return self._result(
+                    False,
+                    "create_file",
+                    (
+                        f"File creation failed. "
+                        f"'{target.name}' is not a file."
+                    ),
+                    path=str(
+                        target
+                    ),
+                )
 
             return self._result(
                 True,
                 "create_file",
-                f"File created: {target}",
+                (
+                    f"File created successfully: "
+                    f"{target.name}"
+                ),
                 path=str(
-                    target.resolve()
+                    target
+                ),
+            )
+
+        except FileExistsError:
+
+            return self._result(
+                False,
+                "create_file",
+                (
+                    f"Cannot create file '{Path(path).name}'. "
+                    "An item with this name already exists."
+                ),
+                path=str(
+                    Path(path)
+                ),
+            )
+
+        except PermissionError:
+
+            return self._result(
+                False,
+                "create_file",
+                (
+                    f"Permission denied. "
+                    f"Cannot create file '{Path(path).name}'."
+                ),
+                path=str(
+                    Path(path)
                 ),
             )
 
@@ -1328,7 +1462,13 @@ class FileSystemAgent:
             return self._result(
                 False,
                 "create_file",
-                f"Unable to create file: {error}",
+                (
+                    f"Unable to create file '{Path(path).name}': "
+                    f"{error}"
+                ),
+                path=str(
+                    Path(path)
+                ),
             )
 
     def create_folder(
@@ -1343,7 +1483,7 @@ class FileSystemAgent:
             return self._result(
                 False,
                 "create_folder",
-                "Folder path is required.",
+                "Folder name is required.",
             )
 
         try:
@@ -1352,17 +1492,147 @@ class FileSystemAgent:
                 path
             ).expanduser()
 
+            # ----------------------------------------------
+            # Convert relative path to absolute path
+            # ----------------------------------------------
+
+            if not target.is_absolute():
+
+                target = (
+                    Path.cwd()
+                    / target
+                )
+
+            target = target.resolve()
+
+            # ----------------------------------------------
+            # Prevent duplicate creation
+            # ----------------------------------------------
+
+            if target.exists():
+
+                if target.is_dir():
+
+                    return self._result(
+                        False,
+                        "create_folder",
+                        (
+                            f"Cannot create folder '{target.name}'. "
+                            "A folder with this name already exists."
+                        ),
+                        path=str(
+                            target
+                        ),
+                        exists=True,
+                    )
+
+                if target.is_file():
+
+                    return self._result(
+                        False,
+                        "create_folder",
+                        (
+                            f"Cannot create folder '{target.name}'. "
+                            "A file with the same name already exists."
+                        ),
+                        path=str(
+                            target
+                        ),
+                        exists=True,
+                    )
+
+                return self._result(
+                    False,
+                    "create_folder",
+                    (
+                        f"Cannot create folder '{target.name}'. "
+                        "An item with the same name already exists."
+                    ),
+                    path=str(
+                        target
+                    ),
+                    exists=True,
+                )
+
+            # ----------------------------------------------
+            # Create actual folder
+            # ----------------------------------------------
+
             target.mkdir(
                 parents=True,
-                exist_ok=True,
+                exist_ok=False,
             )
+
+            # ----------------------------------------------
+            # Verify actual creation
+            # ----------------------------------------------
+
+            if not target.exists():
+
+                return self._result(
+                    False,
+                    "create_folder",
+                    (
+                        f"Folder creation failed. "
+                        f"The folder '{target.name}' was not found "
+                        "after the operation."
+                    ),
+                    path=str(
+                        target
+                    ),
+                )
+
+            if not target.is_dir():
+
+                return self._result(
+                    False,
+                    "create_folder",
+                    (
+                        f"Folder creation failed. "
+                        f"'{target.name}' is not a folder."
+                    ),
+                    path=str(
+                        target
+                    ),
+                )
 
             return self._result(
                 True,
                 "create_folder",
-                f"Folder created: {target}",
+                (
+                    f"Folder created successfully: "
+                    f"{target.name}"
+                ),
                 path=str(
-                    target.resolve()
+                    target
+                ),
+            )
+
+        except FileExistsError:
+
+            return self._result(
+                False,
+                "create_folder",
+                (
+                    f"Cannot create folder '{Path(path).name}'. "
+                    "An item with this name already exists."
+                ),
+                path=str(
+                    Path(path)
+                ),
+            )
+
+        except PermissionError:
+
+            return self._result(
+                False,
+                "create_folder",
+                (
+                    f"Permission denied. "
+                    f"Cannot create folder '{Path(path).name}'."
+                ),
+                path=str(
+                    Path(path)
                 ),
             )
 
@@ -1371,7 +1641,13 @@ class FileSystemAgent:
             return self._result(
                 False,
                 "create_folder",
-                f"Unable to create folder: {error}",
+                (
+                    f"Unable to create folder '{Path(path).name}': "
+                    f"{error}"
+                ),
+                path=str(
+                    Path(path)
+                ),
             )
 
     # ==================================================

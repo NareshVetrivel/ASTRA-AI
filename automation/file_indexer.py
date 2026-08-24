@@ -5,8 +5,15 @@ Scans important user folders and
 stores valid files inside the
 SQLite database.
 
-Filtering is handled by
-FileFilter.
+The index is synchronized on every
+ASTRA startup.
+
+New files are added.
+Existing files are refreshed.
+Deleted files are removed from
+the SQLite database.
+
+Filtering is handled by FileFilter.
 
 ASTRA-AI V1
 """
@@ -24,6 +31,10 @@ class FileIndexer:
     """
     Index important user files
     into SQLite.
+
+    Every indexing run synchronizes
+    the database with the current
+    file system state.
     """
 
     def __init__(self):
@@ -44,11 +55,21 @@ class FileIndexer:
 
         self.indexed_paths = {
 
-            file[2]
+            str(
+                Path(file[2]).resolve()
+            )
 
             for file in self.database.get_all_files()
 
+            if file[2]
+
         }
+
+        # ---------------------------------
+        # Paths Found During Current Scan
+        # ---------------------------------
+
+        self.scanned_paths = set()
 
     # --------------------------------------------------
     # Scan Folder List
@@ -121,13 +142,21 @@ class FileIndexer:
 
         for folder in folders:
 
-            folder = folder.resolve()
+            try:
+
+                folder = folder.resolve()
+
+            except Exception:
+
+                continue
 
             if folder not in visited:
 
                 visited.add(folder)
 
-                unique_folders.append(folder)
+                unique_folders.append(
+                    folder
+                )
 
         return unique_folders
 
@@ -138,49 +167,110 @@ class FileIndexer:
     def index_files(self):
         """
         Scan configured folders and
-        index valid files.
+        synchronize valid files with
+        the SQLite database.
+
+        Existing files are refreshed.
+
+        New files are added.
+
+        Missing files are removed.
         """
 
         print("\n==============================")
         print("ASTRA File Indexer")
         print("==============================")
 
-        if self.database.file_count() > 0:
+        print(
+            "\nSynchronizing file index..."
+        )
 
-            print("\nFiles already indexed.")
-            print("Skipping indexing...")
+        # Refresh folders in case
+        # drives were connected after
+        # object creation.
 
-            return
+        self.scan_folders = (
+            self.get_scan_folders()
+        )
 
-        print("\nScanning folders...\n")
+        # Reset current scan cache
 
-        total_files = 0
+        self.scanned_paths.clear()
+
+        total_new = 0
+
+        total_updated = 0
+
+        # ---------------------------------
+        # Scan All Configured Folders
+        # ---------------------------------
 
         for folder in self.scan_folders:
 
-            print(f"Scanning : {folder}")
+            print(
+                f"\nScanning : {folder}"
+            )
 
-            count = self.scan_folder(folder)
+            result = self.scan_folder(
+                folder
+            )
 
-            total_files += count
+            total_new += (
+                result["new"]
+            )
+
+            total_updated += (
+                result["updated"]
+            )
 
             # ---------------------------------
-            # Commit once per folder
-            # (Much faster than committing
-            # every single file.)
+            # Commit Once Per Folder
             # ---------------------------------
 
             self.database.batch_commit()
 
-            print(f"Indexed : {count} files\n")
+            print(
+                f"New     : {result['new']}"
+            )
 
-        print("--------------------------------")
+            print(
+                f"Updated : {result['updated']}"
+            )
 
-        print(
-            f"Total Indexed Files : {total_files}"
+        # ---------------------------------
+        # Remove Missing Files
+        # ---------------------------------
+
+        removed = (
+            self.remove_missing_files()
         )
 
-        print("\nIndexing Completed.")
+        # Final database commit
+
+        self.database.batch_commit()
+
+        print("\n--------------------------------")
+
+        print(
+            f"New Files     : {total_new}"
+        )
+
+        print(
+            f"Updated Files : {total_updated}"
+        )
+
+        print(
+            f"Removed Files : {removed}"
+        )
+
+        print(
+            f"Total Indexed : "
+            f"{self.database.file_count()}"
+        )
+
+        print(
+            "\nFile synchronization completed."
+        )
 
     # --------------------------------------------------
     # Scan Folder
@@ -192,23 +282,49 @@ class FileIndexer:
     ):
         """
         Recursively scan a folder and
-        store valid files.
+        synchronize valid files.
 
         Returns
         -------
-        int
-            Number of indexed files.
+
+        dict
+            {
+                "new": int,
+                "updated": int
+            }
         """
 
-        indexed_files = 0
+        new_files = 0
+
+        updated_files = 0
+
+        # Keep existing performance
+        # limitation for large drives.
 
         MAX_DEPTH = 2
 
-        for root, dirs, files in os.walk(folder):
+        try:
+
+            folder = Path(
+                folder
+            ).resolve()
+
+        except Exception:
+
+            return {
+
+                "new": 0,
+                "updated": 0
+
+            }
+
+        for root, dirs, files in os.walk(
+            folder,
+            topdown=True
+        ):
 
             # ---------------------------------
-            # Skip unwanted directories before
-            # entering them (huge speed boost)
+            # Skip Unwanted Directories
             # ---------------------------------
 
             dirs[:] = [
@@ -228,86 +344,162 @@ class FileIndexer:
 
             ]
 
-            relative = Path(root).relative_to(folder)
+            # ---------------------------------
+            # Maximum Scan Depth
+            # ---------------------------------
 
-            if len(relative.parts) >= MAX_DEPTH:
+            try:
 
-                dirs[:] = []
+                relative = (
+                    Path(root).relative_to(
+                        folder
+                    )
+                )
 
-            for file in files:
+                if (
+                    len(relative.parts)
+                    >= MAX_DEPTH
+                ):
+
+                    dirs[:] = []
+
+            except Exception:
+
+                pass
+
+            # ---------------------------------
+            # Scan Files
+            # ---------------------------------
+
+            for filename in files:
 
                 try:
 
-                    full_path = os.path.join(
-                        root,
-                        file
+                    full_path = (
+                        Path(root) /
+                        filename
                     )
+
+                    # -------------------------
+                    # Resolve Path
+                    # -------------------------
+
+                    try:
+
+                        normalized_path = str(
+                            full_path.resolve()
+                        )
+
+                    except Exception:
+
+                        normalized_path = str(
+                            full_path
+                        )
 
                     # -------------------------
                     # Smart File Filter
                     # -------------------------
 
                     if not FileFilter.is_valid_file(
-                        full_path
+
+                        normalized_path
+
                     ):
 
                         continue
 
                     # -------------------------
-                    # Skip Duplicates (Memory Cache)
+                    # File Metadata
                     # -------------------------
 
-                    if full_path in self.indexed_paths:
+                    file_path = Path(
+                        normalized_path
+                    )
 
-                        continue
-
-                    file_path = Path(full_path)
-
-                    file_size = os.path.getsize(
-                        full_path
+                    file_size = (
+                        file_path.stat().st_size
                     )
 
                     last_modified = (
                         datetime.fromtimestamp(
-                            os.path.getmtime(
-                                full_path
-                            )
+
+                            file_path.stat().st_mtime
+
                         ).isoformat()
                     )
 
                     # -------------------------
-                    # Store Database
+                    # Track Current File
                     # -------------------------
 
-                    self.database.insert_file(
-
-                        name=file_path.stem,
-
-                        extension=file_path.suffix,
-
-                        full_path=full_path,
-
-                        file_size=file_size,
-
-                        last_modified=last_modified,
-
-                        commit=False
-
+                    self.scanned_paths.add(
+                        normalized_path
                     )
 
-                    self.indexed_paths.add(
-                        full_path
-                    )
+                    # -------------------------
+                    # Existing File
+                    # -------------------------
 
-                    indexed_files += 1
+                    if (
 
-                    if False:
+                        normalized_path
+                        in self.indexed_paths
 
-                        print(
+                    ):
 
-                            f"Indexed {indexed_files} files..."
+                        # Refresh metadata
+                        # without removing the
+                        # existing entry.
+
+                        self.database.insert_file(
+
+                            name=file_path.stem,
+
+                            extension=file_path.suffix,
+
+                            full_path=normalized_path,
+
+                            file_size=file_size,
+
+                            last_modified=last_modified,
+
+                            commit=False
 
                         )
+
+                        updated_files += 1
+
+                        continue
+
+                    # -------------------------
+                    # New File
+                    # -------------------------
+
+                    success = (
+                        self.database.insert_file(
+
+                            name=file_path.stem,
+
+                            extension=file_path.suffix,
+
+                            full_path=normalized_path,
+
+                            file_size=file_size,
+
+                            last_modified=last_modified,
+
+                            commit=False
+
+                        )
+                    )
+
+                    if success:
+
+                        self.indexed_paths.add(
+                            normalized_path
+                        )
+
+                        new_files += 1
 
                 except PermissionError:
 
@@ -327,8 +519,241 @@ class FileIndexer:
                         f"Index Error : {error}"
                     )
 
-        return indexed_files
-    
+        return {
+
+            "new": new_files,
+
+            "updated": updated_files
+
+        }
+
+    # --------------------------------------------------
+    # Remove Missing Files
+    # --------------------------------------------------
+
+    def remove_missing_files(self):
+        """
+        Remove database entries for
+        files that no longer exist
+        on the system.
+
+        This handles files manually
+        deleted outside ASTRA.
+        """
+
+        removed_files = 0
+
+        database_files = (
+            self.database.get_all_files()
+        )
+
+        print(
+            "\nChecking for removed files..."
+        )
+
+        for file in database_files:
+
+            try:
+
+                full_path = file[2]
+
+                if not full_path:
+
+                    continue
+
+                file_path = Path(
+                    full_path
+                )
+
+                # ---------------------------------
+                # Remove If File No Longer Exists
+                # ---------------------------------
+
+                if not file_path.exists():
+
+                    success = (
+                        self.database.delete_file(
+
+                            full_path
+
+                        )
+                    )
+
+                    if success:
+
+                        removed_files += 1
+
+                        self.indexed_paths.discard(
+
+                            str(
+                                full_path
+                            )
+
+                        )
+
+            except Exception as error:
+
+                print(
+                    f"Missing File Check Error : "
+                    f"{error}"
+                )
+
+        return removed_files
+
+    # --------------------------------------------------
+    # Refresh Single File
+    # --------------------------------------------------
+
+    def refresh_file(
+        self,
+        file_path
+    ):
+        """
+        Add or refresh a single file
+        in the database.
+
+        Can be used by future file
+        monitoring components.
+        """
+
+        try:
+
+            file_path = Path(
+                file_path
+            )
+
+            if not file_path.exists():
+
+                return False
+
+            try:
+
+                normalized_path = str(
+                    file_path.resolve()
+                )
+
+            except Exception:
+
+                normalized_path = str(
+                    file_path
+                )
+
+            # ---------------------------------
+            # File Filter
+            # ---------------------------------
+
+            if not FileFilter.is_valid_file(
+
+                normalized_path
+
+            ):
+
+                return False
+
+            file_path = Path(
+                normalized_path
+            )
+
+            success = (
+                self.database.insert_file(
+
+                    name=file_path.stem,
+
+                    extension=file_path.suffix,
+
+                    full_path=normalized_path,
+
+                    file_size=(
+                        file_path.stat().st_size
+                    ),
+
+                    last_modified=(
+                        datetime.fromtimestamp(
+
+                            file_path.stat().st_mtime
+
+                        ).isoformat()
+                    )
+
+                )
+            )
+
+            if success:
+
+                self.indexed_paths.add(
+                    normalized_path
+                )
+
+            return success
+
+        except Exception as error:
+
+            print(
+                f"Refresh File Error : {error}"
+            )
+
+            return False
+
+    # --------------------------------------------------
+    # Remove Single File
+    # --------------------------------------------------
+
+    def remove_file(
+        self,
+        file_path
+    ):
+        """
+        Remove one file from the
+        database index.
+
+        Useful when ASTRA deletes
+        a file directly.
+        """
+
+        try:
+
+            file_path = Path(
+                file_path
+            )
+
+            try:
+
+                normalized_path = str(
+                    file_path.resolve()
+                )
+
+            except Exception:
+
+                normalized_path = str(
+                    file_path
+                )
+
+            success = (
+                self.database.delete_file(
+
+                    normalized_path
+
+                )
+            )
+
+            if success:
+
+                self.indexed_paths.discard(
+
+                    normalized_path
+
+                )
+
+            return success
+
+        except Exception as error:
+
+            print(
+                f"Remove File Error : {error}"
+            )
+
+            return False
+
     # --------------------------------------------------
     # Show Summary
     # --------------------------------------------------
@@ -338,7 +763,9 @@ class FileIndexer:
         Display indexed files summary.
         """
 
-        files = self.database.get_all_files()
+        files = (
+            self.database.get_all_files()
+        )
 
         print("\n====================================")
         print("ASTRA Indexed Files")
@@ -346,9 +773,13 @@ class FileIndexer:
 
         for name, extension, full_path in files:
 
-            print(f"{name}{extension}")
+            print(
+                f"{name}{extension}"
+            )
 
-            print(f" -> {full_path}")
+            print(
+                f" -> {full_path}"
+            )
 
         print("\n------------------------------------")
 
@@ -366,13 +797,23 @@ class FileIndexer:
         rebuild the file database.
         """
 
-        print("\nClearing previous index...")
+        print(
+            "\nClearing previous index..."
+        )
 
         self.database.clear_files()
 
-        print("Database Cleared.")
+        self.indexed_paths.clear()
 
-        print("\nRebuilding File Index...\n")
+        self.scanned_paths.clear()
+
+        print(
+            "Database Cleared."
+        )
+
+        print(
+            "\nRebuilding File Index..."
+        )
 
         self.index_files()
 
