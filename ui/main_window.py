@@ -29,15 +29,16 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QVBoxLayout,
     QWidget,
+    QSizePolicy,
 )
 
 from config import settings
 
 from ui.styles.theme import Theme
 
+from ui.components.center_panel import CenterPanelWidget
 from ui.components.header import HeaderWidget
 from ui.components.left_panel import LeftPanelWidget
-from ui.components.center_panel import CenterPanelWidget
 from ui.components.right_panel import RightPanelWidget
 from ui.widgets.conversation_panel import ConversationPanel
 
@@ -593,13 +594,13 @@ class MainWindow(QMainWindow):
         self.body_layout = QHBoxLayout()
 
         self.body_layout.setContentsMargins(
-            28,
+            18,
             0,
-            28,
+            18,
             8
         )
 
-        self.body_layout.setSpacing(26)
+        self.body_layout.setSpacing(18)
 
         # --------------------------------------------------
         # Left Panel
@@ -630,7 +631,7 @@ class MainWindow(QMainWindow):
             0
         )
 
-        self.center_layout.setSpacing(10)
+        self.center_layout.setSpacing(4)
 
         # --------------------------------------------------
         # File / Folder Selection Glass Panel
@@ -657,10 +658,48 @@ class MainWindow(QMainWindow):
         )
 
         # --------------------------------------------------
-        # Flexible Space
+        # ASTRA IMAGE AVATAR PANEL
         # --------------------------------------------------
 
-        self.center_layout.addStretch()
+        self.center_panel = CenterPanelWidget(
+            self.center_container
+        )
+
+        self.center_panel.setObjectName(
+            "astraCenterPanel"
+        )
+
+        self.center_panel.setMinimumSize(
+            1,
+            1
+        )
+
+        # --------------------------------------------------
+        # AVATAR SIZE
+        # --------------------------------------------------
+
+        self.center_panel.setSizePolicy(
+            QSizePolicy.Fixed,
+            QSizePolicy.Fixed
+        )
+
+        self.center_panel.setFixedSize(
+            485,
+            540
+        )
+
+        self.center_layout.addWidget(
+            self.center_panel,
+            1,
+            Qt.AlignHCenter | Qt.AlignVCenter
+        )
+
+        # Compatibility reference for backend code.
+        self.avatar_widget = self.center_panel.avatar_widget
+
+        print(
+            "[AVATAR] Image-based CenterPanelWidget added to main window."
+        )
 
         # --------------------------------------------------
         # Microphone
@@ -673,7 +712,13 @@ class MainWindow(QMainWindow):
             alignment=Qt.AlignBottom | Qt.AlignHCenter
         )
 
-        self.center_layout.addSpacing(12)
+        # The microphone must remain visually in front of the
+        # avatar layer whenever their paint areas overlap.
+        self.mic_widget.raise_()
+
+        self.center_layout.addSpacing(
+            12
+        )
 
         self.body_layout.addWidget(
 
@@ -4541,6 +4586,15 @@ class MainWindow(QMainWindow):
 
             pass
 
+        # --------------------------------------------------
+        # ASTRA STARTUP GREETING
+        # --------------------------------------------------
+
+        QTimer.singleShot(
+            300,
+            self._play_startup_greeting
+        )
+
         # ----------------------------------
         # Start Live File Monitor
         # ----------------------------------
@@ -4556,6 +4610,280 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(
                 500,
                 self.start_wake_word_worker
+            )
+
+    def _set_avatar_state(
+        self,
+        state: str,
+    ):
+        """Safely update the image-based ASTRA avatar state."""
+
+        requested_state = str(state or "").strip().lower()
+
+        state_map = {
+            "hello": "hello",
+            "idle": "idle",
+            "listening": "listening",
+            "thinking": "thinking_ai",
+            "processing": "thinking_ai",
+            "thinking_laptop": "thinking_laptop",
+            "thinking_ai": "thinking_ai",
+            "speaking": "speaking",
+            "success": "success",
+            "error": "error",
+        }
+
+        avatar_state = state_map.get(requested_state, "idle")
+        center_panel = getattr(self, "center_panel", None)
+
+        if center_panel is None:
+            return
+
+        try:
+            center_panel.set_avatar_state(avatar_state)
+        except RuntimeError:
+            return
+        except Exception as error:
+            print(f"Avatar state error: {error}")
+
+    def _play_startup_greeting(self):
+
+        """
+        Play ASTRA startup greeting.
+
+        Flow:
+
+            Show HELLO avatar
+                    ↓
+            Speak startup greeting
+                    ↓
+            Wait until TTS finishes
+                    ↓
+            Hide HELLO avatar permanently
+                    ↓
+            Delete avatar widget
+        """
+
+        try:
+
+            print(
+                "\n========== ASTRA STARTUP GREETING =========="
+            )
+
+            center_panel = getattr(
+                self,
+                "center_panel",
+                None
+            )
+
+            if center_panel is None:
+
+                print(
+                    "Startup Avatar Error : "
+                    "CenterPanel not found."
+                )
+
+            else:
+
+                center_panel.show()
+
+                # Keep microphone in front.
+                mic_widget = getattr(
+                    self,
+                    "mic_widget",
+                    None
+                )
+
+                if mic_widget is not None:
+
+                    mic_widget.raise_()
+
+                # Show ONLY the HELLO image.
+                center_panel.set_avatar_state(
+                    "hello"
+                )
+
+                print(
+                    "[STARTUP] HELLO avatar displayed."
+                )
+
+        except Exception as error:
+
+            print(
+                f"Startup Avatar Error : {error}"
+            )
+
+        # --------------------------------------------------
+        # Speak Startup Greeting
+        # --------------------------------------------------
+
+        try:
+
+            if self.tts is not None:
+
+                self.tts.speak(
+                    "I am Dheepthi, Hello Naresh"
+                )
+
+                print(
+                    "[STARTUP] Greeting TTS started."
+                )
+
+                # Wait until speech finishes.
+                QTimer.singleShot(
+                    100,
+                    self._wait_for_startup_greeting
+                )
+
+            else:
+
+                # No TTS available.
+                # Remove avatar immediately.
+                self._finish_startup_greeting()
+
+        except Exception as error:
+
+            print(
+                f"Startup Greeting Error : {error}"
+            )
+
+            self._finish_startup_greeting()
+
+    def _wait_for_startup_greeting(self):
+
+        """
+        Wait until startup TTS has completely finished.
+
+        The GUI thread is never blocked.
+        """
+
+        if getattr(
+            self,
+            "_closing",
+            False
+        ):
+
+            return
+
+        try:
+
+            speaking = (
+
+                self.tts is not None
+
+                and
+
+                self.tts.speaking()
+
+            )
+
+        except Exception:
+
+            speaking = False
+
+        # --------------------------------------------------
+        # Still Speaking
+        # --------------------------------------------------
+
+        if speaking:
+
+            QTimer.singleShot(
+                100,
+                self._wait_for_startup_greeting
+            )
+
+            return
+
+        # --------------------------------------------------
+        # Greeting Finished
+        # --------------------------------------------------
+
+        self._finish_startup_greeting()
+
+    def _finish_startup_greeting(self):
+
+        """
+        Startup greeting is complete.
+
+        HELLO avatar is no longer needed.
+
+        Hide and destroy it permanently.
+        """
+
+        print(
+            "\n========== STARTUP COMPLETE =========="
+        )
+
+        center_panel = getattr(
+            self,
+            "center_panel",
+            None
+        )
+
+        if center_panel is None:
+
+            print(
+                "[STARTUP] CenterPanel already unavailable."
+            )
+
+            return
+
+        try:
+
+            # --------------------------------------------------
+            # Stop avatar safely
+            # --------------------------------------------------
+
+            if hasattr(
+                center_panel,
+                "stop_avatar"
+            ):
+
+                center_panel.stop_avatar()
+
+            # --------------------------------------------------
+            # Hide avatar / center panel
+            # --------------------------------------------------
+
+            center_panel.hide()
+
+            # --------------------------------------------------
+            # Remove from layout
+            # --------------------------------------------------
+
+            parent_layout = center_panel.parentWidget()
+
+            if parent_layout is not None:
+
+                layout = parent_layout.layout()
+
+                if layout is not None:
+
+                    layout.removeWidget(
+                        center_panel
+                    )
+
+            # --------------------------------------------------
+            # Destroy widget
+            # --------------------------------------------------
+
+            center_panel.deleteLater()
+
+            self.center_panel = None
+
+            print(
+                "[STARTUP] HELLO avatar destroyed."
+            )
+
+            print(
+                "======================================\n"
+            )
+
+        except Exception as error:
+
+            print(
+                f"Startup Avatar Cleanup Error : "
+                f"{error}"
             )
 
     # --------------------------------------------------
@@ -5250,6 +5578,10 @@ class MainWindow(QMainWindow):
 
             self.status_label.setText(
                 "Status : Processing..."
+            )
+
+            self._set_avatar_state(
+                "thinking_ai"
             )
 
             try:

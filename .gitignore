@@ -103,3 +103,5 @@ dist/
 
 tmp/
 temp/
+database/astra.db-shm
+database/astra.db-wal

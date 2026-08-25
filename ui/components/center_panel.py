@@ -2,452 +2,476 @@
 ui/components/center_panel.py
 
 ASTRA-AI
-Center Hero Panel
+Center Avatar Panel
 
-PART 1
-- Responsive Layout
-- Avatar Section
-- Halo Container
+Image-based avatar state flow:
+
+    App Opens
+        ↓
+    HELLO
+        ↓
+    IDLE PRIMARY
+        ↓
+    RANDOM IDLE IMAGES
+
+Supported states:
+
+    hello
+    idle
+    listening
+    thinking
+    thinking_laptop
+    thinking_ai
+    speaking
+    success
+    error
+
+The microphone remains controlled by main_window.py.
 """
+
+from __future__ import annotations
 
 from PySide6.QtCore import Qt
 
 from PySide6.QtWidgets import (
     QWidget,
-    QLabel,
     QVBoxLayout,
     QSizePolicy,
-    QFrame,
-    QStackedLayout,
-    QGraphicsDropShadowEffect,
 )
 
-from PySide6.QtGui import QColor
+from ui.widgets.avatar_widget import AvatarWidget
 
+
+# ============================================================
+# CENTER PANEL
+# ============================================================
 
 class CenterPanelWidget(QWidget):
     """
-    Center Hero Section
+    ASTRA center avatar panel.
 
-    Layout
+    This panel is responsible only for forwarding avatar state
+    requests to AvatarWidget.
 
-        Top Spacer
+    AvatarWidget handles:
 
-        Avatar
-
-        Mic (Part 2)
-
-        CTA Button (Part 2)
+        - HELLO -> IDLE transition
+        - Idle primary image
+        - Random idle image shuffle
+        - State image switching
+        - Temporary success/error return to idle
+        - Timer cleanup
     """
 
-    def __init__(self, parent=None):
+    def __init__(
+        self,
+        parent=None,
+    ):
         super().__init__(parent)
 
-        self.setObjectName("centerPanel")
+        self.setObjectName(
+            "centerPanel"
+        )
 
         self.setSizePolicy(
-            QSizePolicy.Expanding,
-            QSizePolicy.Expanding
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding,
         )
+
+        self.current_state = "hello"
 
         self.build_ui()
 
-    # ----------------------------------------------------
+    # ========================================================
     # UI
-    # ----------------------------------------------------
+    # ========================================================
 
-    def build_ui(self):
+    def build_ui(
+        self,
+    ):
+        """
+        Build the center avatar panel.
+        """
 
-        self.setStyleSheet("""
+        self.setStyleSheet(
+            """
+            QWidget#centerPanel {
+                background: transparent;
+                border: none;
+            }
+            """
+        )
 
-        QWidget#centerPanel{
-
-            background:transparent;
-            border:none;
-
-        }
-
-        """)
-
-        self.main_layout = QVBoxLayout(self)
+        self.main_layout = QVBoxLayout(
+            self
+        )
 
         self.main_layout.setContentsMargins(
-            25,
-            20,
-            25,
-            25
-        )
-
-        self.main_layout.setSpacing(18)
-
-        self.main_layout.setAlignment(Qt.AlignCenter)
-
-        # -------------------------------
-        # Top Spacer
-        # -------------------------------
-
-        self.main_layout.addStretch(1)
-
-        # -------------------------------
-        # Hero Section
-        # -------------------------------
-
-        self.build_hero_section()
-
-        # -------------------------------
-        # Mic Section
-        # -------------------------------
-
-        self.build_mic_section()
-
-        # -------------------------------
-        # CTA
-        # -------------------------------
-
-        self.build_cta()
-
-        self.main_layout.addStretch(2)
-
-    # ----------------------------------------------------
-    # Hero Section
-    # ----------------------------------------------------
-
-    def build_hero_section(self):
-
-        self.hero_container = QWidget()
-
-        self.hero_container.setObjectName("heroContainer")
-
-        self.hero_container.setMinimumHeight(620)
-
-        self.hero_container.setMaximumHeight(700)
-
-        self.hero_container.setSizePolicy(
-            QSizePolicy.Expanding,
-            QSizePolicy.Expanding
-        )
-
-        self.hero_container.setStyleSheet("""
-
-        QWidget#heroContainer{
-
-        background:qradialgradient(
-
-            cx:0.5,
-            cy:0.44,
-            radius:1.22,
-
-            stop:0 rgba(255,255,255,215),
-
-            stop:0.18 rgba(250,246,255,170),
-
-            stop:0.38 rgba(238,228,255,105),
-
-            stop:0.60 rgba(220,205,255,55),
-
-            stop:0.82 rgba(205,190,255,20),
-
-            stop:1 rgba(255,255,255,0)
-
-        );
-
-        border:none;
-
-        }
-
-        """)
-
-        self.stack = QStackedLayout(self.hero_container)
-
-        self.stack.setStackingMode(
-            QStackedLayout.StackAll
-        )
-
-        self.build_glow_background()
-
-        self.build_avatar_layer()
-
-        self.main_layout.addWidget(
-            self.hero_container,
-            stretch=8
-        )
-
-    # ----------------------------------------------------
-    # Glow Background
-    # ----------------------------------------------------
-
-    def build_glow_background(self):
-
-        self.glow_container = QFrame()
-
-        self.glow_container.setObjectName(
-            "glowContainer"
-        )
-
-        self.glow_container.setFixedSize(
-            660,
-            660
-        )
-
-        self.glow_container.setStyleSheet("""
-
-        QFrame#glowContainer{
-
-        background:transparent;
-
-        border:14px solid rgba(255,255,255,255);
-
-        border-radius:330px;
-
-        }
-
-        """)
-
-        glow = QGraphicsDropShadowEffect()
-
-        glow.setOffset(0)
-
-        glow.setBlurRadius(360)
-
-        glow.setOffset(0)
-
-        glow.setColor(
-            QColor(255,255,255,255)
-        )
-
-        self.glow_container.setGraphicsEffect(glow)
-
-        self.stack.addWidget(
-            self.glow_container
-        )
-
-        # ----------------------------------
-        # Outer Halo Ring
-        # ----------------------------------
-
-        self.outer_ring = QFrame()
-
-        self.outer_ring.setFixedSize(720,720)
-
-        self.outer_ring.setStyleSheet("""
-
-        QFrame{
-
-        background:transparent;
-
-        border:5px solid rgba(255,255,255,185);
-
-        border-radius:360px;
-
-        }
-
-        """)
-
-        outer_glow = QGraphicsDropShadowEffect()
-
-        outer_glow.setBlurRadius(340)
-
-        outer_glow.setOffset(0)
-
-        outer_glow.setColor(
-            QColor(255,255,255,255)
-        )
-
-        self.outer_ring.setGraphicsEffect(
-            outer_glow
-        )
-
-        self.stack.addWidget(
-            self.outer_ring
-        )
-
-        # ----------------------------------
-        # Ultra Glow Ring
-        # ----------------------------------
-
-        self.ultra_ring = QFrame()
-
-        self.ultra_ring.setFixedSize(685, 685)
-
-        self.ultra_ring.setStyleSheet("""
-
-        QFrame{
-
-        background:transparent;
-
-        border:2px solid rgba(255,255,255,220);
-
-        border-radius:342px;
-
-        }
-
-        """)
-
-        ultra = QGraphicsDropShadowEffect()
-
-        ultra.setBlurRadius(420)
-
-        ultra.setOffset(0)
-
-        ultra.setColor(
-            QColor(255,255,255,255)
-        )
-
-        self.ultra_ring.setGraphicsEffect(
-            ultra
-        )
-
-        self.stack.addWidget(
-            self.ultra_ring
-        )
-
-    # ----------------------------------------------------
-    # Avatar Layer
-    # ----------------------------------------------------
-
-    def build_avatar_layer(self):
-
-        self.avatar_container = QWidget()
-
-        self.avatar_container.setAttribute(
-            Qt.WA_TranslucentBackground
-        )
-
-        self.avatar_container.setFixedSize(
-            640,
-            640
-        )
-
-        layout = QVBoxLayout(self.avatar_container)
-
-        layout.setContentsMargins(
             0,
             0,
             0,
+            0,
+        )
+
+        self.main_layout.setSpacing(
             0
         )
 
-        layout.setAlignment(Qt.AlignCenter)
-
-        self.avatar_placeholder = QLabel()
-
-        self.avatar_placeholder.setFixedSize(
-            430,
-            560
+        self.main_layout.setAlignment(
+            Qt.AlignmentFlag.AlignCenter
         )
 
-        self.avatar_placeholder.setStyleSheet("""
+        self.build_avatar()
 
-        QLabel{
+    # ========================================================
+    # AVATAR
+    # ========================================================
 
-            background:transparent;
+    def build_avatar(
+        self,
+    ):
+        """
+        Create the image-based ASTRA avatar.
+        """
 
-            border:none;
-
-        }
-
-        """)
-
-        layout.addWidget(
-            self.avatar_placeholder,
-            alignment=Qt.AlignCenter
+        self.avatar_widget = AvatarWidget(
+            parent=self,
         )
 
-        self.stack.addWidget(
-            self.avatar_container
+        self.avatar_widget.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding,
         )
 
-    # ----------------------------------------------------
-    # Backend Hooks
-    # ----------------------------------------------------
-
-    def set_avatar_state(self, state):
-        """
-        Reserved for future animated avatar.
-        """
-        pass
-
-    def update_status(self, text: str):
-        """
-        Future backend hook.
-        """
-        pass
-
-    # ----------------------------------------------------
-
-    def build_mic_section(self):
-
-        from ui.widgets.mic_widget import MicWidget
-
-        self.mic_widget = MicWidget()
+        self.avatar_widget.setMinimumSize(
+            1,
+            1,
+        )
 
         self.main_layout.addWidget(
-            self.mic_widget,
-            alignment=Qt.AlignCenter
+            self.avatar_widget,
+            1,
+            Qt.AlignmentFlag.AlignCenter,
         )
 
-    # ----------------------------------------------------
+        # ----------------------------------------------------
+        # STATE SYNCHRONIZATION
+        # ----------------------------------------------------
 
-    def build_cta(self):
+        if hasattr(
+            self.avatar_widget,
+            "state_changed",
+        ):
+            self.avatar_widget.state_changed.connect(
+                self._on_avatar_state_changed
+            )
 
-        self.cta_label = QLabel(
-            "CLICK MICROPHONE TO INTERACT"
+        try:
+
+            self.current_state = (
+                self.avatar_widget.current_avatar_state()
+            )
+
+        except Exception:
+
+            self.current_state = "hello"
+
+        print(
+            "[AVATAR] Image AvatarWidget created."
         )
 
-        self.cta_label.setAlignment(Qt.AlignCenter)
-
-        self.cta_label.setStyleSheet("""
-
-        QLabel{
-
-        background:qlineargradient(
-        x1:0,
-        y1:0,
-        x2:1,
-        y2:1,
-
-        stop:0 rgba(255,255,255,.95),
-        stop:1 rgba(245,240,255,.88)
-        );
-
-        border:1px solid rgba(167,139,250,.35);
-
-        border-radius:24px;
-
-        padding:14px 36px;
-
-        color:#7C3AED;
-
-        font-size:15px;
-
-        font-weight:800;
-
-        }
-        """)
-
-        self.main_layout.addWidget(
-            self.cta_label,
-            alignment=Qt.AlignCenter
+        print(
+            "[AVATAR] Initial avatar flow started."
         )
 
-    # ----------------------------------------------------
-    # Public API
-    # ----------------------------------------------------
+        print(
+            "[AVATAR] HELLO -> IDLE PRIMARY -> RANDOM IDLE"
+        )
 
-    def set_listening(self, listening: bool):
+    # ========================================================
+    # STATE CHANGED
+    # ========================================================
 
-        if hasattr(self, "mic_widget"):
-
-            if hasattr(self.mic_widget, "set_listening"):
-                self.mic_widget.set_listening(listening)
-
-    def set_avatar_state(self, state):
-
-        if hasattr(self.avatar_widget, "set_state"):
-            self.avatar_widget.set_state(state)
-
-    def update_status(self, text):
+    def _on_avatar_state_changed(
+        self,
+        state: str,
+    ):
         """
-        Reserved for backend integration.
+        Keep CenterPanel state synchronized with AvatarWidget.
         """
-        pass
+
+        self.current_state = state
+
+        print(
+            f"[CENTER PANEL] Avatar state: {state}"
+        )
+
+    # ========================================================
+    # SET AVATAR STATE
+    # ========================================================
+
+    def set_avatar_state(
+        self,
+        state: str,
+    ):
+        """
+        Change the current avatar state.
+
+        Supported states:
+
+            hello
+            idle
+            listening
+            thinking
+            thinking_laptop
+            thinking_ai
+            speaking
+            success
+            error
+        """
+
+        state = (
+            state or ""
+        ).strip().lower()
+
+        if not state:
+
+            print(
+                "[AVATAR] Empty state received."
+            )
+
+            return
+
+        if not hasattr(
+            self,
+            "avatar_widget",
+        ):
+
+            print(
+                "[AVATAR] Avatar widget unavailable."
+            )
+
+            return
+
+        # ----------------------------------------------------
+        # NORMALIZE GENERIC THINKING
+        # ----------------------------------------------------
+
+        # Existing backend may still send "thinking".
+        #
+        # Default generic thinking to AI thinking so existing
+        # calls do not break.
+
+        if state == "thinking":
+
+            state = "thinking_ai"
+
+        print(
+            f"[AVATAR] Requested state: {state}"
+        )
+
+        self.avatar_widget.set_state(
+            state
+        )
+
+        self.current_state = state
+
+    # ========================================================
+    # LISTENING COMPATIBILITY
+    # ========================================================
+
+    def set_listening(
+        self,
+        listening: bool,
+    ):
+        """
+        Compatibility method for main_window.py.
+        """
+
+        if listening:
+
+            self.set_avatar_state(
+                "listening"
+            )
+
+        else:
+
+            self.set_avatar_state(
+                "idle"
+            )
+
+    # ========================================================
+    # THINKING LAPTOP
+    # ========================================================
+
+    def set_thinking_laptop(
+        self,
+    ):
+        """
+        Show laptop/system command processing avatar.
+        """
+
+        self.set_avatar_state(
+            "thinking_laptop"
+        )
+
+    # ========================================================
+    # THINKING AI
+    # ========================================================
+
+    def set_thinking_ai(
+        self,
+    ):
+        """
+        Show AI processing avatar.
+        """
+
+        self.set_avatar_state(
+            "thinking_ai"
+        )
+
+    # ========================================================
+    # GENERIC THINKING COMPATIBILITY
+    # ========================================================
+
+    def set_thinking(
+        self,
+    ):
+        """
+        Compatibility method.
+
+        Generic thinking defaults to thinking_ai.
+        """
+
+        self.set_thinking_ai()
+
+    # ========================================================
+    # SPEAKING
+    # ========================================================
+
+    def set_speaking(
+        self,
+    ):
+        """
+        Show speaking avatar.
+        """
+
+        self.set_avatar_state(
+            "speaking"
+        )
+
+    # ========================================================
+    # SUCCESS
+    # ========================================================
+
+    def set_success(
+        self,
+    ):
+        """
+        Show success avatar.
+
+        AvatarWidget controls automatic return to idle.
+        """
+
+        self.set_avatar_state(
+            "success"
+        )
+
+    # ========================================================
+    # ERROR
+    # ========================================================
+
+    def set_error(
+        self,
+    ):
+        """
+        Show error avatar.
+
+        AvatarWidget controls automatic return to idle.
+        """
+
+        self.set_avatar_state(
+            "error"
+        )
+
+    # ========================================================
+    # IDLE
+    # ========================================================
+
+    def set_idle(
+        self,
+    ):
+        """
+        Switch avatar to idle.
+
+        AvatarWidget will:
+
+            idle_primary.png
+                ↓
+            random idle images
+        """
+
+        self.set_avatar_state(
+            "idle"
+        )
+
+    # ========================================================
+    # STOP AVATAR
+    # ========================================================
+
+    def stop_avatar(
+        self,
+    ):
+        """
+        Stop avatar timers safely.
+        """
+
+        if not hasattr(
+            self,
+            "avatar_widget",
+        ):
+
+            return
+
+        self.avatar_widget.stop()
+
+        print(
+            "[AVATAR] Avatar stopped."
+        )
+
+    # ========================================================
+    # STATUS COMPATIBILITY
+    # ========================================================
+
+    def update_status(
+        self,
+        text: str,
+    ):
+        """
+        Compatibility method for existing backend calls.
+
+        The center panel does not display separate status text,
+        but existing backend code can safely continue calling it.
+        """
+
+        print(
+            f"[AVATAR] Status update: {text}"
+        )
+
+    # ========================================================
+    # CLEANUP
+    # ========================================================
+
+    def closeEvent(
+        self,
+        event,
+    ):
+        """
+        Stop avatar timers before closing.
+        """
+
+        self.stop_avatar()
+
+        super().closeEvent(
+            event
+        )

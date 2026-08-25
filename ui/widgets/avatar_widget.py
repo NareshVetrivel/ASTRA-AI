@@ -1,23 +1,33 @@
 """
 ui/widgets/avatar_widget.py
 
-ASTRA-AI Premium Avatar Widget (V2)
+ASTRA-AI Avatar Widget
 
-Architecture:
-QWidget
-    └── QLabel (Avatar PNG)
+CURRENT IMPLEMENTATION:
+    - HELLO IMAGE ONLY
+    - No image detection
+    - No transparent border detection
+    - No cropping
+    - No timers
+    - No shuffle
+    - No video
+    - No other avatar images
+
+The hello image is directly scaled to fill the
+entire available AvatarWidget area.
 """
 
-import os
+from __future__ import annotations
+
+from pathlib import Path
 
 from PySide6.QtCore import (
     Qt,
-    QSize
+    Signal,
 )
 
 from PySide6.QtGui import (
     QPixmap,
-    QColor
 )
 
 from PySide6.QtWidgets import (
@@ -25,276 +35,401 @@ from PySide6.QtWidgets import (
     QLabel,
     QVBoxLayout,
     QSizePolicy,
-    QGraphicsDropShadowEffect
 )
 
 
+# ============================================================
+# AVATAR WIDGET
+# ============================================================
+
 class AvatarWidget(QWidget):
 
-    def __init__(self, parent=None):
+    # ========================================================
+    # SIGNAL
+    # ========================================================
+
+    state_changed = Signal(str)
+
+    # ========================================================
+    # INITIALIZATION
+    # ========================================================
+
+    def __init__(
+        self,
+        parent=None,
+    ):
         super().__init__(parent)
 
-        self.setObjectName("AvatarWidget")
+        self.setObjectName(
+            "AvatarWidget"
+        )
 
         self.setAttribute(
-            Qt.WA_TranslucentBackground
+            Qt.WidgetAttribute.WA_TranslucentBackground
         )
 
         self.setSizePolicy(
-            QSizePolicy.Expanding,
-            QSizePolicy.Expanding
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding,
         )
 
-        self.setMinimumSize(560, 700)
+        self.setMinimumSize(
+            1,
+            1,
+        )
 
-        # ------------------------------------
-        # Avatar State
-        # ------------------------------------
+        # ----------------------------------------------------
+        # CURRENT STATE
+        # ----------------------------------------------------
 
-        self.current_state = "idle"
+        self.current_state = "hello"
 
-        # ------------------------------------
-        # Main Layout
-        # ------------------------------------
+        self.current_image_path = None
 
-        self.layout = QVBoxLayout(self)
+        self.current_pixmap = QPixmap()
 
-        self.layout.setContentsMargins(
+        # ----------------------------------------------------
+        # PROJECT PATH
+        # ----------------------------------------------------
+
+        self.project_root = (
+            Path(__file__)
+            .resolve()
+            .parents[2]
+        )
+
+        # ----------------------------------------------------
+        # HELLO IMAGE PATH ONLY
+        # ----------------------------------------------------
+
+        self.hello_image_path = (
+            self.project_root
+            / "ui"
+            / "assets"
+            / "avatars"
+            / "hello"
+            / "hello.png"
+        )
+
+        # ----------------------------------------------------
+        # BUILD UI
+        # ----------------------------------------------------
+
+        self._build_ui()
+
+        # ----------------------------------------------------
+        # LOAD HELLO IMAGE
+        # ----------------------------------------------------
+
+        self._load_hello()
+
+    # ========================================================
+    # BUILD UI
+    # ========================================================
+
+    def _build_ui(
+        self,
+    ):
+
+        self.main_layout = QVBoxLayout(
+            self
+        )
+
+        self.main_layout.setContentsMargins(
             0,
             0,
             0,
+            0,
+        )
+
+        self.main_layout.setSpacing(
             0
         )
 
-        self.layout.setSpacing(0)
-
-        self.layout.setAlignment(
-            Qt.AlignCenter
+        self.main_layout.setAlignment(
+            Qt.AlignmentFlag.AlignCenter
         )
 
-        # ------------------------------------
-        # Avatar Label
-        # ------------------------------------
+        # ----------------------------------------------------
+        # AVATAR LABEL
+        # ----------------------------------------------------
 
-        self.avatar_label = QLabel()
+        self.avatar_label = QLabel(
+            self
+        )
+
+        self.avatar_label.setObjectName(
+            "avatarLabel"
+        )
 
         self.avatar_label.setAlignment(
-            Qt.AlignCenter
-        )
-
-        self.avatar_label.setMinimumSize(
-            520,
-            660
+            Qt.AlignmentFlag.AlignCenter
         )
 
         self.avatar_label.setSizePolicy(
-            QSizePolicy.Expanding,
-            QSizePolicy.Expanding
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding,
         )
 
-        self.layout.addWidget(
+        self.avatar_label.setMinimumSize(
+            1,
+            1,
+        )
+
+        # ----------------------------------------------------
+        # IMPORTANT
+        #
+        # Image directly fills QLabel.
+        #
+        # No crop.
+        # No detection.
+        # No aspect-ratio calculation.
+        # ----------------------------------------------------
+
+        self.avatar_label.setScaledContents(
+            True
+        )
+
+        self.avatar_label.setStyleSheet(
+            """
+            QLabel#avatarLabel {
+                background: transparent;
+                border: none;
+                padding: 0px;
+                margin: 0px;
+            }
+            """
+        )
+
+        self.main_layout.addWidget(
             self.avatar_label,
-            alignment=Qt.AlignCenter
+            1,
         )
 
-        # ------------------------------------
-        # Shadow Effect
-        # ------------------------------------
+    # ========================================================
+    # LOAD HELLO IMAGE
+    # ========================================================
 
-        self.shadow = QGraphicsDropShadowEffect()
+    def _load_hello(
+        self,
+    ):
 
-        self.shadow.setBlurRadius(90)
+        if not self.hello_image_path.exists():
 
-        self.shadow.setOffset(0,0)
+            print(
+                "[AVATAR ERROR] HELLO image not found:"
+            )
 
-        self.shadow.setColor(
-            QColor(170,130,255,120)
+            print(
+                self.hello_image_path
+            )
+
+            return False
+
+        pixmap = QPixmap(
+            str(
+                self.hello_image_path
+            )
         )
 
-        self.avatar_label.setGraphicsEffect(
-            self.shadow
+        if pixmap.isNull():
+
+            print(
+                "[AVATAR ERROR] Failed to load HELLO image."
+            )
+
+            return False
+
+        # ----------------------------------------------------
+        # DIRECT ORIGINAL IMAGE
+        #
+        # No processing.
+        # No crop.
+        # No detection.
+        # ----------------------------------------------------
+
+        self.current_pixmap = pixmap
+
+        self.current_image_path = (
+            self.hello_image_path
         )
 
-        # ------------------------------------
-        # Avatar Image
-        # ------------------------------------
+        self.avatar_label.setPixmap(
+            self.current_pixmap
+        )
 
-        self.avatar_pixmap = QPixmap()
+        self.current_state = "hello"
 
-        self.load_avatar()
+        self.state_changed.emit(
+            "hello"
+        )
 
-    # ------------------------------------------------
-    # Load Avatar
-    # ------------------------------------------------
+        print(
+            "[AVATAR] HELLO image loaded."
+        )
 
-    def load_avatar(self):
+        print(
+            f"[AVATAR] Image size: "
+            f"{pixmap.width()} x {pixmap.height()}"
+        )
 
-        possible_paths = [
+        return True
 
-            "ui/assets/avatar.png",
+    # ========================================================
+    # SET STATE
+    # ========================================================
 
-            "ui/assets/avatar.webp",
-
-            "ui/assets/avatar.jpg",
-
-            "assets/avatar.png",
-
-            "assets/avatar.webp",
-
-            "assets/avatar.jpg"
-
-        ]
-
-        for path in possible_paths:
-
-            if os.path.exists(path):
-
-                self.avatar_pixmap = QPixmap(path)
-
-                break
-
-        self.update_avatar()
-
-    # ------------------------------------------------
-
-    def resizeEvent(self, event):
-
-        super().resizeEvent(event)
-
-        self.update_avatar()
-
-    # ------------------------------------------------
-    # Update Avatar
-    # ------------------------------------------------
-
-    def update_avatar(self):
+    def set_state(
+        self,
+        state: str,
+    ):
         """
-        Scale avatar smoothly whenever the widget resizes.
+        Current version uses HELLO image only.
+
+        Any requested state keeps displaying
+        the HELLO image.
         """
 
-        if self.avatar_pixmap.isNull():
+        requested_state = (
+            state or ""
+        ).strip().lower()
+
+        if not requested_state:
+
             return
 
-        target_width = int(self.width() * 0.97)
-        target_height = int(self.height() * 0.97)
+        self.current_state = "hello"
 
-        scaled = self.avatar_pixmap.scaled(
-            QSize(
-                target_width,
-                target_height
-            ),
-            Qt.KeepAspectRatioByExpanding,
-            Qt.SmoothTransformation
+        self.state_changed.emit(
+            "hello"
         )
 
-        self.avatar_label.setPixmap(scaled)
+        print(
+            f"[AVATAR] Requested state: "
+            f"{requested_state}"
+        )
 
-        self.avatar_label.setScaledContents(False)
+        print(
+            "[AVATAR] HELLO image remains active."
+        )
 
-    # ------------------------------------------------
-    # Avatar State
-    # ------------------------------------------------
+    # ========================================================
+    # COMPATIBILITY
+    # ========================================================
 
-    def set_state(self, state: str):
-        """
-        idle
-        listening
-        thinking
-        speaking
-        success
-        error
-        """
+    def set_avatar_state(
+        self,
+        state: str,
+    ):
 
-        self.current_state = state.lower()
+        self.set_state(
+            state
+        )
 
-        if state == "listening":
+    # ========================================================
+    # LISTENING
+    # ========================================================
 
-            self.shadow.setBlurRadius(120)
+    def set_listening(
+        self,
+        listening: bool,
+    ):
 
-            self.shadow.setColor(
-                QColor("#8B5CF6")
-            )
+        self.set_state(
+            "hello"
+        )
 
-        elif state == "thinking":
+    # ========================================================
+    # THINKING LAPTOP
+    # ========================================================
 
-            self.shadow.setBlurRadius(125)
+    def set_thinking_laptop(
+        self,
+    ):
 
-            self.shadow.setColor(
-                QColor("#F59E0B")
-            )
+        self.set_state(
+            "hello"
+        )
 
-        elif state == "speaking":
+    # ========================================================
+    # THINKING AI
+    # ========================================================
 
-            self.shadow.setBlurRadius(130)
+    def set_thinking_ai(
+        self,
+    ):
 
-            self.shadow.setColor(
-                QColor("#3B82F6")
-            )
+        self.set_state(
+            "hello"
+        )
 
-        elif state == "success":
+    # ========================================================
+    # SPEAKING
+    # ========================================================
 
-            self.shadow.setBlurRadius(120)
+    def set_speaking(
+        self,
+    ):
 
-            self.shadow.setColor(
-                QColor("#22C55E")
-            )
+        self.set_state(
+            "hello"
+        )
 
-        elif state == "error":
+    # ========================================================
+    # SUCCESS
+    # ========================================================
 
-            self.shadow.setBlurRadius(120)
+    def set_success(
+        self,
+    ):
 
-            self.shadow.setColor(
-                QColor("#EF4444")
-            )
+        self.set_state(
+            "hello"
+        )
 
-        else:
+    # ========================================================
+    # ERROR
+    # ========================================================
 
-            self.shadow.setBlurRadius(85)
+    def set_error(
+        self,
+    ):
 
-            self.shadow.setOffset(0,0)
+        self.set_state(
+            "hello"
+        )
 
-            self.shadow.setColor(
-                QColor(180,150,255,150)
-            )
+    # ========================================================
+    # CURRENT STATE
+    # ========================================================
 
-    # ------------------------------------------------
-    # Change Avatar
-    # ------------------------------------------------
-
-    def set_avatar(self, image_path: str):
-
-        if os.path.exists(image_path):
-
-            self.avatar_pixmap = QPixmap(image_path)
-
-            self.update_avatar()
-
-    # ------------------------------------------------
-    # Placeholder Hooks
-    # ------------------------------------------------
-
-    def set_mouth_open(self, value: float):
-        """
-        Future Lip-Sync Hook.
-        """
-        pass
-
-    def set_eye_state(self, closed: bool):
-        """
-        Future Blink Hook.
-        """
-        pass
-
-    def set_expression(self, expression: str):
-        """
-        Future Expression Hook.
-        """
-        pass
-
-    # ------------------------------------------------
-    # Public API
-    # ------------------------------------------------
-
-    def current_avatar_state(self):
+    def current_avatar_state(
+        self,
+    ):
 
         return self.current_state
+
+    # ========================================================
+    # STOP
+    # ========================================================
+
+    def stop(
+        self,
+    ):
+
+        pass
+
+    # ========================================================
+    # CLEANUP
+    # ========================================================
+
+    def closeEvent(
+        self,
+        event,
+    ):
+
+        self.stop()
+
+        super().closeEvent(
+            event
+        )
