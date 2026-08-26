@@ -1185,7 +1185,8 @@ class MainWindow(QMainWindow):
 
     def _unlock_after_speech(
         self,
-        restart_wake=True
+        restart_wake=True,
+        terminal_avatar_state="idle"
     ):
         """
         Keep the microphone locked while ASTRA is speaking,
@@ -1216,6 +1217,13 @@ class MainWindow(QMainWindow):
                 return
 
             self.unlock_microphone()
+
+            # Command/TTS lifecycle is complete. Keep the terminal
+            # result visible (success/error) after speech ends.
+            # Normal lifecycle still returns to the idle slideshow.
+            self._set_avatar_state(
+                terminal_avatar_state or "idle"
+            )
 
             try:
                 self.left_panel.set_speaking(
@@ -2591,10 +2599,15 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
+            # Show success immediately and keep it visible until the
+            # next command changes the avatar state.
+            self._set_avatar_state("success")
+
             # Dispatcher normally speaks successful replies itself.
             # Wait asynchronously instead of blocking the GUI.
             self._unlock_after_speech(
-                restart_wake=True
+                restart_wake=True,
+                terminal_avatar_state="success"
             )
 
             QTimer.singleShot(
@@ -2657,8 +2670,13 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+        # Show the command failure state for unsupported/failed local
+        # automation commands.
+        self._set_avatar_state("error")
+
         self._unlock_after_speech(
-            restart_wake=True
+            restart_wake=True,
+            terminal_avatar_state="error"
         )
 
         QTimer.singleShot(
@@ -2834,6 +2852,11 @@ class MainWindow(QMainWindow):
                 f"Command : {text}"
             )
 
+            # Multi-command execution is a desktop automation flow.
+            self._set_avatar_state(
+                "thinking_laptop"
+            )
+
             try:
 
                 self.status_label.setText(
@@ -2975,12 +2998,15 @@ class MainWindow(QMainWindow):
 
                         pass
 
+                    self._set_avatar_state("success")
+
                     self.tts.speak(
                         reply
                     )
 
                     self._unlock_after_speech(
-                        restart_wake=True
+                        restart_wake=True,
+                        terminal_avatar_state="success"
                     )
 
                     QTimer.singleShot(
@@ -3059,12 +3085,15 @@ class MainWindow(QMainWindow):
 
                     pass
 
+                self._set_avatar_state("error")
+
                 self.tts.speak(
                     failure_message
                 )
 
                 self._unlock_after_speech(
-                    restart_wake=True
+                    restart_wake=True,
+                    terminal_avatar_state="error"
                 )
 
                 QTimer.singleShot(
@@ -3117,12 +3146,15 @@ class MainWindow(QMainWindow):
 
                     pass
 
+                self._set_avatar_state("error")
+
                 self.tts.speak(
                     error_message
                 )
 
                 self._unlock_after_speech(
-                    restart_wake=True
+                    restart_wake=True,
+                    terminal_avatar_state="error"
                 )
 
                 return
@@ -3133,6 +3165,16 @@ class MainWindow(QMainWindow):
 
         intent = self.intent_detector.detect_intent(
             text
+        )
+
+        # ------------------------------------------
+        # Avatar Thinking Mode
+        # ------------------------------------------
+        # Decide only after intent detection so the image matches
+        # the real command route. ai_chat -> Gemini/AI, everything
+        # else -> local/desktop automation.
+        self._set_thinking_avatar_for_intent(
+            intent
         )
 
         # ------------------------------------------
@@ -3153,12 +3195,15 @@ class MainWindow(QMainWindow):
                 text
             )
 
+            self._set_avatar_state("success")
+
             self.tts.speak(
                 "Typed successfully."
             )
 
             self._unlock_after_speech(
-                restart_wake=True
+                restart_wake=True,
+                terminal_avatar_state="success"
             )
 
             self.status_label.setText(
@@ -3204,52 +3249,78 @@ class MainWindow(QMainWindow):
 
             self.lock_microphone()
 
-            ai_reply = self.gemini.generate_response(
-                text
-            )
-
-            self.mic_widget.update_ai_message(
-                ai_reply
-            )
-
             try:
-
-                self.left_panel.set_thinking(
-                    "Inactive"
+                ai_reply = self.gemini.generate_response(
+                    text
                 )
 
-                self.left_panel.set_speaking(
-                    "Speaking"
+                if not ai_reply or not str(ai_reply).strip():
+                    raise RuntimeError("Gemini returned an empty response")
+
+                ai_reply = str(ai_reply).strip()
+
+                self.mic_widget.update_ai_message(
+                    ai_reply
                 )
 
-            except Exception:
+                try:
+                    self.left_panel.set_thinking("Inactive")
+                    self.left_panel.set_speaking("Speaking")
+                except Exception:
+                    pass
 
-                pass
+                self._set_avatar_state("success")
 
-            self.tts.speak(
-                ai_reply
-            )
+                self.tts.speak(ai_reply)
 
-            self._unlock_after_speech(
-                restart_wake=True
-            )
+                self._unlock_after_speech(
+                    restart_wake=True,
+                    terminal_avatar_state="success"
+                )
 
-            self.status_label.setText(
-                "Status : Gemini AI"
-            )
+                self.status_label.setText(
+                    "Status : Gemini AI Completed"
+                )
+
+            except Exception as error:
+
+                print(f"Gemini Command Error : {error}")
+
+                error_message = (
+                    "Sorry, I could not understand or complete that request."
+                )
+
+                self.mic_widget.update_ai_message(error_message)
+                self.status_label.setText("Status : Gemini AI Error")
+                self.conversation_label.setText(
+                    f"Gemini Command Failed\n\n{text}"
+                )
+
+                try:
+                    self.left_panel.set_thinking("Inactive")
+                    self.left_panel.set_speaking("Speaking")
+                except Exception:
+                    pass
+
+                self._set_avatar_state("error")
+
+                try:
+                    self.tts.speak(error_message)
+                except Exception:
+                    pass
+
+                self._unlock_after_speech(
+                    restart_wake=True,
+                    terminal_avatar_state="error"
+                )
 
             QTimer.singleShot(
-
                 1400,
-
-                lambda: self.left_panel.set_speaking(
-                    "Silent"
-                )
-
+                lambda: self.left_panel.set_speaking("Silent")
             )
 
             return
-        
+
         # ---------------------------------
         # System Automation Commands
         # ---------------------------------
@@ -4616,9 +4687,11 @@ class MainWindow(QMainWindow):
         self,
         state: str,
     ):
-        """Safely update the image-based ASTRA avatar state."""
+        """Safely update both CenterPanelWidget and AvatarWidget."""
 
-        requested_state = str(state or "").strip().lower()
+        requested_state = str(
+            state or ""
+        ).strip().lower()
 
         state_map = {
             "hello": "hello",
@@ -4633,18 +4706,114 @@ class MainWindow(QMainWindow):
             "error": "error",
         }
 
-        avatar_state = state_map.get(requested_state, "idle")
-        center_panel = getattr(self, "center_panel", None)
+        avatar_state = state_map.get(
+            requested_state,
+            "idle",
+        )
 
-        if center_panel is None:
+        center_panel = getattr(
+            self,
+            "center_panel",
+            None,
+        )
+
+        # First update the center panel.
+        if center_panel is not None:
+
+            try:
+
+                center_panel.set_avatar_state(
+                    avatar_state
+                )
+
+            except RuntimeError:
+
+                pass
+
+            except Exception as error:
+
+                print(
+                    f"Center avatar state error: {error}"
+                )
+
+        # Compatibility fallback:
+        # directly update the real AvatarWidget.
+        avatar_widget = getattr(
+            self,
+            "avatar_widget",
+            None,
+        )
+
+        if avatar_widget is None and center_panel is not None:
+
+            avatar_widget = getattr(
+                center_panel,
+                "avatar_widget",
+                None,
+            )
+
+        if avatar_widget is None:
+
             return
 
         try:
-            center_panel.set_avatar_state(avatar_state)
+
+            if hasattr(
+                avatar_widget,
+                "set_state",
+            ):
+
+                avatar_widget.set_state(
+                    avatar_state
+                )
+
+            elif hasattr(
+                avatar_widget,
+                "set_avatar_state",
+            ):
+
+                avatar_widget.set_avatar_state(
+                    avatar_state
+                )
+
         except RuntimeError:
+
             return
+
         except Exception as error:
-            print(f"Avatar state error: {error}")
+
+            print(
+                f"Direct avatar state error: {error}"
+            )
+
+    def _set_thinking_avatar_for_intent(
+        self,
+        intent: str,
+    ):
+        """Select the correct thinking avatar for the recognized command."""
+
+        normalized_intent = (
+            str(intent or "")
+            .strip()
+            .lower()
+        )
+
+        # Gemini/free-form AI requests use the AI thinking image.
+        if normalized_intent == "ai_chat":
+
+            self._set_avatar_state(
+                "thinking_ai"
+            )
+
+            return "thinking_ai"
+
+        # Every recognized desktop/file/folder/browser/system/application
+        # command is processed as an automation command.
+        self._set_avatar_state(
+            "thinking_laptop"
+        )
+
+        return "thinking_laptop"
 
     def _play_startup_greeting(self):
 
@@ -4722,7 +4891,7 @@ class MainWindow(QMainWindow):
             if self.tts is not None:
 
                 self.tts.speak(
-                    "I am Dheepthi, Hello Naresh"
+                    "Hello Naresh, I am Dheepthi, Welcome"
                 )
 
                 print(
@@ -4805,9 +4974,13 @@ class MainWindow(QMainWindow):
         """
         Startup greeting is complete.
 
-        HELLO avatar is no longer needed.
+        HELLO state is finished.
 
-        Hide and destroy it permanently.
+        Keep the avatar widget alive and immediately
+        switch to idle_primary.
+
+        After 3 seconds AvatarWidget automatically
+        starts the random idle slideshow.
         """
 
         print(
@@ -4823,7 +4996,7 @@ class MainWindow(QMainWindow):
         if center_panel is None:
 
             print(
-                "[STARTUP] CenterPanel already unavailable."
+                "[STARTUP] CenterPanel not available."
             )
 
             return
@@ -4831,48 +5004,61 @@ class MainWindow(QMainWindow):
         try:
 
             # --------------------------------------------------
-            # Stop avatar safely
+            # IMPORTANT
+            #
+            # Do NOT hide the center panel.
+            # Do NOT remove it from the layout.
+            # Do NOT delete the avatar widget.
+            #
+            # UI must never become empty.
             # --------------------------------------------------
 
-            if hasattr(
-                center_panel,
-                "stop_avatar"
-            ):
-
-                center_panel.stop_avatar()
+            center_panel.show()
 
             # --------------------------------------------------
-            # Hide avatar / center panel
+            # HELLO finished
+            #
+            # Immediately show idle_primary.png.
+            #
+            # AvatarWidget handles:
+            #
+            # idle_primary
+            #       ↓
+            # wait 3 seconds
+            #       ↓
+            # random idle_01 ... idle_09
+            #       ↓
+            # every 3 seconds
             # --------------------------------------------------
 
-            center_panel.hide()
+            center_panel.set_avatar_state(
+                "idle"
+            )
 
             # --------------------------------------------------
-            # Remove from layout
+            # Keep microphone above avatar
             # --------------------------------------------------
 
-            parent_layout = center_panel.parentWidget()
+            mic_widget = getattr(
+                self,
+                "mic_widget",
+                None
+            )
 
-            if parent_layout is not None:
+            if mic_widget is not None:
 
-                layout = parent_layout.layout()
-
-                if layout is not None:
-
-                    layout.removeWidget(
-                        center_panel
-                    )
-
-            # --------------------------------------------------
-            # Destroy widget
-            # --------------------------------------------------
-
-            center_panel.deleteLater()
-
-            self.center_panel = None
+                mic_widget.raise_()
 
             print(
-                "[STARTUP] HELLO avatar destroyed."
+                "[STARTUP] HELLO state finished."
+            )
+
+            print(
+                "[STARTUP] idle_primary started."
+            )
+
+            print(
+                "[STARTUP] Idle slideshow is active."
             )
 
             print(
@@ -4882,7 +5068,7 @@ class MainWindow(QMainWindow):
         except Exception as error:
 
             print(
-                f"Startup Avatar Cleanup Error : "
+                f"Startup Avatar Transition Error : "
                 f"{error}"
             )
 
@@ -5103,6 +5289,15 @@ class MainWindow(QMainWindow):
 
         self.status_label.setText(
             "Status : Listening..."
+        )
+
+        # ---------------------------------
+        # Avatar: switch immediately when
+        # the microphone is clicked.
+        # ---------------------------------
+
+        self._set_avatar_state(
+            "listening"
         )
 
         try:
@@ -5364,6 +5559,15 @@ class MainWindow(QMainWindow):
             "Status : Listening..."
         )
 
+        # ---------------------------------
+        # Avatar: keep LISTENING visible
+        # during actual microphone capture.
+        # ---------------------------------
+
+        self._set_avatar_state(
+            "listening"
+        )
+
         try:
 
             self.mic_widget.show_listening()
@@ -5580,9 +5784,11 @@ class MainWindow(QMainWindow):
                 "Status : Processing..."
             )
 
-            self._set_avatar_state(
-                "thinking_ai"
-            )
+            # IMPORTANT:
+            # Do not force thinking_ai here. command_ready/process_command()
+            # already detects the intent and selects thinking_laptop or
+            # thinking_ai. Keeping that state prevents this finished callback
+            # from overwriting the correct avatar.
 
             try:
 
