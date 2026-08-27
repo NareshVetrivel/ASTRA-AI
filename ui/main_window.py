@@ -697,6 +697,14 @@ class MainWindow(QMainWindow):
         # Compatibility reference for backend code.
         self.avatar_widget = self.center_panel.avatar_widget
 
+        # --------------------------------------------------
+        # Thinking Avatar Synchronization
+        # --------------------------------------------------
+        # The left-panel THINKING status and the center avatar
+        # must always move together.  This remembers whether the
+        # current command is an AI task or a desktop automation task.
+        self._thinking_avatar_mode = "thinking_ai"
+
         print(
             "[AVATAR] Image-based CenterPanelWidget added to main window."
         )
@@ -1017,7 +1025,7 @@ class MainWindow(QMainWindow):
                 "Offline"
             )
 
-            self.left_panel.set_thinking(
+            self._set_thinking_state(
                 "Initializing"
             )
 
@@ -1348,7 +1356,7 @@ class MainWindow(QMainWindow):
                     "Select File Number"
                 )
 
-                self.left_panel.set_thinking(
+                self._set_thinking_state(
                     "Waiting for Selection"
                 )
 
@@ -1422,7 +1430,7 @@ class MainWindow(QMainWindow):
                 "Listening for Number"
             )
 
-            self.left_panel.set_thinking(
+            self._set_thinking_state(
                 "Waiting for Selection"
             )
 
@@ -1536,7 +1544,7 @@ class MainWindow(QMainWindow):
                     "Waiting for Number"
                 )
 
-                self.left_panel.set_thinking(
+                self._set_thinking_state(
                     "Select File"
                 )
 
@@ -1683,7 +1691,7 @@ class MainWindow(QMainWindow):
                 "Idle"
             )
 
-            self.left_panel.set_thinking(
+            self._set_thinking_state(
                 "Preparing Confirmation"
             )
 
@@ -2000,7 +2008,7 @@ class MainWindow(QMainWindow):
             self.left_panel.set_listening(
                 "Say Yes or No"
             )
-            self.left_panel.set_thinking(
+            self._set_thinking_state(
                 "Waiting for Confirmation"
             )
             self.left_panel.set_speaking(
@@ -2095,7 +2103,7 @@ class MainWindow(QMainWindow):
             self.left_panel.set_listening(
                 "Waiting for Confirmation"
             )
-            self.left_panel.set_thinking(
+            self._set_thinking_state(
                 "Confirmation Required"
             )
             self.left_panel.set_speaking(
@@ -2147,7 +2155,7 @@ class MainWindow(QMainWindow):
             self.left_panel.set_listening(
                 "Idle"
             )
-            self.left_panel.set_thinking(
+            self._set_thinking_state(
                 "Inactive"
             )
             self.left_panel.set_speaking(
@@ -2203,7 +2211,7 @@ class MainWindow(QMainWindow):
                 self.left_panel.set_listening(
                     "Waiting for Confirmation"
                 )
-                self.left_panel.set_thinking(
+                self._set_thinking_state(
                     "Say Yes or No"
                 )
                 self.left_panel.set_speaking(
@@ -2259,7 +2267,7 @@ class MainWindow(QMainWindow):
             self.left_panel.set_listening(
                 "Idle"
             )
-            self.left_panel.set_thinking(
+            self._set_thinking_state(
                 "Executing"
             )
             self.left_panel.set_speaking(
@@ -2507,7 +2515,7 @@ class MainWindow(QMainWindow):
                     "Waiting for File Number"
                 )
 
-                self.left_panel.set_thinking(
+                self._set_thinking_state(
                     "Select a File"
                 )
 
@@ -2589,7 +2597,7 @@ class MainWindow(QMainWindow):
                 self.left_panel.set_listening(
                     "Idle"
                 )
-                self.left_panel.set_thinking(
+                self._set_thinking_state(
                     "Inactive"
                 )
                 self.left_panel.set_speaking(
@@ -2648,7 +2656,7 @@ class MainWindow(QMainWindow):
             self.left_panel.set_listening(
                 "Idle"
             )
-            self.left_panel.set_thinking(
+            self._set_thinking_state(
                 "Inactive"
             )
             self.left_panel.set_speaking(
@@ -2809,40 +2817,42 @@ class MainWindow(QMainWindow):
         )
 
         # ------------------------------------------
-        # Thinking State
-        # ------------------------------------------
-
-        try:
-
-            self.left_panel.set_listening(
-                "Idle"
-            )
-
-            self.left_panel.set_thinking(
-                "Thinking"
-            )
-
-            self.left_panel.set_speaking(
-                "Silent"
-            )
-
-        except Exception:
-
-            pass
-
-        # ------------------------------------------
         # Multi-Command Detection
         # ------------------------------------------
+        #
+        # IMPORTANT:
+        # Do not show a generic thinking state before we know
+        # whether this is an automation command or a Gemini chat.
+        # A generic state could reuse the previous AI mode and briefly
+        # display thinking_ai.png for an automation command.
+        # ------------------------------------------
+
+        is_multi_command = False
 
         if (
             self.multi_command_planner
             and
             self.multi_command_executor
-            and
-            self.multi_command_planner.is_multi_command(
-                text
-            )
         ):
+
+            try:
+
+                is_multi_command = (
+                    self.multi_command_planner
+                    .is_multi_command(
+                        text
+                    )
+                )
+
+            except Exception as error:
+
+                print(
+                    f"Multi-Command Detection Error : {error}"
+                )
+
+                is_multi_command = False
+
+        if is_multi_command:
 
             print(
                 "\n========== MULTI COMMAND =========="
@@ -2853,6 +2863,10 @@ class MainWindow(QMainWindow):
             )
 
             # Multi-command execution is a desktop automation flow.
+            self._thinking_avatar_mode = (
+                "thinking_laptop"
+            )
+
             self._set_avatar_state(
                 "thinking_laptop"
             )
@@ -2873,8 +2887,9 @@ class MainWindow(QMainWindow):
                         "Idle"
                     )
 
-                    self.left_panel.set_thinking(
-                        "Planning"
+                    self._set_thinking_state(
+                        "Planning",
+                        avatar_state="thinking_laptop",
                     )
 
                     self.left_panel.set_speaking(
@@ -2984,7 +2999,7 @@ class MainWindow(QMainWindow):
                             "Idle"
                         )
 
-                        self.left_panel.set_thinking(
+                        self._set_thinking_state(
                             "Inactive"
                         )
 
@@ -3073,7 +3088,7 @@ class MainWindow(QMainWindow):
                         "Idle"
                     )
 
-                    self.left_panel.set_thinking(
+                    self._set_thinking_state(
                         "Inactive"
                     )
 
@@ -3134,7 +3149,7 @@ class MainWindow(QMainWindow):
                         "Idle"
                     )
 
-                    self.left_panel.set_thinking(
+                    self._set_thinking_state(
                         "Inactive"
                     )
 
@@ -3173,9 +3188,29 @@ class MainWindow(QMainWindow):
         # Decide only after intent detection so the image matches
         # the real command route. ai_chat -> Gemini/AI, everything
         # else -> local/desktop automation.
-        self._set_thinking_avatar_for_intent(
-            intent
+        thinking_avatar = (
+            self._set_thinking_avatar_for_intent(
+                intent
+            )
         )
+
+        try:
+
+            self.left_panel.set_listening(
+                "Idle"
+            )
+
+            self._set_thinking_state(
+                "Thinking",
+                avatar_state=thinking_avatar,
+            )
+
+            self.left_panel.set_speaking(
+                "Silent"
+            )
+
+        except Exception:
+            pass
 
         # ------------------------------------------
         # Typing Mode
@@ -3227,7 +3262,7 @@ class MainWindow(QMainWindow):
                     "Idle"
                 )
 
-                self.left_panel.set_thinking(
+                self._set_thinking_state(
                     "Inactive"
                 )
 
@@ -3264,12 +3299,23 @@ class MainWindow(QMainWindow):
                 )
 
                 try:
-                    self.left_panel.set_thinking("Inactive")
+                    self._set_thinking_state("Inactive")
                     self.left_panel.set_speaking("Speaking")
                 except Exception:
                     pass
 
-                self._set_avatar_state("success")
+                # AI / Gemini response flow:
+                #
+                # thinking_ai
+                #       ↓
+                # speaking
+                #       ↓
+                # TTS completes
+                #       ↓
+                # success
+                #       ↓
+                # AvatarWidget automatically returns to idle
+                self._set_avatar_state("speaking")
 
                 self.tts.speak(ai_reply)
 
@@ -3297,12 +3343,15 @@ class MainWindow(QMainWindow):
                 )
 
                 try:
-                    self.left_panel.set_thinking("Inactive")
+                    self._set_thinking_state("Inactive")
                     self.left_panel.set_speaking("Speaking")
                 except Exception:
                     pass
 
-                self._set_avatar_state("error")
+                # Keep the avatar in SPEAKING state while the
+                # AI error reply is being spoken. The terminal ERROR
+                # state is applied after TTS completion.
+                self._set_avatar_state("speaking")
 
                 try:
                     self.tts.speak(error_message)
@@ -3728,7 +3777,7 @@ class MainWindow(QMainWindow):
                 "Idle"
             )
 
-            self.left_panel.set_thinking(
+            self._set_thinking_state(
                 "Thinking"
             )
 
@@ -4063,7 +4112,7 @@ class MainWindow(QMainWindow):
                     "Waiting for File Number"
                 )
 
-                self.left_panel.set_thinking(
+                self._set_thinking_state(
                     "Select a File"
                 )
 
@@ -4247,7 +4296,7 @@ class MainWindow(QMainWindow):
                 "Idle"
             )
 
-            self.left_panel.set_thinking(
+            self._set_thinking_state(
                 "Inactive"
             )
 
@@ -4338,7 +4387,7 @@ class MainWindow(QMainWindow):
 
         try:
 
-            self.left_panel.set_thinking(
+            self._set_thinking_state(
                 message
             )
 
@@ -4645,7 +4694,7 @@ class MainWindow(QMainWindow):
                 "Waiting for DHEEPTHI"
             )
 
-            self.left_panel.set_thinking(
+            self._set_thinking_state(
                 "Inactive"
             )
 
@@ -4683,6 +4732,81 @@ class MainWindow(QMainWindow):
                 self.start_wake_word_worker
             )
 
+    def _set_thinking_state(
+        self,
+        status="Thinking",
+        avatar_state=None,
+    ):
+        """
+        Keep the left THINKING tile and center avatar synchronized.
+
+        Automation commands use thinking_laptop.
+        Gemini / AI chat uses thinking_ai.
+
+        Inactive/initializing terminal states do not force a thinking
+        avatar, preventing stale thinking images from replacing the
+        current listening/speaking/success/error state.
+        """
+
+        if avatar_state:
+
+            normalized_avatar = (
+                str(avatar_state)
+                .strip()
+                .lower()
+            )
+
+            if normalized_avatar in {
+                "thinking_ai",
+                "thinking_laptop",
+            }:
+
+                self._thinking_avatar_mode = (
+                    normalized_avatar
+                )
+
+        try:
+
+            self.left_panel.set_thinking(
+                status
+            )
+
+        except RuntimeError:
+
+            return
+
+        except Exception as error:
+
+            print(
+                f"Thinking panel state error: {error}"
+            )
+
+            return
+
+        normalized_status = (
+            str(status or "")
+            .strip()
+            .lower()
+        )
+
+        # These are non-active informational states.
+        if normalized_status in {
+            "",
+            "inactive",
+            "offline",
+            "initializing",
+            "idle",
+            "silent",
+        }:
+
+            return
+
+        # Active thinking/planning/processing state:
+        # immediately update the center avatar as well.
+        self._set_avatar_state(
+            self._thinking_avatar_mode
+        )
+
     def _set_avatar_state(
         self,
         state: str,
@@ -4711,24 +4835,42 @@ class MainWindow(QMainWindow):
             "idle",
         )
 
+        if avatar_state in {
+            "thinking_ai",
+            "thinking_laptop",
+        }:
+
+            self._thinking_avatar_mode = (
+                avatar_state
+            )
+
         center_panel = getattr(
             self,
             "center_panel",
             None,
         )
 
-        # First update the center panel.
+        # Prefer the CenterPanel API. It already owns and forwards
+        # avatar state changes to the real AvatarWidget. Calling both
+        # routes can restart temporary SUCCESS / ERROR timers twice.
         if center_panel is not None:
 
             try:
 
-                center_panel.set_avatar_state(
-                    avatar_state
-                )
+                if hasattr(
+                    center_panel,
+                    "set_avatar_state",
+                ):
+
+                    center_panel.set_avatar_state(
+                        avatar_state
+                    )
+
+                    return
 
             except RuntimeError:
 
-                pass
+                return
 
             except Exception as error:
 
@@ -4736,8 +4878,8 @@ class MainWindow(QMainWindow):
                     f"Center avatar state error: {error}"
                 )
 
-        # Compatibility fallback:
-        # directly update the real AvatarWidget.
+        # Compatibility fallback for layouts where the real
+        # AvatarWidget is exposed directly on MainWindow.
         avatar_widget = getattr(
             self,
             "avatar_widget",
@@ -4801,6 +4943,10 @@ class MainWindow(QMainWindow):
         # Gemini/free-form AI requests use the AI thinking image.
         if normalized_intent == "ai_chat":
 
+            self._thinking_avatar_mode = (
+                "thinking_ai"
+            )
+
             self._set_avatar_state(
                 "thinking_ai"
             )
@@ -4809,6 +4955,10 @@ class MainWindow(QMainWindow):
 
         # Every recognized desktop/file/folder/browser/system/application
         # command is processed as an automation command.
+        self._thinking_avatar_mode = (
+            "thinking_laptop"
+        )
+
         self._set_avatar_state(
             "thinking_laptop"
         )
@@ -4828,9 +4978,9 @@ class MainWindow(QMainWindow):
                     ↓
             Wait until TTS finishes
                     ↓
-            Hide HELLO avatar permanently
+            Switch to IDLE PRIMARY
                     ↓
-            Delete avatar widget
+            AvatarWidget starts random idle slideshow
         """
 
         try:
@@ -5106,7 +5256,7 @@ class MainWindow(QMainWindow):
                 "Offline"
             )
 
-            self.left_panel.set_thinking(
+            self._set_thinking_state(
                 "Error"
             )
 
@@ -5311,7 +5461,7 @@ class MainWindow(QMainWindow):
                 "Listening"
             )
 
-            self.left_panel.set_thinking(
+            self._set_thinking_state(
                 "Inactive"
             )
 
@@ -5429,7 +5579,7 @@ class MainWindow(QMainWindow):
                 "Listening"
             )
 
-            self.left_panel.set_thinking(
+            self._set_thinking_state(
                 "Inactive"
             )
 
@@ -5580,7 +5730,7 @@ class MainWindow(QMainWindow):
                 "Listening"
             )
 
-            self.left_panel.set_thinking(
+            self._set_thinking_state(
                 "Inactive"
             )
 
@@ -5701,7 +5851,7 @@ class MainWindow(QMainWindow):
                         "Select File Number"
                     )
 
-                    self.left_panel.set_thinking(
+                    self._set_thinking_state(
                         "Waiting for Selection"
                     )
 
@@ -5750,7 +5900,7 @@ class MainWindow(QMainWindow):
                         "Say Yes or No"
                     )
 
-                    self.left_panel.set_thinking(
+                    self._set_thinking_state(
                         "Waiting for Confirmation"
                     )
 
@@ -5796,8 +5946,9 @@ class MainWindow(QMainWindow):
                     "Idle"
                 )
 
-                self.left_panel.set_thinking(
-                    "Thinking"
+                self._set_thinking_state(
+                    "Thinking",
+                    avatar_state="thinking_laptop",
                 )
 
                 self.left_panel.set_speaking(
@@ -5854,7 +6005,7 @@ class MainWindow(QMainWindow):
                         "Waiting for DHEEPTHI"
                     )
 
-                    self.left_panel.set_thinking(
+                    self._set_thinking_state(
                         "Inactive"
                     )
 
@@ -6027,7 +6178,7 @@ class MainWindow(QMainWindow):
                 "Waiting for DHEEPTHI"
             )
 
-            self.left_panel.set_thinking(
+            self._set_thinking_state(
                 "Inactive"
             )
 
@@ -6324,8 +6475,9 @@ class MainWindow(QMainWindow):
                         "Text Command"
                     )
 
-                    self.left_panel.set_thinking(
-                        "Planning"
+                    self._set_thinking_state(
+                        "Planning",
+                        avatar_state="thinking_laptop",
                     )
 
                     self.left_panel.set_speaking(
@@ -6382,8 +6534,9 @@ class MainWindow(QMainWindow):
 
                 try:
 
-                    self.left_panel.set_thinking(
-                        "Executing"
+                    self._set_thinking_state(
+                        "Executing",
+                        avatar_state="thinking_laptop",
                     )
 
                 except Exception:
@@ -6471,7 +6624,7 @@ class MainWindow(QMainWindow):
                             "Text Command"
                         )
 
-                        self.left_panel.set_thinking(
+                        self._set_thinking_state(
                             "Inactive"
                         )
 
@@ -6549,7 +6702,7 @@ class MainWindow(QMainWindow):
                         "Text Command"
                     )
 
-                    self.left_panel.set_thinking(
+                    self._set_thinking_state(
                         "Inactive"
                     )
 
@@ -6605,7 +6758,7 @@ class MainWindow(QMainWindow):
 
                 try:
 
-                    self.left_panel.set_thinking(
+                    self._set_thinking_state(
                         "Inactive"
                     )
 
@@ -6766,7 +6919,7 @@ class MainWindow(QMainWindow):
 
         try:
 
-            self.left_panel.set_thinking(
+            self._set_thinking_state(
                 "Thinking"
             )
 
@@ -7334,7 +7487,7 @@ class MainWindow(QMainWindow):
                     "Text Command"
                 )
 
-                self.left_panel.set_thinking(
+                self._set_thinking_state(
                     "Executing"
                 )
 
@@ -7410,7 +7563,7 @@ class MainWindow(QMainWindow):
 
             try:
 
-                self.left_panel.set_thinking(
+                self._set_thinking_state(
                     "Inactive"
                 )
 
@@ -7650,7 +7803,7 @@ class MainWindow(QMainWindow):
                     "Waiting for File Number"
                 )
 
-                self.left_panel.set_thinking(
+                self._set_thinking_state(
                     "Select a File"
                 )
 
@@ -7790,7 +7943,7 @@ class MainWindow(QMainWindow):
 
             try:
 
-                self.left_panel.set_thinking(
+                self._set_thinking_state(
                     "Inactive"
                 )
 
@@ -7836,7 +7989,7 @@ class MainWindow(QMainWindow):
 
         try:
 
-            self.left_panel.set_thinking(
+            self._set_thinking_state(
                 "Inactive"
             )
 
@@ -7911,7 +8064,7 @@ class MainWindow(QMainWindow):
 
             try:
 
-                self.left_panel.set_thinking(
+                self._set_thinking_state(
                     "Inactive"
                 )
 
@@ -8049,7 +8202,7 @@ class MainWindow(QMainWindow):
 
         try:
 
-            self.left_panel.set_thinking(
+            self._set_thinking_state(
                 "Inactive"
             )
 
@@ -8118,7 +8271,7 @@ class MainWindow(QMainWindow):
 
         try:
 
-            self.left_panel.set_thinking(
+            self._set_thinking_state(
                 "Inactive"
             )
 
@@ -8198,7 +8351,7 @@ class MainWindow(QMainWindow):
 
             try:
 
-                self.left_panel.set_thinking(
+                self._set_thinking_state(
                     "Inactive"
                 )
 

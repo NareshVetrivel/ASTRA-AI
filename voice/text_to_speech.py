@@ -10,23 +10,17 @@ Fallback order
 2. Piper Offline TTS
 3. Windows SAPI / pyttsx3
 
-IMPORTANT
----------
+Avatar integration
+------------------
+speech_started(text)
+    -> Avatar should switch to "speaking"
+
+speech_finished(success)
+    -> Avatar controller can continue with
+       success / error / idle flow.
+
 Only one speech request is allowed to control the
 TTS pipeline at a time.
-
-When a new speech request starts:
-
-    Old speech request
-        ↓
-    Invalidated
-        ↓
-    All providers stopped
-        ↓
-    New speech request starts
-
-This prevents multiple TTS worker threads from
-continuing into fallback providers simultaneously.
 """
 
 from __future__ import annotations
@@ -34,10 +28,12 @@ from __future__ import annotations
 import threading
 import time
 
+from PySide6.QtCore import QObject, Signal
+
 from voice.edge_tts_engine import EdgeTTSEngine
 
 
-class TextToSpeech:
+class TextToSpeech(QObject):
     """
     Central Text-To-Speech Manager.
 
@@ -51,15 +47,27 @@ class TextToSpeech:
             ↓ failure
         No speech
 
-    Only the latest speech request is allowed to
-    continue through the provider fallback chain.
+    Signals are emitted from the TTS manager so the UI can
+    safely switch the avatar state through Qt's queued signal
+    delivery.
+
+    Only the latest speech request is allowed to continue.
     """
+
+    # ======================================================
+    # QT SIGNALS
+    # ======================================================
+
+    speech_started = Signal(str)
+    speech_finished = Signal(bool)
 
     # ======================================================
     # INITIALIZATION
     # ======================================================
 
-    def __init__(self):
+    def __init__(self, parent=None):
+
+        super().__init__(parent)
 
         # --------------------------------------------------
         # PROVIDER ENGINES
@@ -68,17 +76,12 @@ class TextToSpeech:
         self.edge_engine = EdgeTTSEngine()
 
         self.piper_engine = None
-
         self.pyttsx3_engine = None
 
         self._load_fallback_engines()
 
         # --------------------------------------------------
         # COMPATIBILITY
-        #
-        # Existing ASTRA code may access self.engine.
-        #
-        # Keep Edge as the primary engine reference.
         # --------------------------------------------------
 
         self.engine = self.edge_engine
@@ -88,7 +91,6 @@ class TextToSpeech:
         # --------------------------------------------------
 
         self.enabled = True
-
         self._closing = False
 
         self.lock = threading.RLock()
@@ -101,15 +103,6 @@ class TextToSpeech:
 
         # --------------------------------------------------
         # REQUEST ID
-        #
-        # Every speech request gets a unique ID.
-        #
-        # When a new request starts:
-        #
-        # request_id increases
-        #
-        # Older workers become invalid and are not
-        # allowed to continue into fallback providers.
         # --------------------------------------------------
 
         self._request_id = 0
@@ -118,69 +111,41 @@ class TextToSpeech:
     # LOAD FALLBACK ENGINES
     # ======================================================
 
-    def _load_fallback_engines(
-        self,
-    ):
+    def _load_fallback_engines(self):
         """
         Load Piper and pyttsx3 safely.
-
-        If either module is temporarily unavailable,
-        ASTRA continues running with the providers that
-        are available.
         """
-
-        # --------------------------------------------------
-        # PIPER
-        # --------------------------------------------------
 
         try:
 
-            from voice.piper_tts_engine import (
-                PiperTTSEngine
-            )
+            from voice.piper_tts_engine import PiperTTSEngine
 
-            self.piper_engine = (
-                PiperTTSEngine()
-            )
+            self.piper_engine = PiperTTSEngine()
 
-            print(
-                "Piper TTS Engine Ready."
-            )
+            print("Piper TTS Engine Ready.")
 
         except Exception as error:
 
             self.piper_engine = None
 
             print(
-                f"Piper TTS Engine Unavailable : "
-                f"{error}"
+                f"Piper TTS Engine Unavailable : {error}"
             )
-
-        # --------------------------------------------------
-        # PYTTSX3
-        # --------------------------------------------------
 
         try:
 
-            from voice.pyttsx3_tts_engine import (
-                Pyttsx3TTSEngine
-            )
+            from voice.pyttsx3_tts_engine import Pyttsx3TTSEngine
 
-            self.pyttsx3_engine = (
-                Pyttsx3TTSEngine()
-            )
+            self.pyttsx3_engine = Pyttsx3TTSEngine()
 
-            print(
-                "pyttsx3 TTS Engine Ready."
-            )
+            print("pyttsx3 TTS Engine Ready.")
 
         except Exception as error:
 
             self.pyttsx3_engine = None
 
             print(
-                f"pyttsx3 TTS Engine Unavailable : "
-                f"{error}"
+                f"pyttsx3 TTS Engine Unavailable : {error}"
             )
 
     # ======================================================
@@ -191,80 +156,40 @@ class TextToSpeech:
         self,
         request_id: int,
     ) -> bool:
-        """
-        Return True only when this worker still owns
-        the active speech request.
-        """
 
         if self._closing:
-
             return False
 
         if self._stop_event.is_set():
-
             return False
 
         with self.lock:
 
-            return (
-                request_id
-                == self._request_id
-            )
+            return request_id == self._request_id
 
     # ======================================================
     # STOP ALL PROVIDERS
     # ======================================================
 
-    def _stop_all_providers(
-        self,
-    ):
+    def _stop_all_providers(self):
         """
         Stop audio from every available provider.
-
-        This method does not modify request IDs.
         """
 
-        # --------------------------------------------------
-        # EDGE
-        # --------------------------------------------------
+        for engine in (
+            self.edge_engine,
+            self.piper_engine,
+            self.pyttsx3_engine,
+        ):
 
-        try:
+            try:
 
-            if self.edge_engine is not None:
+                if engine is not None:
+                    engine.stop()
 
-                self.edge_engine.stop()
+            except Exception:
 
-        except Exception:
-
-            pass
-
-        # --------------------------------------------------
-        # PIPER
-        # --------------------------------------------------
-
-        try:
-
-            if self.piper_engine is not None:
-
-                self.piper_engine.stop()
-
-        except Exception:
-
-            pass
-
-        # --------------------------------------------------
-        # PYTTSX3
-        # --------------------------------------------------
-
-        try:
-
-            if self.pyttsx3_engine is not None:
-
-                self.pyttsx3_engine.stop()
-
-        except Exception:
-
-            pass
+                pass
 
     # ======================================================
     # SPEAK
@@ -275,72 +200,48 @@ class TextToSpeech:
         text: str,
     ):
         """
-        Speak text using the fallback chain.
+        Start speech asynchronously.
 
-        This method is non-blocking.
+        The speech_started signal is emitted by the worker
+        before the provider begins speaking.
 
-        Only the latest speech request is allowed
-        to continue.
-
-        Provider order:
-
-            Edge
-            Piper
-            pyttsx3
+        The speech_finished signal is emitted only by the
+        currently active request.
         """
 
         if self._closing:
-
             return None
 
         if not self.enabled:
-
             return None
 
         if text is None:
-
             return None
 
-        text = str(
-            text
-        ).strip()
+        text = str(text).strip()
 
         if not text:
-
             return None
 
         with self.lock:
 
-            # ----------------------------------------------
-            # INVALIDATE PREVIOUS WORKER
-            #
-            # Increasing request ID ensures any previous
-            # worker becomes invalid.
-            # ----------------------------------------------
+            # Invalidate previous worker.
 
             self._request_id += 1
 
             request_id = self._request_id
 
-            # ----------------------------------------------
-            # STOP PREVIOUS AUDIO
-            # ----------------------------------------------
+            # Stop previous audio.
 
             self._stop_event.set()
 
             self._stop_all_providers()
 
-            # ----------------------------------------------
-            # PREPARE NEW REQUEST
-            # ----------------------------------------------
+            # Prepare new request.
 
             self._stop_event.clear()
 
             self._speaking = True
-
-            # ----------------------------------------------
-            # START NEW WORKER
-            # ----------------------------------------------
 
             self.current_thread = threading.Thread(
 
@@ -353,10 +254,7 @@ class TextToSpeech:
 
                 daemon=True,
 
-                name=(
-                    f"ASTRA-TTS-"
-                    f"{request_id}"
-                ),
+                name=f"ASTRA-TTS-{request_id}",
             )
 
             self.current_thread.start()
@@ -375,62 +273,53 @@ class TextToSpeech:
         """
         Execute providers sequentially.
 
-        A provider must return True only when it
-        successfully completes speech.
+        IMPORTANT:
+        Avatar SPEAKING starts when this request actually
+        enters the active speech pipeline.
 
-        Before moving to another provider, the worker
-        verifies that it still owns the active request.
-
-        An older cancelled worker can never continue
-        into Piper or pyttsx3.
+        Avatar completion is emitted only after the current
+        request finishes successfully or all providers fail.
         """
+
+        completed_successfully = False
+
+        started_emitted = False
 
         try:
 
-            # ==================================================
-            # PROVIDER 1
-            # EDGE TTS
-            # ==================================================
-
-            if not self._is_request_active(
-                request_id
-            ):
-
+            if not self._is_request_active(request_id):
                 return
+
+            # --------------------------------------------------
+            # SPEAKING START
+            # --------------------------------------------------
+
+            self.speech_started.emit(text)
+
+            started_emitted = True
+
+            print("[TTS] Speech started.")
+
+            # ==================================================
+            # PROVIDER 1 — EDGE
+            # ==================================================
 
             if self.edge_engine is not None:
 
-                print(
-                    "\nTTS Provider : Edge TTS"
-                )
+                print("\nTTS Provider : Edge TTS")
 
                 try:
 
-                    success = (
-                        self.edge_engine.speak_blocking(
-                            text
-                        )
-                    )
+                    success = self.edge_engine.speak_blocking(text)
 
-                    # ------------------------------------------
-                    # IMPORTANT
-                    #
-                    # Before checking success or moving into
-                    # fallback, verify that this worker is still
-                    # the current request.
-                    # ------------------------------------------
-
-                    if not self._is_request_active(
-                        request_id
-                    ):
-
+                    if not self._is_request_active(request_id):
                         return
 
                     if success:
 
-                        print(
-                            "TTS Success : Edge TTS"
-                        )
+                        completed_successfully = True
+
+                        print("TTS Success : Edge TTS")
 
                         return
 
@@ -441,55 +330,35 @@ class TextToSpeech:
 
                 except Exception as error:
 
-                    if self._is_request_active(
-                        request_id
-                    ):
+                    if self._is_request_active(request_id):
 
                         print(
-                            f"Edge TTS Error : "
-                            f"{error}"
+                            f"Edge TTS Error : {error}"
                         )
 
             # ==================================================
-            # PROVIDER 2
-            # PIPER TTS
+            # PROVIDER 2 — PIPER
             # ==================================================
 
-            if not self._is_request_active(
-                request_id
-            ):
-
+            if not self._is_request_active(request_id):
                 return
 
             if self.piper_engine is not None:
 
-                print(
-                    "TTS Provider : Piper TTS"
-                )
+                print("TTS Provider : Piper TTS")
 
                 try:
 
-                    success = (
-                        self.piper_engine.speak_blocking(
-                            text
-                        )
-                    )
+                    success = self.piper_engine.speak_blocking(text)
 
-                    # ------------------------------------------
-                    # Verify worker ownership before fallback.
-                    # ------------------------------------------
-
-                    if not self._is_request_active(
-                        request_id
-                    ):
-
+                    if not self._is_request_active(request_id):
                         return
 
                     if success:
 
-                        print(
-                            "TTS Success : Piper TTS"
-                        )
+                        completed_successfully = True
+
+                        print("TTS Success : Piper TTS")
 
                         return
 
@@ -500,31 +369,22 @@ class TextToSpeech:
 
                 except Exception as error:
 
-                    if self._is_request_active(
-                        request_id
-                    ):
+                    if self._is_request_active(request_id):
 
                         print(
-                            f"Piper TTS Error : "
-                            f"{error}"
+                            f"Piper TTS Error : {error}"
                         )
 
             # ==================================================
-            # PROVIDER 3
-            # PYTTSX3
+            # PROVIDER 3 — PYTTSX3
             # ==================================================
 
-            if not self._is_request_active(
-                request_id
-            ):
-
+            if not self._is_request_active(request_id):
                 return
 
             if self.pyttsx3_engine is not None:
 
-                print(
-                    "TTS Provider : Windows pyttsx3"
-                )
+                print("TTS Provider : Windows pyttsx3")
 
                 try:
 
@@ -534,21 +394,15 @@ class TextToSpeech:
                         )
                     )
 
-                    # ------------------------------------------
-                    # Verify worker ownership.
-                    # ------------------------------------------
-
-                    if not self._is_request_active(
-                        request_id
-                    ):
-
+                    if not self._is_request_active(request_id):
                         return
 
                     if success:
 
+                        completed_successfully = True
+
                         print(
-                            "TTS Success : "
-                            "Windows pyttsx3"
+                            "TTS Success : Windows pyttsx3"
                         )
 
                         return
@@ -559,22 +413,17 @@ class TextToSpeech:
 
                 except Exception as error:
 
-                    if self._is_request_active(
-                        request_id
-                    ):
+                    if self._is_request_active(request_id):
 
                         print(
-                            f"pyttsx3 TTS Error : "
-                            f"{error}"
+                            f"pyttsx3 TTS Error : {error}"
                         )
 
             # ==================================================
             # ALL PROVIDERS FAILED
             # ==================================================
 
-            if self._is_request_active(
-                request_id
-            ):
+            if self._is_request_active(request_id):
 
                 print(
                     "\nTTS Error : "
@@ -583,59 +432,52 @@ class TextToSpeech:
 
         finally:
 
-            # --------------------------------------------------
-            # ONLY CURRENT WORKER MAY CHANGE GLOBAL STATE
-            #
-            # Example:
-            #
-            # Request 1 starts
-            # Request 2 starts
-            # Request 1 finishes later
-            #
-            # Request 1 must NOT set _speaking=False because
-            # Request 2 may still be speaking.
-            # --------------------------------------------------
+            should_emit_finished = False
 
             with self.lock:
 
-                if (
-                    request_id
-                    == self._request_id
-                ):
+                # Only the current request may change global
+                # speech state or notify the UI.
+
+                if request_id == self._request_id:
 
                     self._speaking = False
+
+                    should_emit_finished = (
+                        started_emitted
+                        and
+                        not self._closing
+                    )
+
+            if should_emit_finished:
+
+                self.speech_finished.emit(
+                    completed_successfully
+                )
+
+                print(
+                    "[TTS] Speech finished. "
+                    f"Success : {completed_successfully}"
+                )
 
     # ======================================================
     # STOP
     # ======================================================
 
-    def stop(
-        self,
-    ):
+    def stop(self):
         """
-        Stop speech from all providers.
+        Stop speech and invalidate the active worker.
 
-        The current worker is invalidated so it cannot
-        continue into fallback providers after stop().
+        A cancelled request must not emit speech_finished,
+        otherwise a stale worker could force the avatar into
+        success/error/idle during a newer operation.
         """
 
         with self.lock:
 
-            # --------------------------------------------------
-            # INVALIDATE CURRENT WORKER
-            # --------------------------------------------------
-
             self._request_id += 1
 
-            # --------------------------------------------------
-            # SIGNAL STOP
-            # --------------------------------------------------
-
             self._stop_event.set()
-
-            # --------------------------------------------------
-            # STOP ALL PROVIDERS
-            # --------------------------------------------------
 
             self._stop_all_providers()
 
@@ -650,40 +492,26 @@ class TextToSpeech:
         enabled=True,
     ):
 
-        self.enabled = bool(
-            enabled
-        )
+        self.enabled = bool(enabled)
 
         if not self.enabled:
-
             self.stop()
 
     # ======================================================
     # SPEAKING STATUS
     # ======================================================
 
-    def speaking(
-        self,
-    ):
+    def speaking(self):
 
         with self.lock:
 
             if self._speaking:
-
                 return True
 
-        # --------------------------------------------------
-        # PROVIDER-LEVEL STATUS CHECK
-        # --------------------------------------------------
-
         providers = (
-
             self.edge_engine,
-
             self.piper_engine,
-
             self.pyttsx3_engine,
-
         )
 
         for engine in providers:
@@ -691,16 +519,9 @@ class TextToSpeech:
             try:
 
                 if (
-
                     engine is not None
-
-                    and hasattr(
-                        engine,
-                        "speaking",
-                    )
-
+                    and hasattr(engine, "speaking")
                     and engine.speaking()
-
                 ):
 
                     return True
@@ -715,19 +536,14 @@ class TextToSpeech:
     # WAIT UNTIL SPEECH FINISHES
     # ======================================================
 
-    def wait_until_done(
-        self,
-    ):
+    def wait_until_done(self):
 
         while self.speaking():
 
             if self._closing:
-
                 break
 
-            time.sleep(
-                0.02
-            )
+            time.sleep(0.02)
 
     # ======================================================
     # VOICE
@@ -737,43 +553,21 @@ class TextToSpeech:
         self,
         voice,
     ):
-        """
-        Set voice for supported providers.
 
-        Edge supports explicit Edge voice names.
-
-        Piper / pyttsx3 may ignore the value when
-        the provider uses a fixed configured voice.
-        """
-
-        providers = (
-
+        for engine in (
             self.edge_engine,
-
             self.piper_engine,
-
             self.pyttsx3_engine,
-
-        )
-
-        for engine in providers:
+        ):
 
             try:
 
                 if (
-
                     engine is not None
-
-                    and hasattr(
-                        engine,
-                        "set_voice",
-                    )
-
+                    and hasattr(engine, "set_voice")
                 ):
 
-                    engine.set_voice(
-                        voice
-                    )
+                    engine.set_voice(voice)
 
             except Exception:
 
@@ -788,34 +582,20 @@ class TextToSpeech:
         rate,
     ):
 
-        providers = (
-
+        for engine in (
             self.edge_engine,
-
             self.piper_engine,
-
             self.pyttsx3_engine,
-
-        )
-
-        for engine in providers:
+        ):
 
             try:
 
                 if (
-
                     engine is not None
-
-                    and hasattr(
-                        engine,
-                        "set_rate",
-                    )
-
+                    and hasattr(engine, "set_rate")
                 ):
 
-                    engine.set_rate(
-                        rate
-                    )
+                    engine.set_rate(rate)
 
             except Exception:
 
@@ -830,34 +610,20 @@ class TextToSpeech:
         volume,
     ):
 
-        providers = (
-
+        for engine in (
             self.edge_engine,
-
             self.piper_engine,
-
             self.pyttsx3_engine,
-
-        )
-
-        for engine in providers:
+        ):
 
             try:
 
                 if (
-
                     engine is not None
-
-                    and hasattr(
-                        engine,
-                        "set_volume",
-                    )
-
+                    and hasattr(engine, "set_volume")
                 ):
 
-                    engine.set_volume(
-                        volume
-                    )
+                    engine.set_volume(volume)
 
             except Exception:
 
@@ -867,19 +633,12 @@ class TextToSpeech:
     # CLEANUP
     # ======================================================
 
-    def close(
-        self,
-    ):
+    def close(self):
 
         if self._closing:
-
             return
 
         self._closing = True
-
-        # --------------------------------------------------
-        # INVALIDATE ALL ACTIVE WORKERS
-        # --------------------------------------------------
 
         with self.lock:
 
@@ -889,96 +648,44 @@ class TextToSpeech:
 
             self._speaking = False
 
-        # --------------------------------------------------
-        # STOP CURRENT SPEECH
-        # --------------------------------------------------
-
         self._stop_all_providers()
-
-        # --------------------------------------------------
-        # WAIT BRIEFLY FOR CURRENT WORKER
-        #
-        # Do not block application shutdown indefinitely.
-        # --------------------------------------------------
 
         worker = self.current_thread
 
         if (
-
             worker is not None
-
             and worker.is_alive()
-
             and worker is not threading.current_thread()
-
         ):
 
             try:
 
-                worker.join(
-                    timeout=1.0
-                )
+                worker.join(timeout=1.0)
 
             except Exception:
 
                 pass
 
-        # --------------------------------------------------
-        # CLOSE EDGE
-        # --------------------------------------------------
+        for engine in (
+            self.edge_engine,
+            self.piper_engine,
+            self.pyttsx3_engine,
+        ):
 
-        try:
+            try:
 
-            if self.edge_engine is not None:
+                if engine is not None:
+                    engine.close()
 
-                self.edge_engine.close()
+            except Exception:
 
-        except Exception:
-
-            pass
-
-        # --------------------------------------------------
-        # CLOSE PIPER
-        # --------------------------------------------------
-
-        try:
-
-            if self.piper_engine is not None:
-
-                self.piper_engine.close()
-
-        except Exception:
-
-            pass
-
-        # --------------------------------------------------
-        # CLOSE PYTTSX3
-        # --------------------------------------------------
-
-        try:
-
-            if self.pyttsx3_engine is not None:
-
-                self.pyttsx3_engine.close()
-
-        except Exception:
-
-            pass
-
-        # --------------------------------------------------
-        # CLEAR REFERENCES
-        # --------------------------------------------------
+                pass
 
         self.edge_engine = None
-
         self.piper_engine = None
-
         self.pyttsx3_engine = None
-
         self.engine = None
-
         self.current_thread = None
-
         self._speaking = False
 
         print(

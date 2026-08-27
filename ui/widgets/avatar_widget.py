@@ -24,8 +24,6 @@ Thinking Laptop / Thinking AI
     ↓
 Success / Error
     ↓
-Temporary display
-    ↓
 Idle
 
 
@@ -82,9 +80,7 @@ class AvatarWidget(QWidget):
     # --------------------------------------------------------
 
     IDLE_CHANGE_INTERVAL = 4000
-
     SUCCESS_DISPLAY_INTERVAL = 3000
-
     ERROR_DISPLAY_INTERVAL = 3000
 
     # --------------------------------------------------------
@@ -101,9 +97,7 @@ class AvatarWidget(QWidget):
 
         super().__init__(parent)
 
-        self.setObjectName(
-            "AvatarWidget"
-        )
+        self.setObjectName("AvatarWidget")
 
         self.setAttribute(
             Qt.WidgetAttribute.WA_TranslucentBackground
@@ -114,22 +108,22 @@ class AvatarWidget(QWidget):
             QSizePolicy.Policy.Expanding,
         )
 
-        self.setMinimumSize(
-            1,
-            1,
-        )
+        self.setMinimumSize(1, 1)
 
         # ----------------------------------------------------
         # State
         # ----------------------------------------------------
 
         self.current_state = "hello"
-
         self.current_image_path = None
-
         self.current_pixmap = QPixmap()
-
         self.image_cache = {}
+
+        # State generation prevents old timer callbacks from
+        # overriding a newer avatar state.
+        self._state_generation = 0
+        self._success_generation = None
+        self._error_generation = None
 
         # ----------------------------------------------------
         # Project Root
@@ -143,143 +137,89 @@ class AvatarWidget(QWidget):
         # IMAGE PATHS
         # ====================================================
 
-        # ----------------------------------------------------
-        # Hello
-        # ----------------------------------------------------
-
         self.hello_image_path = (
-
             self.project_root
             / "ui"
             / "assets"
             / "avatars"
             / "hello"
             / "hello.png"
-
         )
 
-        # ----------------------------------------------------
-        # Listening
-        # ----------------------------------------------------
-
         self.listening_image_path = (
-
             self.project_root
             / "ui"
             / "assets"
             / "avatars"
             / "listening"
             / "listening.png"
-
         )
 
-        # ----------------------------------------------------
-        # Thinking Laptop
-        # ----------------------------------------------------
-
         self.thinking_laptop_image_path = (
-
             self.project_root
             / "ui"
             / "assets"
             / "avatars"
             / "thinking"
             / "thinking_laptop.png"
-
         )
 
-        # ----------------------------------------------------
-        # Thinking AI
-        # ----------------------------------------------------
-
         self.thinking_ai_image_path = (
-
             self.project_root
             / "ui"
             / "assets"
             / "avatars"
             / "thinking"
             / "thinking_ai.png"
-
         )
 
-        # ----------------------------------------------------
-        # Speaking
-        # ----------------------------------------------------
-
         self.speaking_image_path = (
-
             self.project_root
             / "ui"
             / "assets"
             / "avatars"
             / "speaking"
             / "speaking.png"
-
         )
 
-        # ----------------------------------------------------
-        # Success
-        # ----------------------------------------------------
-
         self.success_image_path = (
-
             self.project_root
             / "ui"
             / "assets"
             / "avatars"
             / "success"
             / "success.png"
-
         )
 
-        # ----------------------------------------------------
-        # Error
-        # ----------------------------------------------------
-
         self.error_image_path = (
-
             self.project_root
             / "ui"
             / "assets"
             / "avatars"
             / "error"
             / "error.png"
-
         )
 
-        # ----------------------------------------------------
-        # Idle Primary
-        # ----------------------------------------------------
-
         self.idle_primary_path = (
-
             self.project_root
             / "ui"
             / "assets"
             / "avatars"
             / "idle"
             / "idle_primary.png"
-
         )
-
-        # ----------------------------------------------------
-        # Random Idle Images
-        # ----------------------------------------------------
 
         self.idle_image_paths = []
 
         for index in range(1, 10):
 
             self.idle_image_paths.append(
-
                 self.project_root
                 / "ui"
                 / "assets"
                 / "avatars"
                 / "idle"
                 / f"idle_{index:02d}.png"
-
             )
 
         # ====================================================
@@ -292,52 +232,31 @@ class AvatarWidget(QWidget):
         # TIMERS
         # ====================================================
 
-        # ----------------------------------------------------
         # Idle slideshow timer
-        # ----------------------------------------------------
-
         self.idle_timer = QTimer(self)
-
         self.idle_timer.setInterval(
             self.IDLE_CHANGE_INTERVAL
         )
-
         self.idle_timer.timeout.connect(
             self._show_random_idle
         )
 
-        # ----------------------------------------------------
         # Success auto return timer
-        # ----------------------------------------------------
-
         self.success_timer = QTimer(self)
-
-        self.success_timer.setSingleShot(
-            True
-        )
-
+        self.success_timer.setSingleShot(True)
         self.success_timer.setInterval(
             self.SUCCESS_DISPLAY_INTERVAL
         )
-
         self.success_timer.timeout.connect(
             self._return_to_idle_after_success
         )
 
-        # ----------------------------------------------------
         # Error auto return timer
-        # ----------------------------------------------------
-
         self.error_timer = QTimer(self)
-
-        self.error_timer.setSingleShot(
-            True
-        )
-
+        self.error_timer.setSingleShot(True)
         self.error_timer.setInterval(
             self.ERROR_DISPLAY_INTERVAL
         )
-
         self.error_timer.timeout.connect(
             self._return_to_idle_after_error
         )
@@ -364,30 +283,18 @@ class AvatarWidget(QWidget):
         """
 
         all_image_paths = [
-
             self.hello_image_path,
-
             self.listening_image_path,
-
             self.thinking_laptop_image_path,
-
             self.thinking_ai_image_path,
-
             self.speaking_image_path,
-
             self.success_image_path,
-
             self.error_image_path,
-
             self.idle_primary_path,
-
             *self.idle_image_paths,
-
         ]
 
-        print(
-            "[AVATAR CACHE] Loading avatar images..."
-        )
+        print("[AVATAR CACHE] Loading avatar images...")
 
         for image_path in all_image_paths:
 
@@ -396,47 +303,31 @@ class AvatarWidget(QWidget):
                 print(
                     "[AVATAR ERROR] Image not found:"
                 )
-
-                print(
-                    image_path
-                )
+                print(image_path)
 
                 continue
 
-            pixmap = QPixmap(
-                str(image_path)
-            )
+            pixmap = QPixmap(str(image_path))
 
             if pixmap.isNull():
 
                 print(
                     "[AVATAR ERROR] Failed to cache:"
                 )
-
-                print(
-                    image_path
-                )
+                print(image_path)
 
                 continue
 
-            self.image_cache[
-                image_path
-            ] = pixmap
+            self.image_cache[image_path] = pixmap
 
             print(
-
                 "[AVATAR CACHE] Loaded: "
-
                 f"{image_path.name}"
-
             )
 
         print(
-
             "[AVATAR CACHE] Ready: "
-
             f"{len(self.image_cache)} image(s)."
-
         )
 
     # ========================================================
@@ -445,9 +336,7 @@ class AvatarWidget(QWidget):
 
     def _build_ui(self):
 
-        self.main_layout = QVBoxLayout(
-            self
-        )
+        self.main_layout = QVBoxLayout(self)
 
         self.main_layout.setContentsMargins(
             0,
@@ -456,21 +345,13 @@ class AvatarWidget(QWidget):
             0,
         )
 
-        self.main_layout.setSpacing(
-            0
-        )
+        self.main_layout.setSpacing(0)
 
         self.main_layout.setAlignment(
             Qt.AlignmentFlag.AlignCenter
         )
 
-        # ----------------------------------------------------
-        # Avatar Label
-        # ----------------------------------------------------
-
-        self.avatar_label = QLabel(
-            self
-        )
+        self.avatar_label = QLabel(self)
 
         self.avatar_label.setObjectName(
             "avatarLabel"
@@ -481,46 +362,28 @@ class AvatarWidget(QWidget):
         )
 
         self.avatar_label.setSizePolicy(
-
             QSizePolicy.Policy.Expanding,
-
             QSizePolicy.Policy.Expanding,
-
         )
 
-        self.avatar_label.setMinimumSize(
-            1,
-            1,
-        )
+        self.avatar_label.setMinimumSize(1, 1)
 
-        self.avatar_label.setScaledContents(
-            True
-        )
+        self.avatar_label.setScaledContents(True)
 
         self.avatar_label.setStyleSheet(
-
             """
             QLabel#avatarLabel {
-
                 background: transparent;
-
                 border: none;
-
                 padding: 0px;
-
                 margin: 0px;
-
             }
             """
-
         )
 
         self.main_layout.addWidget(
-
             self.avatar_label,
-
             1,
-
         )
 
     # ========================================================
@@ -544,15 +407,11 @@ class AvatarWidget(QWidget):
             print(
                 "[AVATAR ERROR] Cached image unavailable:"
             )
-
-            print(
-                image_path
-            )
+            print(image_path)
 
             return False
 
         self.current_pixmap = pixmap
-
         self.current_image_path = image_path
 
         self.avatar_label.setPixmap(
@@ -560,11 +419,57 @@ class AvatarWidget(QWidget):
         )
 
         print(
-
             "[AVATAR] Image displayed: "
-
             f"{image_path.name}"
+        )
 
+        return True
+
+    # ========================================================
+    # STATE ACTIVATION
+    # ========================================================
+
+    def _begin_state_transition(self):
+        """
+        Invalidate callbacks belonging to an older state.
+        """
+
+        self._state_generation += 1
+
+        self._success_generation = None
+        self._error_generation = None
+
+        self._stop_all_timers()
+
+        return self._state_generation
+
+    def _activate_state(
+        self,
+        state: str,
+        image_path: Path,
+    ):
+        """
+        Activate a permanent state.
+
+        This always stops the idle slideshow and all temporary
+        timers before displaying the new state.
+        """
+
+        self._begin_state_transition()
+
+        loaded = self._load_image(
+            image_path
+        )
+
+        if not loaded:
+            return False
+
+        self.current_state = state
+
+        self.state_changed.emit(state)
+
+        print(
+            f"[AVATAR] {state.upper()} state active."
         )
 
         return True
@@ -575,43 +480,28 @@ class AvatarWidget(QWidget):
 
     def _stop_idle_timer(self):
 
-        if hasattr(
-            self,
-            "idle_timer",
-        ):
-
+        if hasattr(self, "idle_timer"):
             self.idle_timer.stop()
 
     def _stop_success_timer(self):
 
-        if hasattr(
-            self,
-            "success_timer",
-        ):
-
+        if hasattr(self, "success_timer"):
             self.success_timer.stop()
 
     def _stop_error_timer(self):
 
-        if hasattr(
-            self,
-            "error_timer",
-        ):
-
+        if hasattr(self, "error_timer"):
             self.error_timer.stop()
 
     def _stop_all_temporary_timers(self):
 
         self._stop_success_timer()
-
         self._stop_error_timer()
 
     def _stop_all_timers(self):
 
         self._stop_idle_timer()
-
         self._stop_success_timer()
-
         self._stop_error_timer()
 
     # ========================================================
@@ -620,27 +510,12 @@ class AvatarWidget(QWidget):
 
     def _load_hello(self):
 
-        self._stop_all_timers()
-
-        loaded = self._load_image(
-            self.hello_image_path
+        loaded = self._activate_state(
+            "hello",
+            self.hello_image_path,
         )
 
-        if not loaded:
-
-            return False
-
-        self.current_state = "hello"
-
-        self.state_changed.emit(
-            "hello"
-        )
-
-        print(
-            "[AVATAR] HELLO state active."
-        )
-
-        return True
+        return loaded
 
     # ========================================================
     # LISTENING
@@ -648,35 +523,19 @@ class AvatarWidget(QWidget):
 
     def _load_listening(self):
 
-        self._stop_all_timers()
-
-        loaded = self._load_image(
-            self.listening_image_path
+        loaded = self._activate_state(
+            "listening",
+            self.listening_image_path,
         )
 
         if not loaded:
 
             print(
-
                 "[AVATAR ERROR] "
-
                 "Unable to activate LISTENING state."
-
             )
 
-            return False
-
-        self.current_state = "listening"
-
-        self.state_changed.emit(
-            "listening"
-        )
-
-        print(
-            "[AVATAR] LISTENING state active."
-        )
-
-        return True
+        return loaded
 
     # ========================================================
     # THINKING LAPTOP
@@ -684,37 +543,19 @@ class AvatarWidget(QWidget):
 
     def _load_thinking_laptop(self):
 
-        self._stop_all_timers()
-
-        loaded = self._load_image(
-            self.thinking_laptop_image_path
+        loaded = self._activate_state(
+            "thinking_laptop",
+            self.thinking_laptop_image_path,
         )
 
         if not loaded:
 
             print(
-
                 "[AVATAR ERROR] "
-
                 "Unable to activate THINKING LAPTOP state."
-
             )
 
-            return False
-
-        self.current_state = (
-            "thinking_laptop"
-        )
-
-        self.state_changed.emit(
-            "thinking_laptop"
-        )
-
-        print(
-            "[AVATAR] THINKING LAPTOP state active."
-        )
-
-        return True
+        return loaded
 
     # ========================================================
     # THINKING AI
@@ -722,37 +563,19 @@ class AvatarWidget(QWidget):
 
     def _load_thinking_ai(self):
 
-        self._stop_all_timers()
-
-        loaded = self._load_image(
-            self.thinking_ai_image_path
+        loaded = self._activate_state(
+            "thinking_ai",
+            self.thinking_ai_image_path,
         )
 
         if not loaded:
 
             print(
-
                 "[AVATAR ERROR] "
-
                 "Unable to activate THINKING AI state."
-
             )
 
-            return False
-
-        self.current_state = (
-            "thinking_ai"
-        )
-
-        self.state_changed.emit(
-            "thinking_ai"
-        )
-
-        print(
-            "[AVATAR] THINKING AI state active."
-        )
-
-        return True
+        return loaded
 
     # ========================================================
     # SPEAKING
@@ -761,37 +584,32 @@ class AvatarWidget(QWidget):
     def _load_speaking(self):
         """
         Activate SPEAKING state.
+
+        Important:
+        SPEAKING remains active until another state is explicitly
+        requested. It does NOT have an automatic timeout.
+
+        The TTS/controller must do:
+
+            avatar.set_state("speaking")
+            start_tts()
+            wait until TTS finishes
+            avatar.set_state("success") or avatar.set_state("idle")
         """
 
-        self._stop_all_timers()
-
-        loaded = self._load_image(
-            self.speaking_image_path
+        loaded = self._activate_state(
+            "speaking",
+            self.speaking_image_path,
         )
 
         if not loaded:
 
             print(
-
                 "[AVATAR ERROR] "
-
                 "Unable to activate SPEAKING state."
-
             )
 
-            return False
-
-        self.current_state = "speaking"
-
-        self.state_changed.emit(
-            "speaking"
-        )
-
-        print(
-            "[AVATAR] SPEAKING state active."
-        )
-
-        return True
+        return loaded
 
     # ========================================================
     # SUCCESS
@@ -805,7 +623,7 @@ class AvatarWidget(QWidget):
         automatically return to idle.
         """
 
-        self._stop_all_timers()
+        generation = self._begin_state_transition()
 
         loaded = self._load_image(
             self.success_image_path
@@ -814,33 +632,26 @@ class AvatarWidget(QWidget):
         if not loaded:
 
             print(
-
                 "[AVATAR ERROR] "
-
                 "Unable to activate SUCCESS state."
-
             )
 
             return False
 
         self.current_state = "success"
 
-        self.state_changed.emit(
-            "success"
-        )
+        self._success_generation = generation
+
+        self.state_changed.emit("success")
 
         print(
             "[AVATAR] SUCCESS state active."
         )
 
         print(
-
             "[AVATAR] SUCCESS will return "
-
             f"to IDLE after "
-
             f"{self.SUCCESS_DISPLAY_INTERVAL / 1000:.0f} seconds."
-
         )
 
         self.success_timer.start()
@@ -848,13 +659,14 @@ class AvatarWidget(QWidget):
         return True
 
     def _return_to_idle_after_success(self):
-        """
-        Return to idle only if success state
-        is still active.
-        """
 
         if self.current_state != "success":
+            return
 
+        if (
+            self._success_generation
+            != self._state_generation
+        ):
             return
 
         print(
@@ -875,7 +687,7 @@ class AvatarWidget(QWidget):
         automatically return to idle.
         """
 
-        self._stop_all_timers()
+        generation = self._begin_state_transition()
 
         loaded = self._load_image(
             self.error_image_path
@@ -884,33 +696,26 @@ class AvatarWidget(QWidget):
         if not loaded:
 
             print(
-
                 "[AVATAR ERROR] "
-
                 "Unable to activate ERROR state."
-
             )
 
             return False
 
         self.current_state = "error"
 
-        self.state_changed.emit(
-            "error"
-        )
+        self._error_generation = generation
+
+        self.state_changed.emit("error")
 
         print(
             "[AVATAR] ERROR state active."
         )
 
         print(
-
             "[AVATAR] ERROR will return "
-
             f"to IDLE after "
-
             f"{self.ERROR_DISPLAY_INTERVAL / 1000:.0f} seconds."
-
         )
 
         self.error_timer.start()
@@ -918,13 +723,14 @@ class AvatarWidget(QWidget):
         return True
 
     def _return_to_idle_after_error(self):
-        """
-        Return to idle only if error state
-        is still active.
-        """
 
         if self.current_state != "error":
+            return
 
+        if (
+            self._error_generation
+            != self._state_generation
+        ):
             return
 
         print(
@@ -939,36 +745,29 @@ class AvatarWidget(QWidget):
 
     def _start_idle(self):
 
-        self._stop_all_timers()
+        self._begin_state_transition()
 
         loaded = self._load_image(
             self.idle_primary_path
         )
 
         if not loaded:
-
             return False
 
         self.current_state = "idle"
 
-        self.state_changed.emit(
-            "idle"
-        )
+        self.state_changed.emit("idle")
 
         print(
             "[AVATAR] IDLE PRIMARY active."
         )
 
         print(
-
             "[AVATAR] Image will switch every "
-
             f"{self.IDLE_CHANGE_INTERVAL / 1000:.0f} seconds."
-
         )
 
         # idle_primary remains visible first.
-
         self.idle_timer.start()
 
         return True
@@ -980,25 +779,16 @@ class AvatarWidget(QWidget):
     def _get_random_idle_image(self):
 
         available_images = [
-
             image_path
-
-            for image_path
-            in self.idle_image_paths
-
-            if image_path
-            in self.image_cache
-
+            for image_path in self.idle_image_paths
+            if image_path in self.image_cache
         ]
 
         if not available_images:
 
             print(
-
                 "[AVATAR ERROR] "
-
                 "No cached idle shuffle images found."
-
             )
 
             return None
@@ -1008,27 +798,16 @@ class AvatarWidget(QWidget):
         )
 
         # Prevent immediate repetition.
-
         if (
-
             len(available_images) > 1
-
-            and
-
-            self.current_image_path == random_image
-
+            and self.current_image_path == random_image
         ):
 
             other_images = [
-
                 image_path
-
-                for image_path
-                in available_images
-
+                for image_path in available_images
                 if image_path
                 != self.current_image_path
-
             ]
 
             if other_images:
@@ -1040,13 +819,28 @@ class AvatarWidget(QWidget):
         return random_image
 
     def _show_random_idle(self):
+        """
+        Idle timer is allowed to change the image ONLY while
+        the current state is exactly 'idle'.
 
-        # Never allow the idle timer
-        # to override another state.
+        Therefore it can never override:
+            hello
+            listening
+            thinking_laptop
+            thinking_ai
+            speaking
+            success
+            error
+        """
 
         if self.current_state != "idle":
 
             self._stop_idle_timer()
+
+            print(
+                "[AVATAR] Idle timer stopped because "
+                f"current state is: {self.current_state}"
+            )
 
             return
 
@@ -1055,7 +849,6 @@ class AvatarWidget(QWidget):
         )
 
         if random_image is None:
-
             return
 
         loaded = self._load_image(
@@ -1063,15 +856,11 @@ class AvatarWidget(QWidget):
         )
 
         if not loaded:
-
             return
 
         print(
-
             "[AVATAR] Random IDLE image: "
-
             f"{random_image.name}"
-
         )
 
     # ========================================================
@@ -1084,160 +873,66 @@ class AvatarWidget(QWidget):
     ):
 
         requested_state = (
-
             state or ""
-
         ).strip().lower()
 
         if not requested_state:
-
             return
 
         print(
-
             "[AVATAR] Requested state: "
-
             f"{requested_state}"
-
         )
 
-        # ----------------------------------------------------
-        # HELLO
-        # ----------------------------------------------------
-
-        if requested_state == "hello":
-
-            if self.current_state == "hello":
-
-                return
-
-            self._load_hello()
-
+        # Avoid unnecessary permanent-state reloads.
+        # Success and error are intentionally allowed to restart.
+        if (
+            requested_state == self.current_state
+            and requested_state not in {
+                "success",
+                "error",
+            }
+        ):
             return
 
-        # ----------------------------------------------------
-        # LISTENING
-        # ----------------------------------------------------
+        state_handlers = {
+            "hello": self._load_hello,
+            "listening": self._load_listening,
+            "thinking_laptop": (
+                self._load_thinking_laptop
+            ),
+            "thinking_ai": (
+                self._load_thinking_ai
+            ),
+            "speaking": self._load_speaking,
+            "success": self._load_success,
+            "error": self._load_error,
+            "idle": self._start_idle,
+        }
 
-        if requested_state == "listening":
-
-            if self.current_state == "listening":
-
-                return
-
-            self._load_listening()
-
-            return
-
-        # ----------------------------------------------------
-        # THINKING LAPTOP
-        # ----------------------------------------------------
-
-        if requested_state == "thinking_laptop":
-
-            if (
-                self.current_state
-                == "thinking_laptop"
-            ):
-
-                return
-
-            self._load_thinking_laptop()
-
-            return
-
-        # ----------------------------------------------------
-        # THINKING AI
-        # ----------------------------------------------------
-
-        if requested_state == "thinking_ai":
-
-            if (
-                self.current_state
-                == "thinking_ai"
-            ):
-
-                return
-
-            self._load_thinking_ai()
-
-            return
-
-        # ----------------------------------------------------
-        # SPEAKING
-        # ----------------------------------------------------
-
-        if requested_state == "speaking":
-
-            if (
-                self.current_state
-                == "speaking"
-            ):
-
-                return
-
-            self._load_speaking()
-
-            return
-
-        # ----------------------------------------------------
-        # SUCCESS
-        # ----------------------------------------------------
-
-        if requested_state == "success":
-
-            self._load_success()
-
-            return
-
-        # ----------------------------------------------------
-        # ERROR
-        # ----------------------------------------------------
-
-        if requested_state == "error":
-
-            self._load_error()
-
-            return
-
-        # ----------------------------------------------------
-        # IDLE
-        # ----------------------------------------------------
-
-        if requested_state == "idle":
-
-            # Do not restart an already active
-            # idle slideshow.
-
-            if (
-
-                self.current_state == "idle"
-
-                and
-
-                self.idle_timer.isActive()
-
-            ):
-
-                return
-
-            self._start_idle()
-
-            return
-
-        # ----------------------------------------------------
-        # UNKNOWN STATE
-        # ----------------------------------------------------
-
-        print(
-
-            f"[AVATAR] State '{requested_state}' "
-
-            "is not implemented. "
-
-            "Keeping current avatar image."
-
+        handler = state_handlers.get(
+            requested_state
         )
+
+        if handler is None:
+
+            print(
+                f"[AVATAR] State '{requested_state}' "
+                "is not implemented. "
+                "Keeping current avatar image."
+            )
+
+            return
+
+        # Do not restart an already running idle slideshow.
+        if (
+            requested_state == "idle"
+            and self.current_state == "idle"
+            and self.idle_timer.isActive()
+        ):
+            return
+
+        handler()
 
     # ========================================================
     # COMPATIBILITY API
@@ -1248,9 +943,7 @@ class AvatarWidget(QWidget):
         state: str,
     ):
 
-        self.set_state(
-            state
-        )
+        self.set_state(state)
 
     def set_listening(
         self,
@@ -1258,46 +951,33 @@ class AvatarWidget(QWidget):
     ):
 
         if listening:
-
-            self.set_state(
-                "listening"
-            )
-
+            self.set_state("listening")
         else:
-
-            self.set_state(
-                "idle"
-            )
+            self.set_state("idle")
 
     def set_thinking_laptop(self):
 
-        self.set_state(
-            "thinking_laptop"
-        )
+        self.set_state("thinking_laptop")
 
     def set_thinking_ai(self):
 
-        self.set_state(
-            "thinking_ai"
-        )
+        self.set_state("thinking_ai")
 
     def set_speaking(self):
 
-        self.set_state(
-            "speaking"
-        )
+        self.set_state("speaking")
 
     def set_success(self):
 
-        self.set_state(
-            "success"
-        )
+        self.set_state("success")
 
     def set_error(self):
 
-        self.set_state(
-            "error"
-        )
+        self.set_state("error")
+
+    def set_idle(self):
+
+        self.set_state("idle")
 
     def current_avatar_state(self):
 
@@ -1308,6 +988,11 @@ class AvatarWidget(QWidget):
     # ========================================================
 
     def stop(self):
+
+        self._state_generation += 1
+
+        self._success_generation = None
+        self._error_generation = None
 
         self._stop_all_timers()
 
@@ -1322,6 +1007,4 @@ class AvatarWidget(QWidget):
 
         self.stop()
 
-        super().closeEvent(
-            event
-        )
+        super().closeEvent(event)
