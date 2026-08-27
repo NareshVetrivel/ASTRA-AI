@@ -106,3 +106,5 @@ temp/
 
 database/astra.db-shm
 database/astra.db-wal
+
+terminal_output.txt

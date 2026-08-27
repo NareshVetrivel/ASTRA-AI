@@ -9,22 +9,29 @@ Supported Browsers
 - Google Chrome
 - Microsoft Edge
 
-Features (Part 1)
------------------
+Features
+--------
 - Browser Detection
+- Persistent Playwright Chrome Session
+- Safe Chrome Recovery
 - Open Browser
 - Open Website
 - Google Search
+- YouTube Search
+- Play YouTube
+- Google Search Result Click
+- Browser Tab Controls
 
 ASTRA-AI V1
 """
 
-import os
 import subprocess
+import threading
 from urllib.parse import quote_plus
 
 from database.database_manager import DatabaseManager
 from automation.keyboard_controller import KeyboardController
+
 try:
     from automation.playwright_controller import PlaywrightController
 except ImportError:
@@ -34,33 +41,46 @@ except ImportError:
 class BrowserController:
     """
     Browser automation controller.
+
+    Chrome automation is handled through one persistent
+    PlaywrightController instance.
+
+    Important:
+    BrowserController does not directly manipulate internal
+    Playwright state such as page/context/browser wherever
+    possible.
+
+    This prevents stale page references from being reused by
+    higher-level application actions.
     """
 
     def __init__(self):
+
+        # --------------------------------------------------
+        # Thread Safety
+        # --------------------------------------------------
+
+        self._lock = threading.RLock()
+
+        # --------------------------------------------------
+        # Database
+        # --------------------------------------------------
 
         self.database = DatabaseManager()
 
         self.browser_paths = self.load_browser_paths()
 
+        # --------------------------------------------------
+        # Keyboard
+        # --------------------------------------------------
+
         self.keyboard = KeyboardController()
 
-        if PlaywrightController:
+        # --------------------------------------------------
+        # Persistent ASTRA Chrome Session
+        # --------------------------------------------------
 
-            # --------------------------------------------------
-            # ASTRA Main Browser Session
-            #
-            # Uses the user's real Chrome User Data directory
-            # and the professional Default profile.
-            #
-            # CDP Port:
-            #     9222
-            #
-            # This single controller is reused for:
-            #     - YouTube
-            #     - Google Search
-            #     - Search Result Click
-            #     - Multi-command browser automation
-            # --------------------------------------------------
+        if PlaywrightController:
 
             self.playwright = PlaywrightController(
                 profile="Default"
@@ -70,55 +90,68 @@ class BrowserController:
 
             self.playwright = None
 
-        # Prevent duplicate shutdown
+        # --------------------------------------------------
+        # Shutdown State
+        # --------------------------------------------------
+
         self._closed = False
 
-        # ---------------------------------
-        # Chrome Profiles
-        # ---------------------------------
+        # --------------------------------------------------
+        # Chrome Profile Aliases
+        # --------------------------------------------------
 
         self.chrome_profiles = {
 
             "naresh": "Default",
-
             "nares": "Default",
-
             "nareesh": "Default",
-
             "naresh s": "Default",
-
             "naresh profile": "Default",
-
             "college": "Profile 1",
-
             "college profile": "Profile 1",
-
-            "naresh senthil": "Default"
+            "naresh senthil": "Default",
 
         }
 
-    # --------------------------------------------------
+    # ======================================================
     # Load Browser Paths
-    # --------------------------------------------------
+    # ======================================================
 
     def load_browser_paths(self):
         """
-        Load browser executable paths
-        from the application database.
+        Load browser executable paths from the application
+        database.
         """
 
         browsers = {}
 
-        applications = self.database.get_all_applications()
+        try:
+
+            applications = (
+                self.database
+                .get_all_applications()
+            )
+
+        except Exception as error:
+
+            print(
+                f"Browser database load error : {error}"
+            )
+
+            return browsers
 
         for name, exe_name, full_path in applications:
 
-            lower = name.lower()
+            if not name:
+
+                continue
+
+            lower = str(name).lower().strip()
 
             if lower in {
 
                 "chrome",
-                "google chrome"
+                "google chrome",
 
             }:
 
@@ -127,7 +160,7 @@ class BrowserController:
             elif lower in {
 
                 "edge",
-                "microsoft edge"
+                "microsoft edge",
 
             }:
 
@@ -135,199 +168,306 @@ class BrowserController:
 
         return browsers
 
-    # --------------------------------------------------
+    # ======================================================
     # Browser Exists
-    # --------------------------------------------------
+    # ======================================================
 
     def browser_exists(
         self,
-        browser
+        browser,
     ):
         """
-        Check whether browser exists.
+        Check whether the requested browser exists.
         """
 
         if not browser:
+
             return False
 
-        return browser.lower() in self.browser_paths
+        browser = (
+            str(browser)
+            .lower()
+            .strip()
+        )
 
-    # --------------------------------------------------
+        # Chrome can be controlled by Playwright even when
+        # database lookup was incomplete.
+        if browser == "chrome":
+
+            if self.playwright:
+
+                return True
+
+        return browser in self.browser_paths
+
+    # ======================================================
     # Get Browser Path
-    # --------------------------------------------------
+    # ======================================================
 
     def get_browser_path(
         self,
-        browser
+        browser,
     ):
         """
-        Return executable path.
+        Return browser executable path.
         """
 
         if not browser:
+
             return None
 
         return self.browser_paths.get(
-            browser.lower()
+            str(browser)
+            .lower()
+            .strip()
         )
 
-    # --------------------------------------------------
+    # ======================================================
+    # Ensure Chrome
+    # ======================================================
+
+    def _ensure_chrome(self):
+        """
+        Safely prepare the persistent ASTRA Chrome session.
+
+        BrowserController intentionally delegates connection
+        management to PlaywrightController.
+        """
+
+        if self._closed:
+
+            print(
+                "Browser controller is closed."
+            )
+
+            return False
+
+        if not self.playwright:
+
+            print(
+                "Playwright is unavailable."
+            )
+
+            return False
+
+        try:
+
+            return bool(
+                self.playwright.ensure_browser()
+            )
+
+        except AttributeError:
+
+            # Compatibility with the previous controller
+            # while transitioning to the updated API.
+
+            try:
+
+                return bool(
+                    self.playwright._connect()
+                )
+
+            except Exception as error:
+
+                print(
+                    f"Chrome connection error : {error}"
+                )
+
+                return False
+
+        except Exception as error:
+
+            print(
+                f"Chrome connection error : {error}"
+            )
+
+            return False
+
+    # ======================================================
+    # Safely Bring Chrome Forward
+    # ======================================================
+
+    def _bring_chrome_to_front(self):
+        """
+        Bring ASTRA Chrome page forward.
+
+        A foreground failure must never destroy the entire
+        command. It is only a UI operation.
+        """
+
+        if not self.playwright:
+
+            return False
+
+        try:
+
+            method = getattr(
+                self.playwright,
+                "bring_to_front",
+                None,
+            )
+
+            if callable(method):
+
+                return bool(method())
+
+        except Exception as error:
+
+            print(
+                f"Chrome foreground warning : {error}"
+            )
+
+        return False
+
+    # ======================================================
     # Open Browser
-    # --------------------------------------------------
+    # ======================================================
 
     def open_browser(
         self,
-        browser="chrome"
+        browser="chrome",
     ):
         """
-        Open or attach to a browser.
+        Open or prepare a browser.
 
         Chrome:
-            Uses the ASTRA Playwright session on CDP 9222
-            with the user's Default professional profile.
+            Uses the persistent ASTRA Playwright session.
 
         Other browsers:
-            Keep the existing subprocess launch behavior.
+            Uses normal subprocess launch.
         """
 
         if not browser:
 
             browser = "chrome"
 
-        browser = browser.lower().strip()
+        browser = (
+            str(browser)
+            .lower()
+            .strip()
+        )
 
-        if not self.browser_exists(browser):
+        with self._lock:
 
-            print(
-                f"{browser} not found."
-            )
+            # ----------------------------------------------
+            # Chrome
+            # ----------------------------------------------
 
-            return False
+            if browser == "chrome":
 
-        # --------------------------------------------------
-        # Chrome → Existing ASTRA Playwright Session
-        # --------------------------------------------------
-
-        if (
-            browser == "chrome"
-            and
-            self.playwright
-        ):
-
-            try:
-
-                # Connect to existing Chrome :9222.
-                # If unavailable, PlaywrightController will
-                # launch the configured Default profile.
-
-                success = self.playwright._connect()
-
-                if success:
+                if not self._ensure_chrome():
 
                     print(
-                        "Chrome ready through "
-                        "Playwright CDP : 9222"
+                        "Unable to prepare ASTRA Chrome."
                     )
 
-                    # --------------------------------------------------
-                    # Bring the connected Chrome page to the front.
-                    # --------------------------------------------------
-
-                    try:
-
-                        if (
-                            self.playwright.page
-                            and
-                            not self.playwright.page.is_closed()
-                        ):
-
-                            self.playwright.page.bring_to_front()
-
-                            print(
-                                "Chrome page brought to front."
-                            )
-
-                    except Exception as error:
-
-                        print(
-                            f"Chrome foreground warning : {error}"
-                        )
-
-                    return True
+                    return False
 
                 print(
-                    "Unable to connect to ASTRA Chrome."
+                    "Chrome ready through "
+                    "Playwright CDP."
+                )
+
+                # Foreground failure is non-fatal.
+                self._bring_chrome_to_front()
+
+                return True
+
+            # ----------------------------------------------
+            # Other Browser
+            # ----------------------------------------------
+
+            if not self.browser_exists(browser):
+
+                print(
+                    f"{browser} not found."
                 )
 
                 return False
+
+            browser_path = (
+                self.get_browser_path(browser)
+            )
+
+            if not browser_path:
+
+                print(
+                    f"Browser path not found : {browser}"
+                )
+
+                return False
+
+            try:
+
+                subprocess.Popen(
+                    [
+                        browser_path,
+                        "--new-window",
+                    ]
+                )
+
+                print(
+                    f"{browser.title()} launched."
+                )
+
+                return True
 
             except Exception as error:
 
                 print(
-                    f"Playwright Chrome Error : {error}"
+                    f"Browser launch error : {error}"
                 )
 
                 return False
 
-        # --------------------------------------------------
-        # Non-Chrome browsers → Existing behavior
-        # --------------------------------------------------
-
-        try:
-
-            command = [
-                self.browser_paths[browser],
-                "--new-window"
-            ]
-
-            subprocess.Popen(
-                command
-            )
-
-            print(
-                f"{browser.title()} launched."
-            )
-
-            return True
-
-        except Exception as error:
-
-            print(
-                f"Browser Launch Error : {error}"
-            )
-
-            return False
-
-    # --------------------------------------------------
+    # ======================================================
     # Open Chrome Profile
-    # --------------------------------------------------
+    # ======================================================
 
     def open_chrome_profile(
         self,
         profile_name,
-        url=None
+        url=None,
     ):
         """
-        Open Chrome using a specific profile.
+        Handle Chrome profile request.
+
+        ASTRA V1 maintains one persistent managed Chrome
+        session to prevent duplicate CDP connections.
+
+        Profile aliases are still validated for command
+        compatibility.
         """
 
         if not profile_name:
 
             return False
 
-        profile_name = profile_name.lower().strip()
+        profile_name = (
+            str(profile_name)
+            .lower()
+            .strip()
+        )
 
-        # Dispatcher may already pass "Default", "Profile 1", etc.
-        if profile_name.lower() == "default":
+        # ----------------------------------------------
+        # Resolve Profile Alias
+        # ----------------------------------------------
+
+        if profile_name == "default":
+
             profile = "Default"
 
-        elif profile_name.lower() == "profile 1":
+        elif profile_name == "profile 1":
+
             profile = "Profile 1"
 
         else:
+
             profile = None
 
-            for alias, folder in self.chrome_profiles.items():
+            for alias, folder in (
+                self.chrome_profiles.items()
+            ):
 
                 if alias in profile_name:
 
@@ -337,66 +477,48 @@ class BrowserController:
 
         if not profile:
 
-            print("Unknown Chrome profile.")
+            print(
+                "Unknown Chrome profile."
+            )
 
             return False
 
-        chrome = self.browser_paths.get("chrome")
+        # ----------------------------------------------
+        # Prepare Existing ASTRA Session
+        # ----------------------------------------------
 
-        if not chrome:
+        if not self._ensure_chrome():
 
             return False
 
-        real_user_data = os.path.join(
-            os.environ["LOCALAPPDATA"],
-            "Google",
-            "Chrome",
-            "User Data"
-        )
+        # ----------------------------------------------
+        # Optional URL
+        # ----------------------------------------------
 
-        command = [
-            chrome,
-            f"--user-data-dir={real_user_data}",
-            f"--profile-directory={profile}",
-            "--remote-debugging-port=9222",
-            "--new-window",
-            "--no-first-run",
-            "--no-default-browser-check"
-        ]
         if url:
 
-            command.append(
-
-                self.normalize_url(url)
-
+            return self.open_website(
+                url,
+                browser="chrome",
             )
 
-        try:
+        self._bring_chrome_to_front()
 
-            subprocess.Popen(command)
+        print(
+            "Opened ASTRA Chrome session "
+            f"for profile request : {profile}"
+        )
 
-            print(
+        return True
 
-                f"Opened {profile_name} profile."
-
-            )
-
-            return True
-
-        except Exception as error:
-
-            print(error)
-
-            return False
-
-    # --------------------------------------------------
-    # Open Profile (Alias)
-    # --------------------------------------------------
+    # ======================================================
+    # Open Profile Alias
+    # ======================================================
 
     def open_profile(
         self,
         profile_name,
-        url=None
+        url=None,
     ):
         """
         Alias for opening Chrome profile.
@@ -404,26 +526,48 @@ class BrowserController:
 
         return self.open_chrome_profile(
             profile_name,
-            url
+            url,
         )
 
-    # --------------------------------------------------
+    # ======================================================
     # Normalize URL
-    # --------------------------------------------------
+    # ======================================================
 
     @staticmethod
     def normalize_url(url):
+        """
+        Convert user input into a valid browser URL.
 
-        url = url.strip().lower()
+        Examples:
 
-        if url.startswith("http://"):
+            google.com
+            -> https://google.com
+
+            github.com
+            -> https://github.com
+
+            hello world
+            -> Google search URL
+        """
+
+        url = str(url).strip()
+
+        if not url:
+
+            return ""
+
+        lower_url = url.lower()
+
+        if lower_url.startswith(
+            (
+                "http://",
+                "https://",
+            )
+        ):
 
             return url
 
-        if url.startswith("https://"):
-
-            return url
-
+        # Search phrase rather than domain.
         if "." not in url:
 
             return (
@@ -433,73 +577,126 @@ class BrowserController:
 
         return "https://" + url
 
-    # --------------------------------------------------
+    # ======================================================
     # Open Website
-    # --------------------------------------------------
+    # ======================================================
 
     def open_website(
         self,
         website,
-        browser="chrome"
+        browser="chrome",
     ):
         """
-        Open website using
-        selected browser.
+        Open website using the selected browser.
         """
 
         if not website:
 
             return False
 
-        browser = browser.lower()
-
-        if not self.browser_exists(browser):
-
-            return False
+        browser = (
+            str(browser)
+            .lower()
+            .strip()
+        )
 
         url = self.normalize_url(
             website
         )
 
-        browser_path = self.get_browser_path(browser)
-
-        if not browser_path:
-
-            print(f"Browser path not found : {browser}")
+        if not url:
 
             return False
 
-        try:
+        with self._lock:
 
-            success = self.open_chrome_profile(
-                "Default",
-                url
+            # ----------------------------------------------
+            # Chrome -> Playwright
+            # ----------------------------------------------
+
+            if browser == "chrome":
+
+                if not self._ensure_chrome():
+
+                    return False
+
+                try:
+
+                    success = bool(
+                        self.playwright.open_website(
+                            url
+                        )
+                    )
+
+                    if success:
+
+                        print(
+                            f"Opening : {url}"
+                        )
+
+                    return success
+
+                except Exception as error:
+
+                    print(
+                        f"Website error : {error}"
+                    )
+
+                    return False
+
+            # ----------------------------------------------
+            # Other Browser
+            # ----------------------------------------------
+
+            if not self.browser_exists(browser):
+
+                print(
+                    f"{browser} not found."
+                )
+
+                return False
+
+            browser_path = (
+                self.get_browser_path(browser)
             )
 
-            if success:
-                print(f"Opening : {url}")
+            if not browser_path:
 
-            return success
+                return False
 
-        except Exception as error:
+            try:
 
-            print(
+                subprocess.Popen(
+                    [
+                        browser_path,
+                        "--new-window",
+                        url,
+                    ]
+                )
 
-                f"Website Error : {error}"
+                print(
+                    f"Opening : {url}"
+                )
 
-            )
+                return True
 
-            return False
+            except Exception as error:
 
-    # --------------------------------------------------
+                print(
+                    f"Website error : {error}"
+                )
+
+                return False
+
+    # ======================================================
     # Google Search
-    # --------------------------------------------------
+    # ======================================================
 
     def google_search(
         self,
         query,
         browser="chrome",
-        new_tab=False
+        new_tab=False,
     ):
         """
         Search Google.
@@ -509,259 +706,249 @@ class BrowserController:
 
             return False
 
-        browser = browser.lower()
-
-        if not self.browser_exists(browser):
-
-            return False
-        
-        browser_path = self.get_browser_path(browser)
-
-        if not browser_path:
-
-            return False
-
-        search_url = (
-
-            "https://www.google.com/search?q="
-
-            + quote_plus(query)
-
+        browser = (
+            str(browser)
+            .lower()
+            .strip()
         )
 
-        try:
+        with self._lock:
 
-            if self.playwright:
+            if browser == "chrome":
 
-                success = (
-                    self.playwright
-                    .google_search(
-                        query,
-                        new_tab=new_tab
+                if not self._ensure_chrome():
+
+                    return False
+
+                try:
+
+                    success = bool(
+                        self.playwright.google_search(
+                            query,
+                            new_tab=new_tab,
+                        )
                     )
-                )
 
-                if success:
+                    if success:
+
+                        print(
+                            f"Searching Google : {query}"
+                        )
+
+                    return success
+
+                except Exception as error:
 
                     print(
-                        f"Searching Google : {query}"
+                        f"Google search error : {error}"
                     )
 
-                return success
+                    return False
 
-            # ----------------------------------------------
-            # Fallback when Playwright is unavailable
-            # ----------------------------------------------
-
-            success = self.open_chrome_profile(
-                "Default",
-                search_url
-            )
-
-            if success:
-
-                print(
-                    f"Searching Google : {query}"
+            search_url = (
+                "https://www.google.com/search?q="
+                + quote_plus(
+                    str(query)
                 )
-
-            return success
-
-        except Exception as error:
-
-            print(
-
-                f"Google Search Error : {error}"
-
             )
 
-            return False
+            return self.open_website(
+                search_url,
+                browser,
+            )
+
+    # ======================================================
+    # Open Google
+    # ======================================================
 
     def open_google(
         self,
-        browser="chrome"
+        browser="chrome",
     ):
         """
         Open Google homepage.
         """
 
         return self.open_website(
-            "google.com",
-            browser
+            "https://www.google.com",
+            browser,
         )
 
-    # --------------------------------------------------
+    # ======================================================
     # YouTube Search
-    # --------------------------------------------------
+    # ======================================================
 
     def youtube_search(
         self,
         query,
         browser="chrome",
-        new_tab=False
+        new_tab=False,
     ):
         """
         Search YouTube.
         """
 
         if not query:
-            return False
-
-        browser = browser.lower()
-
-        if not self.browser_exists(browser):
-            return False
-        
-        browser_path = self.get_browser_path(browser)
-
-        if not browser_path:
 
             return False
 
-        search_url = (
-            "https://www.youtube.com/results?search_query="
-            + quote_plus(query)
+        browser = (
+            str(browser)
+            .lower()
+            .strip()
         )
 
-        try:
+        with self._lock:
 
-            if self.playwright:
+            if browser == "chrome":
 
-                success = (
-                    self.playwright
-                    .youtube_search(
-                        query,
-                        new_tab=new_tab
+                if not self._ensure_chrome():
+
+                    return False
+
+                try:
+
+                    success = bool(
+                        self.playwright.youtube_search(
+                            query,
+                            new_tab=new_tab,
+                        )
                     )
-                )
 
-                if success:
+                    if success:
+
+                        print(
+                            f"YouTube search : {query}"
+                        )
+
+                    return success
+
+                except Exception as error:
 
                     print(
-                        f"YouTube Search : {query}"
+                        f"YouTube search error : {error}"
                     )
 
-                return success
+                    return False
 
-            # ----------------------------------------------
-            # Fallback
-            # ----------------------------------------------
-
-            success = self.open_chrome_profile(
-                "Default",
-                search_url
+            search_url = (
+                "https://www.youtube.com/results"
+                "?search_query="
+                + quote_plus(
+                    str(query)
+                )
             )
 
-            if success:
+            return self.open_website(
+                search_url,
+                browser,
+            )
 
-                print(
-                    f"YouTube Search : {query}"
-                )
-
-            return success
-
-        except Exception as error:
-
-            print(error)
-
-            return False
+    # ======================================================
+    # Open YouTube
+    # ======================================================
 
     def open_youtube(
         self,
-        browser="chrome"
+        browser="chrome",
     ):
         """
         Open YouTube homepage.
         """
 
         return self.open_website(
-            "youtube.com",
-            browser
+            "https://www.youtube.com",
+            browser,
         )
 
-    # --------------------------------------------------
+    # ======================================================
     # Play YouTube Video
-    # --------------------------------------------------
+    # ======================================================
 
     def play_youtube(
         self,
         query,
         browser="chrome",
-        new_tab=False
+        new_tab=False,
     ):
         """
-        Play first YouTube result using the
-        main ASTRA Chrome session.
-
-        Uses:
-            Chrome Default profile
-            CDP port 9222
-
-        This keeps YouTube automation inside
-        the same browser session used by
-        other browser and multi-command tasks.
+        Search and play the first YouTube result.
         """
 
         if not query:
 
             return False
 
-        if self.playwright:
-
-            try:
-
-                return (
-                    self.playwright
-                    .play_youtube(
-                        query,
-                        new_tab=new_tab
-                    )
-                )
-
-            except Exception as error:
-
-                print(
-                    f"Playwright Failed : {error}"
-                )
-
-        # --------------------------------------------------
-        # Fallback
-        # --------------------------------------------------
-
-        return self.youtube_search(
-            query,
-            browser,
-            new_tab=new_tab
+        browser = (
+            str(browser)
+            .lower()
+            .strip()
         )
 
-    # --------------------------------------------------
+        with self._lock:
+
+            if browser == "chrome":
+
+                if not self._ensure_chrome():
+
+                    return False
+
+                try:
+
+                    return bool(
+                        self.playwright.play_youtube(
+                            query,
+                            new_tab=new_tab,
+                        )
+                    )
+
+                except Exception as error:
+
+                    print(
+                        f"Playwright YouTube error : "
+                        f"{error}"
+                    )
+
+                    return False
+
+            return self.youtube_search(
+                query,
+                browser,
+                new_tab=new_tab,
+            )
+
+    # ======================================================
     # Click Google Search Result
-    # --------------------------------------------------
+    # ======================================================
 
     def click_search_result(
         self,
         index=0,
-        browser="chrome"
+        browser="chrome",
     ):
         """
-        Click a Google search result using Playwright.
+        Click Google search result.
 
-        Parameters
-        ----------
-        index:
-            Zero-based search result index.
+        Result index is zero-based:
 
-            0 = first result
-            1 = second result
-            2 = third result
-
-        browser:
-            Browser name.
-
-        Returns
-        -------
-        bool
-            True when the result was clicked successfully.
+            0 -> first result
+            1 -> second result
         """
+
+        browser = (
+            str(browser)
+            .lower()
+            .strip()
+        )
+
+        if browser != "chrome":
+
+            print(
+                "Search result clicking currently "
+                "requires Chrome Playwright automation."
+            )
+
+            return False
 
         try:
 
@@ -769,311 +956,367 @@ class BrowserController:
 
                 index = 0
 
-            try:
-
-                index = int(index)
-
-            except (
-                TypeError,
-                ValueError
-            ):
-
-                index = 0
+            index = int(index)
 
             if index < 0:
 
                 index = 0
 
-            # --------------------------------------------------
-            # Prefer the existing Playwright controller.
-            # --------------------------------------------------
+        except (
+            TypeError,
+            ValueError,
+        ):
 
-            if self.playwright:
+            index = 0
 
-                return (
-                    self.playwright
-                    .click_search_result(index)
-                )
+        with self._lock:
 
-            # --------------------------------------------------
-            # Fallback
-            #
-            # If Playwright is unavailable, do not perform a
-            # blind mouse click because we cannot reliably know
-            # which Google result is the requested result.
-            # --------------------------------------------------
+            if not self._ensure_chrome():
 
-            print(
-                "Playwright is unavailable. "
-                "Cannot safely click search result."
-            )
-
-            return False
-
-        except Exception as error:
-
-            print(
-                f"Search Result Click Error : {error}"
-            )
-
-            return False
-
-    # --------------------------------------------------
-    # New Tab
-    # --------------------------------------------------
-
-    def new_tab(self):
-        """
-        Open a new browser tab using the active
-        Playwright browser session.
-        """
-
-        if self.playwright:
+                return False
 
             try:
 
-                return self.playwright.new_tab()
+                return bool(
+                    self.playwright.click_search_result(
+                        index
+                    )
+                )
 
             except Exception as error:
 
                 print(
-                    f"Playwright New Tab Error : {error}"
+                    f"Search result click error : "
+                    f"{error}"
                 )
 
-        # Fallback
-        return self.keyboard.new_tab()
+                return False
 
-    # --------------------------------------------------
+    # ======================================================
+    # New Tab
+    # ======================================================
+
+    def new_tab(self):
+        """
+        Open a new browser tab.
+        """
+
+        with self._lock:
+
+            if self.playwright:
+
+                try:
+
+                    if self._ensure_chrome():
+
+                        return bool(
+                            self.playwright.new_tab()
+                        )
+
+                except Exception as error:
+
+                    print(
+                        f"Playwright new tab error : "
+                        f"{error}"
+                    )
+
+            return self.keyboard.new_tab()
+
+    # ======================================================
     # Close Tab
-    # --------------------------------------------------
+    # ======================================================
 
     def close_tab(self):
         """
         Close current browser tab.
+
+        Keyboard fallback is intentionally used because
+        the user may be controlling another foreground tab.
         """
 
         return self.keyboard.close_tab()
 
-    # --------------------------------------------------
+    # ======================================================
     # Next Tab
-    # --------------------------------------------------
+    # ======================================================
 
     def next_tab(self):
-        """
-        Switch to next browser tab.
-        """
 
         return self.keyboard.next_tab()
 
-    # --------------------------------------------------
+    # ======================================================
     # Previous Tab
-    # --------------------------------------------------
+    # ======================================================
 
     def previous_tab(self):
-        """
-        Switch to previous browser tab.
-        """
 
         return self.keyboard.previous_tab()
 
-    # --------------------------------------------------
+    # ======================================================
     # Refresh
-    # --------------------------------------------------
+    # ======================================================
 
     def refresh(self):
         """
-        Refresh current page.
+        Refresh active ASTRA Chrome page.
         """
 
-        return self.keyboard.refresh()
+        with self._lock:
 
-    # --------------------------------------------------
+            if self.playwright:
+
+                try:
+
+                    if self._ensure_chrome():
+
+                        return bool(
+                            self.playwright.refresh()
+                        )
+
+                except Exception as error:
+
+                    print(
+                        f"Playwright refresh error : "
+                        f"{error}"
+                    )
+
+            return self.keyboard.refresh()
+
+    # ======================================================
     # Open Downloads
-    # --------------------------------------------------
+    # ======================================================
 
     def open_downloads(self):
-        """
-        Open browser downloads page.
-        """
 
         return self.keyboard.downloads()
 
-    # --------------------------------------------------
+    # ======================================================
     # Open History
-    # --------------------------------------------------
+    # ======================================================
 
     def open_history(self):
-        """
-        Open browser history.
-        """
 
         return self.keyboard.history()
 
-    # --------------------------------------------------
+    # ======================================================
     # Show Bookmarks
-    # --------------------------------------------------
+    # ======================================================
 
     def show_bookmarks(self):
-        """
-        Show bookmark bar.
-        """
 
         return self.keyboard.bookmarks()
 
-    # --------------------------------------------------
+    # ======================================================
     # Bookmark Current Page
-    # --------------------------------------------------
+    # ======================================================
 
     def bookmark_page(self):
-        """
-        Bookmark current page.
-        """
 
         return self.keyboard.bookmark_page()
 
-    # --------------------------------------------------
+    # ======================================================
     # Address Bar
-    # --------------------------------------------------
+    # ======================================================
 
     def focus_address_bar(self):
-        """
-        Focus browser address bar.
-        """
 
         return self.keyboard.address_bar()
 
-    # --------------------------------------------------
+    # ======================================================
     # Browser Back
-    # --------------------------------------------------
+    # ======================================================
 
     def back(self):
-        """
-        Go back.
-        """
 
         return self.keyboard.back()
 
-    # --------------------------------------------------
+    # ======================================================
     # Browser Forward
-    # --------------------------------------------------
+    # ======================================================
 
     def forward(self):
-        """
-        Go forward.
-        """
 
         return self.keyboard.forward()
 
-    # --------------------------------------------------
+    # ======================================================
     # Private Window
-    # --------------------------------------------------
+    # ======================================================
 
     def private_window(self):
-        """
-        Open Incognito / InPrivate window.
-        """
 
         return self.keyboard.private_window()
 
-    # --------------------------------------------------
-    # Open URL in Current Tab
-    # --------------------------------------------------
+    # ======================================================
+    # Open URL In Current Tab
+    # ======================================================
 
     def open_url_current_tab(
         self,
-        website
+        website,
     ):
         """
-        Open website in current tab.
+        Open URL in current ASTRA browser tab.
         """
 
         if not website:
 
             return False
 
-        website = self.normalize_url(
+        url = self.normalize_url(
             website
         )
 
-        if not self.focus_address_bar():
+        if not url:
 
             return False
 
-        self.keyboard.type_text(
-            website
-        )
+        with self._lock:
 
-        self.keyboard.press_key(
-            "enter"
-        )
+            if self.playwright:
 
-        return True
+                try:
 
-    # --------------------------------------------------
+                    if self._ensure_chrome():
+
+                        return bool(
+                            self.playwright.open_website(
+                                url
+                            )
+                        )
+
+                except Exception as error:
+
+                    print(
+                        f"Playwright current tab error : "
+                        f"{error}"
+                    )
+
+            # Keyboard fallback.
+            if not self.focus_address_bar():
+
+                return False
+
+            self.keyboard.type_text(
+                url
+            )
+
+            self.keyboard.press_key(
+                "enter"
+            )
+
+            return True
+
+    # ======================================================
     # Google Search Current Tab
-    # --------------------------------------------------
+    # ======================================================
 
     def search_current_tab(
         self,
-        query
+        query,
     ):
         """
-        Perform Google search
-        in current browser tab.
+        Perform Google search in current browser tab.
         """
 
         if not query:
 
             return False
 
-        search_url = (
-
-            "https://www.google.com/search?q="
-
-            + quote_plus(query)
-
-        )
-
-        return self.open_url_current_tab(
-            search_url
-        )
-
-    # --------------------------------------------------
-    # Close
-    # --------------------------------------------------
-
-    def close(self):
-        """
-        Cleanup browser resources safely.
-        """
-
-        if self._closed:
-            return
-
-        self._closed = True
-
-        try:
+        with self._lock:
 
             if self.playwright:
 
-                self.playwright.close()
+                try:
 
-                self.playwright = None
+                    if self._ensure_chrome():
 
-        except Exception as error:
+                        return bool(
+                            self.playwright.google_search(
+                                query,
+                                new_tab=False,
+                            )
+                        )
 
-            print(
-                f"Playwright Cleanup Error : {error}"
+                except Exception as error:
+
+                    print(
+                        f"Playwright current search error : "
+                        f"{error}"
+                    )
+
+            search_url = (
+                "https://www.google.com/search?q="
+                + quote_plus(
+                    str(query)
+                )
             )
 
-        try:
+            return self.open_url_current_tab(
+                search_url
+            )
 
-            if self.database:
+    # ======================================================
+    # Close
+    # ======================================================
 
-                self.database.close()
+    def close(self):
+        """
+        Cleanup BrowserController resources.
 
-                self.database = None
+        PlaywrightController handles its own safe shutdown.
+        Chrome itself is not intentionally closed here.
+        """
 
-        except Exception as error:
+        with self._lock:
 
-            print(f"Database Cleanup Error : {error}")
+            if self._closed:
+
+                return
+
+            self._closed = True
+
+            print(
+                "Shutting down BrowserController..."
+            )
+
+            # ----------------------------------------------
+            # Playwright Cleanup
+            # ----------------------------------------------
+
+            try:
+
+                if self.playwright:
+
+                    self.playwright.close()
+
+                    self.playwright = None
+
+            except Exception as error:
+
+                print(
+                    f"Playwright cleanup error : "
+                    f"{error}"
+                )
+
+            # ----------------------------------------------
+            # Database Cleanup
+            # ----------------------------------------------
+
+            try:
+
+                if self.database:
+
+                    self.database.close()
+
+                    self.database = None
+
+            except Exception as error:
+
+                print(
+                    f"Database cleanup error : "
+                    f"{error}"
+                )
+
+            print(
+                "BrowserController shutdown completed."
+            )

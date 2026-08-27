@@ -3,88 +3,322 @@ Playwright Browser Automation
 
 ASTRA-AI V1
 Production Ready
+
+Features
+--------
+- Persistent Playwright driver
+- Chrome CDP connection
+- Managed ASTRA Chrome fallback
+- Manual Chrome close recovery
+- Stale page/context/browser recovery
+- Playwright transport recovery
+- Thread-safe browser operations
+- Single browser operation lock
+- Google search
+- YouTube search and playback
+- Google result clicking
+- Safe Chrome reconnection
+- Crash-safe browser recovery
 """
 
-import os
+import socket
 import subprocess
+import threading
 import time
 from pathlib import Path
 from urllib.parse import quote_plus
+
 from automation.keyboard_controller import KeyboardController
 
 from playwright.sync_api import (
     sync_playwright,
-    Error,
-    TimeoutError,
+    TimeoutError as PlaywrightTimeoutError,
 )
 
 
 class PlaywrightController:
-    """
-    Browser automation using Playwright
-    connected to Chrome through CDP.
-    """
 
     DEBUG_PORT = 9222
+    CDP_HOST = "127.0.0.1"
+
+    CONNECT_TIMEOUT = 20.0
+    NAVIGATION_TIMEOUT = 60000
+    SELECTOR_TIMEOUT = 20000
 
     def __init__(
         self,
         profile="Default",
-        user_data_dir=None
+        user_data_dir=None,
     ):
 
-        self.profile = profile
+        self.profile = profile or "Default"
 
         # --------------------------------------------------
         # ASTRA Dedicated Chrome Profile
         # --------------------------------------------------
-        #
-        # Chrome versions with modern remote-debugging
-        # restrictions should use a separate user-data-dir
-        # for CDP automation.
-        #
-        # This is NOT Guest mode.
-        #
-        # The user can login to the professional/public
-        # Google account once inside this ASTRA profile.
-        # --------------------------------------------------
 
         self.USER_DATA_DIR = (
             user_data_dir
-            or
-            r"C:\ASTRA_AI_BROWSER"
+            or r"C:\ASTRA_AI_BROWSER"
         )
+
+        # --------------------------------------------------
+        # Playwright State
+        # --------------------------------------------------
 
         self.playwright = None
         self.browser = None
         self.context = None
         self.page = None
 
+        # --------------------------------------------------
+        # Keyboard Controller
+        # --------------------------------------------------
+
         self.keyboard = KeyboardController()
 
-        # Prevent duplicate cleanup
-        self._closed = False
+        # --------------------------------------------------
+        # Chrome Process
+        # --------------------------------------------------
 
-    # --------------------------------------------------
+        self._chrome_process = None
+        self._managed_chrome = False
+
+        # --------------------------------------------------
+        # State Flags
+        # --------------------------------------------------
+
+        self._closed = False
+        self._restarting = False
+
+        # --------------------------------------------------
+        # Thread Safety
+        # --------------------------------------------------
+
+        self._lock = threading.RLock()
+
+    # ======================================================
+    # CDP URL
+    # ======================================================
+
+    @property
+    def _cdp_url(self):
+
+        return (
+            f"http://{self.CDP_HOST}:"
+            f"{self.DEBUG_PORT}"
+        )
+
+    # ======================================================
     # Reset Browser State
-    # --------------------------------------------------
+    # ======================================================
 
     def _reset_browser(self):
-        """
-        Clear stale browser/page references.
 
-        IMPORTANT:
-        This method does NOT start another CDP connection.
-        The Playwright driver lifecycle is managed separately.
-        """
-
-        self.browser = None
-        self.context = None
         self.page = None
+        self.context = None
+        self.browser = None
 
-    # --------------------------------------------------
+    # ======================================================
+    # Check CDP Port
+    # ======================================================
+
+    def _is_cdp_available(self):
+
+        try:
+
+            with socket.create_connection(
+                (
+                    self.CDP_HOST,
+                    self.DEBUG_PORT,
+                ),
+                timeout=0.5,
+            ):
+
+                return True
+
+        except OSError:
+
+            return False
+
+    # ======================================================
+    # Managed Chrome Process Alive
+    # ======================================================
+
+    def _managed_process_alive(self):
+
+        process = self._chrome_process
+
+        if process is None:
+
+            return False
+
+        try:
+
+            return process.poll() is None
+
+        except Exception:
+
+            return False
+
+    # ======================================================
+    # Refresh Managed Chrome State
+    # ======================================================
+
+    def _refresh_managed_chrome_state(self):
+
+        if (
+            self._chrome_process is not None
+            and not self._managed_process_alive()
+        ):
+
+            print(
+                "Managed Chrome process is no longer alive."
+            )
+
+            self._chrome_process = None
+            self._managed_chrome = False
+
+    # ======================================================
+    # Error Message
+    # ======================================================
+
+    @staticmethod
+    def _error_message(error):
+
+        return str(error).lower()
+
+    # ======================================================
+    # Transport Error Detection
+    # ======================================================
+
+    @classmethod
+    def _is_transport_error(
+        cls,
+        error,
+    ):
+
+        message = cls._error_message(error)
+
+        errors = (
+
+            "epipe",
+            "broken pipe",
+            "write after end",
+            "pipe has been ended",
+            "transport closed",
+            "connection closed",
+            "connection reset",
+            "connection aborted",
+            "socket hang up",
+            "channel closed",
+            "driver process exited",
+            "connection refused",
+            "connection lost",
+            "browser_type.connect_over_cdp",
+
+        )
+
+        return any(
+            item in message
+            for item in errors
+        )
+
+    # ======================================================
+    # Target Error Detection
+    # ======================================================
+
+    @classmethod
+    def _is_target_error(
+        cls,
+        error,
+    ):
+
+        message = cls._error_message(error)
+
+        errors = (
+
+            "target closed",
+            "target page",
+            "page has been closed",
+            "page is closed",
+            "browser has been closed",
+            "context has been closed",
+            "context or browser has been closed",
+            "execution context was destroyed",
+            "target page, context or browser has been closed",
+
+        )
+
+        return any(
+            item in message
+            for item in errors
+        )
+
+    # ======================================================
+    # Connection Error Detection
+    # ======================================================
+
+    @classmethod
+    def _is_connection_error(
+        cls,
+        error,
+    ):
+
+        return (
+            cls._is_transport_error(error)
+            or cls._is_target_error(error)
+        )
+
+    # ======================================================
+    # Validate Current Browser Connection
+    # ======================================================
+
+    def _browser_is_alive(self):
+
+        if self.browser is None:
+
+            return False
+
+        # If CDP itself disappeared,
+        # all current Playwright references are stale.
+
+        if not self._is_cdp_available():
+
+            print(
+                "Chrome CDP is unavailable. "
+                "Clearing stale browser references."
+            )
+
+            self._reset_browser()
+
+            return False
+
+        try:
+
+            contexts = self.browser.contexts
+
+            if contexts is None:
+
+                self._reset_browser()
+
+                return False
+
+            return True
+
+        except Exception as error:
+
+            print(
+                f"Browser validation failed : {error}"
+            )
+
+            self._reset_browser()
+
+            return False
+
+    # ======================================================
     # Chrome Executable
-    # --------------------------------------------------
+    # ======================================================
 
     def _chrome_path(self):
 
@@ -94,67 +328,46 @@ class PlaywrightController:
 
             r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
 
+            str(
+                Path.home()
+                / "AppData"
+                / "Local"
+                / "Google"
+                / "Chrome"
+                / "Application"
+                / "chrome.exe"
+            ),
+
         ]
 
         for path in paths:
 
             if Path(path).exists():
+
                 return path
 
         return None
 
-    # --------------------------------------------------
+    # ======================================================
     # Start Playwright
-    # --------------------------------------------------
+    # ======================================================
 
     def _start_playwright(self):
 
-        if self.playwright is None:
+        if self.playwright is not None:
 
-            self.playwright = sync_playwright().start()
-
-    # --------------------------------------------------
-    # Restart Playwright Driver
-    # --------------------------------------------------
-
-    def _restart_playwright(self):
-        """
-        Restart the Playwright driver after a broken
-        Node.js transport / EPIPE failure.
-
-        The Chrome browser itself is not intentionally
-        closed here. We only restart the Python ↔
-        Playwright Node driver connection.
-        """
-
-        print(
-            "Restarting Playwright driver..."
-        )
+            return True
 
         try:
 
-            if self.playwright:
-
-                self.playwright.stop()
-
-        except Exception as error:
-
-            print(
-                f"Playwright stop warning : {error}"
+            self.playwright = (
+                sync_playwright().start()
             )
 
-        self.playwright = None
-
-        self._reset_browser()
-
-        self._closed = False
-
-        try:
-
-            self.playwright = sync_playwright().start()
+            self._closed = False
 
             print(
-                "Playwright driver restarted."
+                "Playwright driver started."
             )
 
             return True
@@ -162,26 +375,115 @@ class PlaywrightController:
         except Exception as error:
 
             print(
-                f"Playwright restart failed : {error}"
+                f"Playwright start error : {error}"
             )
 
             self.playwright = None
 
             return False
 
-    # --------------------------------------------------
+    # ======================================================
+    # Stop Playwright Driver
+    # ======================================================
+
+    def _stop_playwright_driver(self):
+
+        old_playwright = self.playwright
+
+        self.playwright = None
+
+        if old_playwright is None:
+
+            return
+
+        try:
+
+            old_playwright.stop()
+
+        except Exception as error:
+
+            print(
+                f"Playwright stop warning : {error}"
+            )
+
+    # ======================================================
+    # Restart Playwright Driver
+    # ======================================================
+
+    def _restart_playwright(self):
+
+        with self._lock:
+
+            if self._restarting:
+
+                return False
+
+            self._restarting = True
+
+            try:
+
+                print(
+                    "Restarting Playwright driver..."
+                )
+
+                self._reset_browser()
+
+                self._stop_playwright_driver()
+
+                time.sleep(0.5)
+
+                if not self._start_playwright():
+
+                    return False
+
+                print(
+                    "Playwright driver restarted."
+                )
+
+                return True
+
+            finally:
+
+                self._restarting = False
+
+    # ======================================================
     # Launch Managed Chrome
-    # --------------------------------------------------
+    # ======================================================
 
     def _launch_chrome(self):
+
+        self._refresh_managed_chrome_state()
+
+        if self._is_cdp_available():
+
+            print(
+                "Chrome CDP is already available."
+            )
+
+            return True
+
+        if self._managed_process_alive():
+
+            print(
+                "Managed Chrome process already running."
+            )
+
+            return True
 
         chrome = self._chrome_path()
 
         if chrome is None:
 
             raise FileNotFoundError(
-                "Google Chrome not found."
+                "Google Chrome executable not found."
             )
+
+        Path(
+            self.USER_DATA_DIR
+        ).mkdir(
+            parents=True,
+            exist_ok=True,
+        )
 
         command = [
 
@@ -205,202 +507,79 @@ class PlaywrightController:
 
         ]
 
-        subprocess.Popen(command)
-
-    # --------------------------------------------------
-    # Connect CDP
-    # --------------------------------------------------
-
-    def _connect_cdp(self):
-        self.browser = (
-
-            self.playwright.chromium.connect_over_cdp(
-
-                f"http://127.0.0.1:{self.DEBUG_PORT}"
-
-            )
-
+        self._chrome_process = subprocess.Popen(
+            command,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
-    # --------------------------------------------------
-    # Ensure Browser Connection
-    # --------------------------------------------------
 
-    def _connect(self):
-        """
-        Ensure one usable Playwright/CDP browser connection.
+        self._managed_chrome = True
 
-        Strategy:
+        print(
+            "Managed Chrome launched."
+        )
 
-            1. Reuse current live page.
-            2. Reuse current live context/browser.
-            3. Connect to Chrome CDP only when no usable connection exists.
-            4. Launch ASTRA-managed Chrome only when CDP is unavailable.
+        return True
 
-        IMPORTANT:
-            Normal browser actions must not repeatedly create CDP
-            connections.
-        """
+    # ======================================================
+    # Wait For CDP
+    # ======================================================
 
-        # --------------------------------------------------
-        # 1. Reuse existing live page
-        # --------------------------------------------------
+    def _wait_for_cdp(
+        self,
+        timeout=None,
+    ):
 
-        try:
+        if timeout is None:
 
-            if self.page and not self.page.is_closed():
+            timeout = self.CONNECT_TIMEOUT
+
+        deadline = (
+            time.monotonic()
+            + timeout
+        )
+
+        while time.monotonic() < deadline:
+
+            self._refresh_managed_chrome_state()
+
+            if self._is_cdp_available():
 
                 return True
 
-        except Exception:
+            time.sleep(0.25)
 
-            self.page = None
+        return False
 
-        # --------------------------------------------------
-        # 2. Reuse existing browser/context
-        # --------------------------------------------------
+    # ======================================================
+    # Connect CDP
+    # ======================================================
 
-        try:
+    def _connect_cdp(self):
 
-            if self.browser:
+        if self.playwright is None:
 
-                contexts = self.browser.contexts
-
-                if contexts:
-
-                    self.context = contexts[-1]
-
-                    pages = self.context.pages
-
-                    for candidate in reversed(pages):
-
-                        try:
-
-                            if not candidate.is_closed():
-
-                                self.page = candidate
-
-                                return True
-
-                        except Exception:
-
-                            continue
-
-        except Exception as error:
-
-            print(
-                f"Existing browser reference unavailable : {error}"
+            raise RuntimeError(
+                "Playwright driver is not started."
             )
 
-            # Clear only Python references.
-            # Do NOT restart Playwright here.
-            self.browser = None
-            self.context = None
-            self.page = None
-
-        # --------------------------------------------------
-        # 3. Start Playwright if required
-        # --------------------------------------------------
-
-        try:
-
-            self._start_playwright()
-
-        except Exception as error:
-
-            print(
-                f"Playwright start error : {error}"
+        self.browser = (
+            self.playwright.chromium.connect_over_cdp(
+                self._cdp_url
             )
+        )
+
+        return self.browser is not None
+
+    # ======================================================
+    # Select Context
+    # ======================================================
+
+    def _select_context(self):
+
+        if self.browser is None:
 
             return False
-
-        # --------------------------------------------------
-        # 4. Connect to existing Chrome CDP
-        # --------------------------------------------------
-
-        try:
-
-            print(
-                "Connecting to existing Chrome "
-                f"CDP : {self.DEBUG_PORT}"
-            )
-
-            self._connect_cdp()
-
-            print(
-                "Connected to existing Chrome."
-            )
-
-        except Exception:
-
-            print(
-                "Existing Chrome CDP unavailable."
-            )
-
-            # --------------------------------------------------
-            # Launch ASTRA managed Chrome
-            # --------------------------------------------------
-
-            try:
-
-                print(
-                    "Launching managed Chrome "
-                    f"with profile : {self.profile}"
-                )
-
-                self._launch_chrome()
-
-            except Exception as error:
-
-                print(
-                    f"Chrome Launch Error : {error}"
-                )
-
-                self.browser = None
-                self.context = None
-                self.page = None
-
-                return False
-
-            # --------------------------------------------------
-            # Wait for CDP
-            # --------------------------------------------------
-
-            connected = False
-
-            for _ in range(30):
-
-                try:
-
-                    self._connect_cdp()
-
-                    connected = True
-
-                    print(
-                        "Connected to managed Chrome."
-                    )
-
-                    break
-
-                except Exception:
-
-                    time.sleep(0.5)
-
-            if not connected:
-
-                print(
-                    "Unable to connect to Chrome CDP "
-                    f"on port {self.DEBUG_PORT}."
-                )
-
-                self.browser = None
-                self.context = None
-                self.page = None
-
-                return False
-
-        # --------------------------------------------------
-        # 5. Select browser context
-        # --------------------------------------------------
 
         try:
 
@@ -408,36 +587,43 @@ class PlaywrightController:
 
             if not contexts:
 
-                print(
-                    "Chrome connected, but no browser "
-                    "context was found."
-                )
+                self.context = None
 
                 return False
 
             self.context = contexts[-1]
 
+            return True
+
         except Exception as error:
 
             print(
-                f"Browser Context Error : {error}"
+                f"Context selection error : {error}"
             )
 
-            self.browser = None
             self.context = None
-            self.page = None
 
             return False
 
-        # --------------------------------------------------
-        # 6. Select existing page
-        # --------------------------------------------------
+    # ======================================================
+    # Find Existing Live Page
+    # ======================================================
+
+    def _find_live_page(self):
+
+        if self.browser is None:
+
+            return False
 
         try:
 
-            pages = self.context.pages
+            if not self._select_context():
 
-            self.page = None
+                self.page = None
+
+                return False
+
+            pages = self.context.pages
 
             for candidate in reversed(pages):
 
@@ -447,110 +633,47 @@ class PlaywrightController:
 
                         self.page = candidate
 
-                        break
+                        return True
 
                 except Exception:
 
                     continue
 
-            # --------------------------------------------------
-            # No usable page
-            # --------------------------------------------------
-
-            if self.page is None:
-
-                if not self._create_page():
-
-                    print(
-                        "Unable to create initial Chrome tab."
-                    )
-
-                    self.page = None
-
-                    return False
-
         except Exception as error:
 
             print(
-                f"Browser page selection error : {error}"
+                f"Live page lookup warning : {error}"
             )
 
-            self.page = None
+        self.page = None
 
-            return False
+        return False
 
-        # --------------------------------------------------
-        # 7. Final validation
-        # --------------------------------------------------
-
-        try:
-
-            if not self.page:
-
-                return False
-
-            if self.page.is_closed():
-
-                self.page = None
-
-                return False
-
-        except Exception:
-
-            self.page = None
-
-            return False
-
-        print(
-            "Playwright Ready."
-        )
-
-        print(
-            f"Chrome Profile : {self.profile}"
-        )
-
-        print(
-            f"CDP Port : {self.DEBUG_PORT}"
-        )
-
-        return True
-
-    # --------------------------------------------------
-    # Safely Create Browser Tab
-    # --------------------------------------------------
+    # ======================================================
+    # Create New Page
+    # ======================================================
 
     def _create_page(self):
-        """
-        Safely create a new browser tab using the existing
-        Playwright browser context.
 
-        This method NEVER reconnects CDP and NEVER restarts
-        the Playwright driver.
-        """
-
-        if not self.context:
-
-            print(
-                "Browser context unavailable."
-            )
+        if not self._browser_is_alive():
 
             return False
 
+        if self.context is None:
+
+            if not self._select_context():
+
+                return False
+
         try:
 
-            # --------------------------------------------------
-            # Verify context is still accessible
-            # --------------------------------------------------
+            if self.context is None:
 
-            pages = self.context.pages
+                return False
 
-            # --------------------------------------------------
-            # Create new page
-            # --------------------------------------------------
-
-            new_page = self.context.new_page()
-
-            self.page = new_page
+            self.page = (
+                self.context.new_page()
+            )
 
             print(
                 "New Playwright page created."
@@ -560,695 +683,720 @@ class PlaywrightController:
 
         except Exception as error:
 
-            message = str(error)
-
             print(
-                f"Page creation error : {message}"
+                f"Page creation error : {error}"
             )
 
-            # --------------------------------------------------
             # IMPORTANT:
-            #
-            # Do NOT reconnect here.
-            # Do NOT restart Playwright here.
-            # Do NOT treat EPIPE as a normal retry.
-            # --------------------------------------------------
+            # Manual Chrome close often appears here.
+            # Clear ALL stale objects immediately.
 
-            self.page = None
-
-            if (
-                "Target closed" in message
-                or
-                "Target page" in message
-                or
-                "context or browser has been closed" in message
-            ):
+            if self._is_connection_error(error):
 
                 print(
-                    "Browser target is no longer available."
+                    "Stale Chrome connection detected "
+                    "during page creation."
                 )
+
+                self._reset_browser()
+
+            else:
+
+                self.page = None
 
             return False
 
-    # --------------------------------------------------
-    # Create New Browser Tab
-    # --------------------------------------------------
+    # ======================================================
+    # Ensure Playwright Driver
+    # ======================================================
 
-    def new_tab(self):
-        """
-        Create a new browser tab using the existing
-        Chrome/CDP browser session.
+    def _ensure_playwright(self):
 
-        The existing Chrome profile and browser process
-        are preserved.
-        """
+        if self.playwright is not None:
 
-        if not self._connect():
+            return True
 
-            return False
+        return self._start_playwright()
 
-        try:
+    # ======================================================
+    # Connect To Browser
+    # ======================================================
 
-            if not self.context:
+    def _connect(self):
 
-                print(
-                    "Browser context unavailable."
-                )
+        with self._lock:
 
-                return False
+            if self._closed:
 
-            # --------------------------------------------------
-            # Create the tab.
-            #
-            # _create_page() now handles target creation safely.
-            # --------------------------------------------------
+                self._closed = False
 
-            if self._create_page():
-
-                print(
-                    "New Chrome tab created."
-                )
-
-                return True
-
-            print(
-                "Failed to create new Chrome tab."
-            )
-
-            return False
-
-        except Exception as error:
-
-            print(
-                f"New Tab Error : {error}"
-            )
-
-            self._reset_browser()
-
-            return False
-
-    # --------------------------------------------------
-    # Normalize URL
-    # --------------------------------------------------
-
-    @staticmethod
-    def normalize_url(url):
-
-        url = url.strip()
-
-        if url.startswith((
-            "http://",
-            "https://"
-        )):
-
-            return url
-
-        return "https://" + url
-
-    # --------------------------------------------------
-    # Retry Browser Action
-    # --------------------------------------------------
-
-    def _retry_action(self, action, *args):
-        """
-        Execute a browser action safely.
-
-        IMPORTANT:
-            EPIPE / broken-pipe errors are NOT automatically
-            retried or followed by a CDP reconnect.
-
-        Only normal Playwright target errors are allowed
-        one controlled retry.
-        """
-
-        try:
-
-            return action(*args)
-
-        except Exception as error:
-
-            message = str(error)
+            self._refresh_managed_chrome_state()
 
             # --------------------------------------------------
-            # EPIPE / broken pipe
-            #
-            # NEVER reconnect automatically.
-            #
-            # These errors belong to the Playwright Node
-            # transport and retrying immediately can create
-            # another CDP connection while the old transport
-            # is already broken.
+            # 1. IMPORTANT: Detect Manual Chrome Close
             # --------------------------------------------------
 
-            if (
-                "EPIPE" in message
-                or
-                "broken pipe" in message.lower()
-                or
-                "write after end" in message.lower()
-            ):
+            if self.browser is not None:
 
-                print(
-                    "Playwright transport error detected."
-                )
+                if not self._browser_is_alive():
 
-                print(
-                    f"Playwright Transport Error : {message}"
-                )
+                    print(
+                        "Previous browser connection is stale."
+                    )
 
-                print(
-                    "Automatic CDP reconnect skipped."
-                )
-
-                return False
+                    self._reset_browser()
 
             # --------------------------------------------------
-            # Normal browser target errors
+            # 2. Reuse Current Live Page
             # --------------------------------------------------
 
-            recoverable_error = (
+            if self.page is not None:
 
-                "Target page" in message
+                try:
 
-                or
+                    if (
+                        not self.page.is_closed()
+                        and self._is_cdp_available()
+                    ):
 
-                "Target closed" in message
+                        return True
 
-                or
+                except Exception:
 
-                "context or browser has been closed" in message
-
-            )
-
-            if not recoverable_error:
-
-                raise
-
-            print(
-                "Playwright browser target became unavailable."
-            )
-
-            print(
-                f"Playwright Target Error : {message}"
-            )
-
-            # --------------------------------------------------
-            # Clear stale page references only.
-            #
-            # Do NOT restart Playwright.
-            # Do NOT create another CDP connection here.
-            # --------------------------------------------------
-
-            self.page = None
-
-            # --------------------------------------------------
-            # Try to reuse an already existing context.
-            # --------------------------------------------------
-
-            try:
-
-                if self.context:
-
-                    pages = self.context.pages
-
-                    for candidate in reversed(pages):
-
-                        try:
-
-                            if not candidate.is_closed():
-
-                                self.page = candidate
-
-                                break
-
-                        except Exception:
-
-                            continue
-
-            except Exception as reconnect_error:
-
-                print(
-                    f"Browser target recovery failed : "
-                    f"{reconnect_error}"
-                )
+                    pass
 
                 self.page = None
 
             # --------------------------------------------------
-            # If no usable page exists, fail safely.
-            # Do not create a second CDP connection.
+            # 3. Reuse Browser + Existing Page
             # --------------------------------------------------
 
-            if self.page is None:
+            if self._browser_is_alive():
 
-                print(
-                    "No usable browser page available."
-                )
+                if self._find_live_page():
+
+                    return True
+
+                if self._create_page():
+
+                    return True
+
+                # Existing browser object failed.
+                # Clear and reconnect.
+
+                self._reset_browser()
+
+            # --------------------------------------------------
+            # 4. Ensure Playwright Driver
+            # --------------------------------------------------
+
+            if not self._ensure_playwright():
 
                 return False
 
             # --------------------------------------------------
-            # Retry the browser action exactly once.
+            # 5. If CDP Exists, Connect To It
             # --------------------------------------------------
 
+            if self._is_cdp_available():
+
+                try:
+
+                    print(
+                        "Connecting to existing Chrome CDP..."
+                    )
+
+                    self._connect_cdp()
+
+                    print(
+                        "Connected to Chrome CDP."
+                    )
+
+                except Exception as error:
+
+                    print(
+                        f"Existing CDP connection failed : "
+                        f"{error}"
+                    )
+
+                    self._reset_browser()
+
+                    # Restart Playwright transport if needed
+
+                    if self._is_transport_error(error):
+
+                        if not self._restart_playwright():
+
+                            return False
+
+            # --------------------------------------------------
+            # 6. Chrome Missing -> Launch Fresh Chrome
+            # --------------------------------------------------
+
+            if self.browser is None:
+
+                try:
+
+                    if not self._launch_chrome():
+
+                        return False
+
+                except Exception as error:
+
+                    print(
+                        f"Chrome launch error : {error}"
+                    )
+
+                    return False
+
+                if not self._wait_for_cdp():
+
+                    print(
+                        "Chrome CDP did not become available."
+                    )
+
+                    return False
+
+                connected = False
+
+                for attempt in range(3):
+
+                    try:
+
+                        self._connect_cdp()
+
+                        connected = True
+
+                        print(
+                            "Connected to Chrome CDP."
+                        )
+
+                        break
+
+                    except Exception as error:
+
+                        print(
+                            f"CDP connection attempt "
+                            f"{attempt + 1} failed : "
+                            f"{error}"
+                        )
+
+                        self._reset_browser()
+
+                        if self._is_transport_error(error):
+
+                            if not self._restart_playwright():
+
+                                return False
+
+                        time.sleep(0.75)
+
+                if not connected:
+
+                    self._reset_browser()
+
+                    print(
+                        "Unable to connect to Chrome."
+                    )
+
+                    return False
+
+            # --------------------------------------------------
+            # 7. Reuse Existing Chrome Tab
+            # --------------------------------------------------
+
+            if self._find_live_page():
+
+                print(
+                    "Playwright Ready."
+                )
+
+                return True
+
+            # --------------------------------------------------
+            # 8. Create Fresh Tab
+            # --------------------------------------------------
+
+            if not self._create_page():
+
+                # One final full recovery.
+                # This handles:
+                #
+                # Chrome manually closed
+                # CDP stale
+                # Context stale
+                # Browser stale
+
+                print(
+                    "Page creation failed. "
+                    "Performing full browser recovery."
+                )
+
+                self._reset_browser()
+
+                if self._is_cdp_available():
+
+                    try:
+
+                        self._connect_cdp()
+
+                    except Exception as error:
+
+                        print(
+                            f"Recovery CDP error : {error}"
+                        )
+
+                        self._reset_browser()
+
+                if self.browser is None:
+
+                    if not self._launch_chrome():
+
+                        return False
+
+                    if not self._wait_for_cdp():
+
+                        return False
+
+                    try:
+
+                        self._connect_cdp()
+
+                    except Exception as error:
+
+                        print(
+                            f"Final CDP recovery failed : "
+                            f"{error}"
+                        )
+
+                        self._reset_browser()
+
+                        return False
+
+                if self._find_live_page():
+
+                    return True
+
+                if not self._create_page():
+
+                    print(
+                        "Unable to create Chrome tab."
+                    )
+
+                    return False
+
             print(
-                "Retrying browser action on existing page..."
+                "Playwright Ready."
             )
+
+            return True
+
+    # ======================================================
+    # Recover Browser Connection
+    # ======================================================
+
+    def _recover_connection(
+        self,
+        restart_driver=False,
+    ):
+
+        with self._lock:
+
+            print(
+                "Recovering browser connection..."
+            )
+
+            self._reset_browser()
+
+            if restart_driver:
+
+                if not self._restart_playwright():
+
+                    return False
+
+            return self._connect()
+
+    # ======================================================
+    # Retry Browser Action
+    # ======================================================
+
+    def _retry_action(
+        self,
+        action,
+        *args,
+    ):
+
+        with self._lock:
 
             try:
 
                 return action(*args)
 
-            except Exception as retry_error:
+            except Exception as error:
 
                 print(
-                    f"Browser retry failed : {retry_error}"
+                    f"Browser action error : {error}"
+                )
+
+                if not self._is_connection_error(error):
+
+                    raise
+
+                restart_driver = (
+                    self._is_transport_error(error)
+                )
+
+                if not self._recover_connection(
+                    restart_driver=restart_driver,
+                ):
+
+                    return False
+
+                try:
+
+                    return action(*args)
+
+                except Exception as retry_error:
+
+                    print(
+                        f"Browser retry failed : "
+                        f"{retry_error}"
+                    )
+
+                    self._reset_browser()
+
+                    return False
+
+    # ======================================================
+    # New Tab
+    # ======================================================
+
+    def new_tab(self):
+
+        with self._lock:
+
+            if not self._connect():
+
+                return False
+
+            if self._create_page():
+
+                return True
+
+            # Recovery after stale context/browser
+
+            self._reset_browser()
+
+            if not self._connect():
+
+                return False
+
+            return self._create_page()
+
+    # ======================================================
+    # Normalize URL
+    # ======================================================
+
+    @staticmethod
+    def normalize_url(url):
+
+        url = str(url).strip()
+
+        if not url:
+
+            return ""
+
+        lower_url = url.lower()
+
+        if lower_url.startswith(
+            (
+                "http://",
+                "https://",
+            )
+        ):
+
+            return url
+
+        if "." not in url:
+
+            return (
+                "https://www.google.com/search?q="
+                + quote_plus(url)
+            )
+
+        return "https://" + url
+
+    # ======================================================
+    # Bring Page To Front
+    # ======================================================
+
+    def _bring_page_to_front(self):
+
+        if self.page is None:
+
+            return False
+
+        try:
+
+            if self.page.is_closed():
+
+                return False
+
+            self.page.bring_to_front()
+
+            return True
+
+        except Exception:
+
+            return False
+
+    # ======================================================
+    # Open Website
+    # ======================================================
+
+    def open_website(
+        self,
+        website,
+    ):
+
+        if not website:
+
+            return False
+
+        with self._lock:
+
+            if not self._connect():
+
+                return False
+
+            url = self.normalize_url(
+                website
+            )
+
+            if not url:
+
+                return False
+
+            def _open():
+
+                self.page.goto(
+                    url,
+                    wait_until="domcontentloaded",
+                    timeout=self.NAVIGATION_TIMEOUT,
+                )
+
+                self._bring_page_to_front()
+
+                print(
+                    f"Opening : {url}"
+                )
+
+                return True
+
+            try:
+
+                return self._retry_action(
+                    _open
+                )
+
+            except Exception as error:
+
+                print(
+                    f"Website error : {error}"
                 )
 
                 return False
 
-    # --------------------------------------------------
-    # Open Website
-    # --------------------------------------------------
-
-    def open_website(
-        self,
-        website
-    ):
-
-        if not self._connect():
-            return False
-
-        def _open(site):
-
-            url = self.normalize_url(site)
-
-            self.page.goto(
-                url,
-                wait_until="domcontentloaded",
-                timeout=60000
-            )
-
-            print(f"Opening : {url}")
-
-            return True
-
-        try:
-
-            return self._retry_action(
-                _open,
-                website
-            )
-
-        except Exception as error:
-
-            print(
-                f"Website Error : {error}"
-            )
-
-            return False
-
-    # --------------------------------------------------
+    # ======================================================
     # Google Search
-    # --------------------------------------------------
+    # ======================================================
 
     def google_search(
         self,
         query,
-        new_tab=False
+        new_tab=False,
     ):
 
-        if not self._connect():
+        if not query:
+
             return False
 
-        def _search(search_query):
+        with self._lock:
 
-            # --------------------------------------------------
-            # Separate user command → new tab
-            #
-            # Multi-command → reuse current tab
-            # --------------------------------------------------
+            if not self._connect():
+
+                return False
 
             if new_tab:
 
                 if not self._create_page():
 
-                    return False
+                    self._reset_browser()
 
-            url = (
+                    if not self._connect():
+
+                        return False
+
+                    if not self._create_page():
+
+                        return False
+
+            search_url = (
                 "https://www.google.com/search?q="
-                + quote_plus(search_query)
+                + quote_plus(
+                    str(query)
+                )
             )
 
-            self.page.goto(
-                url,
-                wait_until="domcontentloaded",
-                timeout=60000
-            )
+            def _search():
 
-            print(
-                f"Searching Google : {search_query}"
-            )
+                self.page.goto(
+                    search_url,
+                    wait_until="domcontentloaded",
+                    timeout=self.NAVIGATION_TIMEOUT,
+                )
 
-            return True
+                self._bring_page_to_front()
 
-        try:
+                print(
+                    f"Searching Google : {query}"
+                )
 
-            return self._retry_action(
-                _search,
-                query
-            )
-
-        except Exception as error:
-
-            print(
-                f"Google Search Error : {error}"
-            )
-
-            return False
-
-    # --------------------------------------------------
-    # YouTube Search
-    # --------------------------------------------------
-
-    def youtube_search(
-        self,
-        query,
-        new_tab=False
-    ):
-        if not self._connect():
-            return False
-
-        def _search(search_query):
-
-            # --------------------------------------------------
-            # Separate user command → new tab
-            #
-            # Multi-command → reuse current tab
-            # --------------------------------------------------
-
-            if new_tab:
-
-                if not self._create_page():
-
-                    return False
-
-            url = (
-                "https://www.youtube.com/results?search_query="
-                + quote_plus(search_query)
-            )
-
-            self.page.goto(
-                url,
-                wait_until="domcontentloaded",
-                timeout=60000
-            )
-
-            self.page.wait_for_selector(
-                "ytd-video-renderer",
-                timeout=20000
-            )
-
-            print(
-                f"YouTube Search : {search_query}"
-            )
-
-            return True
-
-        try:
-
-            return self._retry_action(
-                _search,
-                query
-            )
-
-        except Exception as error:
-
-            print(
-                f"YouTube Search Error : {error}"
-            )
-
-            return False
-
-    # --------------------------------------------------
-    # Click Google Search Result
-    # --------------------------------------------------
-
-    def click_search_result(
-        self,
-        index=0
-    ):
-        """
-        Click a Google search result by zero-based index.
-
-        Examples:
-
-            index=0
-                -> first result
-
-            index=1
-                -> second result
-
-            index=2
-                -> third result
-
-        Returns
-        -------
-        bool
-            True when the result was successfully clicked.
-        """
-
-        if not self._connect():
-
-            return False
-
-        def _click(result_index):
+                return True
 
             try:
 
-                result_index = int(
-                    result_index
+                return self._retry_action(
+                    _search
                 )
 
-            except (
-                TypeError,
-                ValueError
-            ):
-
-                result_index = 0
-
-            if result_index < 0:
-
-                result_index = 0
-
-            # ------------------------------------------------
-            # Google organic search result selectors.
-            #
-            # We intentionally prefer result containers
-            # rather than arbitrary links on the page.
-            # ------------------------------------------------
-
-            result_selectors = [
-
-                "div.MjjYud",
-
-                "div.tF2Cxc",
-
-            ]
-
-            result = None
-
-            for selector in result_selectors:
-
-                locator = self.page.locator(
-                    selector
-                )
-
-                count = locator.count()
-
-                if count > result_index:
-
-                    result = locator.nth(
-                        result_index
-                    )
-
-                    break
-
-            if result is None:
+            except Exception as error:
 
                 print(
-                    "Google search result not found."
+                    f"Google search error : {error}"
                 )
 
                 return False
 
-            # ------------------------------------------------
-            # Find the result link.
-            # ------------------------------------------------
+    # ======================================================
+    # YouTube Search
+    # ======================================================
 
-            link = result.locator(
-                "a"
-            ).first
+    def youtube_search(
+        self,
+        query,
+        new_tab=False,
+    ):
 
-            link.wait_for(
-                state="visible",
-                timeout=15000
+        if not query:
+
+            return False
+
+        with self._lock:
+
+            if not self._connect():
+
+                return False
+
+            if new_tab:
+
+                if not self._create_page():
+
+                    self._reset_browser()
+
+                    if not self._connect():
+
+                        return False
+
+                    if not self._create_page():
+
+                        return False
+
+            search_url = (
+                "https://www.youtube.com/results"
+                "?search_query="
+                + quote_plus(
+                    str(query)
+                )
             )
 
-            link.scroll_into_view_if_needed()
+            def _search():
 
-            # ------------------------------------------------
-            # Capture current URL before click.
-            # ------------------------------------------------
+                self.page.goto(
+                    search_url,
+                    wait_until="domcontentloaded",
+                    timeout=self.NAVIGATION_TIMEOUT,
+                )
 
-            previous_url = self.page.url
+                self.page.wait_for_selector(
+                    "ytd-video-renderer",
+                    timeout=self.SELECTOR_TIMEOUT,
+                )
 
-            print(
-                f"Clicking Google result : "
-                f"{result_index + 1}"
-            )
+                self._bring_page_to_front()
 
-            link.click(
-                force=True
-            )
+                print(
+                    f"YouTube Search : {query}"
+                )
 
-            # ------------------------------------------------
-            # Wait for navigation when possible.
-            # ------------------------------------------------
+                return True
 
             try:
 
-                self.page.wait_for_load_state(
-                    "domcontentloaded",
-                    timeout=30000
+                return self._retry_action(
+                    _search
                 )
 
-            except TimeoutError:
-
-                # Some pages keep loading resources
-                # indefinitely. DOMContentLoaded timeout
-                # should not automatically mean failure.
-                pass
-
-            self.page.wait_for_timeout(
-                1000
-            )
-
-            current_url = self.page.url
-
-            # ------------------------------------------------
-            # Verify navigation.
-            # ------------------------------------------------
-
-            if current_url != previous_url:
+            except Exception as error:
 
                 print(
-                    f"Google result opened : "
-                    f"{current_url}"
+                    f"YouTube search error : {error}"
                 )
 
-                return True
+                return False
 
-            # ------------------------------------------------
-            # Sometimes Google opens the same URL or the
-            # page navigation is delayed.
-            # Verify that the page is still alive.
-            # ------------------------------------------------
+    # ======================================================
+    # Click Google Search Result
+    # ======================================================
 
-            if (
-                self.page
-                and
-                not self.page.is_closed()
-            ):
-
-                print(
-                    "Google result click completed."
-                )
-
-                return True
-
-            return False
-
-        try:
-
-            return self._retry_action(
-                _click,
-                index
-            )
-
-        except TimeoutError:
-
-            print(
-                "Google result click timed out."
-            )
-
-            return False
-
-        except Error as error:
-
-            print(
-                f"Google Result Playwright Error : "
-                f"{error}"
-            )
-
-            return False
-
-        except Exception as error:
-
-            print(
-                f"Google Result Click Error : "
-                f"{error}"
-            )
-
-            return False
-
-    # --------------------------------------------------
-    # Play YouTube
-    # --------------------------------------------------
-
-    def play_youtube(
+    def click_search_result(
         self,
-        query,
-        new_tab=False
+        index=0,
     ):
 
-        if not self.youtube_search(
-            query,
-            new_tab=new_tab
-        ):
+        with self._lock:
 
-            return False
+            if not self._connect():
 
-        def _play(search_query):
+                return False
 
-            print(
-                f"Selecting YouTube video : {search_query}"
-            )
+            try:
 
-            # --------------------------------------------------
-            # Wait for YouTube search results to appear.
-            #
-            # YouTube is dynamic, so do not depend on only one
-            # exact thumbnail selector.
-            # --------------------------------------------------
+                index = max(
+                    int(index),
+                    0,
+                )
 
-            self.page.wait_for_timeout(2000)
+            except (
+                TypeError,
+                ValueError,
+            ):
 
-            video_selectors = [
+                index = 0
 
-                "ytd-video-renderer a#thumbnail",
+            def _click():
 
-                "ytd-video-renderer #thumbnail",
+                selectors = [
 
-                "ytd-video-renderer h3 a",
+                    "div.MjjYud",
 
-            ]
+                    "div.tF2Cxc",
 
-            first_video = None
+                ]
 
-            for selector in video_selectors:
+                result = None
 
-                try:
+                for selector in selectors:
 
                     locator = self.page.locator(
                         selector
@@ -1256,410 +1404,295 @@ class PlaywrightController:
 
                     count = locator.count()
 
-                    print(
-                        f"YouTube selector : "
-                        f"{selector} | count : {count}"
-                    )
+                    if count > index:
 
-                    if count > 0:
-
-                        first_video = locator.first
+                        result = locator.nth(
+                            index
+                        )
 
                         break
 
-                except Exception:
+                if result is None:
 
-                    continue
+                    print(
+                        "Google search result not found."
+                    )
 
-            # --------------------------------------------------
-            # No video found
-            # --------------------------------------------------
+                    return False
 
-            if first_video is None:
-
-                print(
-                    "No YouTube video result found."
+                link = (
+                    result.locator("a").first
                 )
 
-                return False
-
-            # --------------------------------------------------
-            # Wait until selected result is visible.
-            # --------------------------------------------------
-
-            try:
-
-                first_video.wait_for(
+                link.wait_for(
                     state="visible",
-                    timeout=15000
+                    timeout=15000,
                 )
 
-            except TimeoutError:
+                link.scroll_into_view_if_needed()
 
-                print(
-                    "YouTube video result was found "
-                    "but did not become visible."
+                previous_url = self.page.url
+
+                link.click(
+                    timeout=15000,
+                    force=True,
                 )
-
-                return False
-
-            # --------------------------------------------------
-            # Scroll result into view.
-            # --------------------------------------------------
-
-            try:
-
-                first_video.scroll_into_view_if_needed()
-
-            except Exception:
-
-                pass
-
-            self.page.wait_for_timeout(
-                1000
-            )
-
-            # --------------------------------------------------
-            # Click first video.
-            # --------------------------------------------------
-
-            print(
-                "Clicking first YouTube video..."
-            )
-
-            first_video.click(
-                force=True,
-                timeout=15000
-            )
-
-            # --------------------------------------------------
-            # Wait for video page.
-            #
-            # Do NOT use networkidle because YouTube keeps
-            # background network activity alive.
-            # --------------------------------------------------
-
-            try:
-
-                self.page.wait_for_load_state(
-                    "domcontentloaded",
-                    timeout=15000
-                )
-
-            except TimeoutError:
-
-                pass
-
-            # --------------------------------------------------
-            # Give YouTube player time to initialize.
-            # --------------------------------------------------
-
-            self.page.wait_for_timeout(
-                4000
-            )
-
-            # --------------------------------------------------
-            # Verify YouTube video player exists.
-            # --------------------------------------------------
-
-            try:
-
-                player = self.page.locator(
-                    "#movie_player video.html5-main-video"
-                ).first
-
-                player.wait_for(
-                    state="attached",
-                    timeout=15000
-                )
-
-                print(
-                    "YouTube video player detected."
-                )
-
-            except TimeoutError:
-
-                print(
-                    "YouTube video player was not detected."
-                )
-
-                return False
-
-            # --------------------------------------------------
-            # Move mouse away.
-            # --------------------------------------------------
-
-            try:
-
-                self.page.mouse.move(
-                    0,
-                    0
-                )
-
-            except Exception:
-
-                pass
-
-            # --------------------------------------------------
-            # Fullscreen
-            #
-            # Required workflow:
-            #
-            #   1. Focus YouTube player
-            #   2. Press F  -> YouTube fullscreen
-            #   3. Press F11 -> Chrome fullscreen
-            # --------------------------------------------------
-
-            try:
-
-                self.page.wait_for_timeout(
-                    1000
-                )
-
-                # --------------------------------------------------
-                # Bring the current YouTube page to the foreground.
-                #
-                # We do this AFTER navigation/video loading, not during
-                # page creation, so it does not recreate the earlier
-                # Target page / EPIPE issue.
-                # --------------------------------------------------
 
                 try:
 
-                    self.page.bring_to_front()
-
-                except Exception as error:
-
-                    print(
-                        f"Browser focus warning : {error}"
+                    self.page.wait_for_load_state(
+                        "domcontentloaded",
+                        timeout=30000,
                     )
 
-                self.page.wait_for_timeout(
-                    500
+                except PlaywrightTimeoutError:
+
+                    pass
+
+                self._bring_page_to_front()
+
+                return (
+                    self.page.url != previous_url
+                    or not self.page.is_closed()
                 )
 
-                # --------------------------------------------------
-                # Focus the actual YouTube player.
-                # --------------------------------------------------
+            try:
 
-                player = self.page.locator(
-                    "#movie_player"
-                ).first
-
-                try:
-
-                    player.focus()
-
-                except Exception as error:
-
-                    print(
-                        f"YouTube player focus warning : {error}"
-                    )
-
-                self.page.wait_for_timeout(
-                    500
-                )
-
-                # --------------------------------------------------
-                # Press F through Playwright.
-                #
-                # This sends the key event directly to the focused
-                # YouTube page/player.
-                # --------------------------------------------------
-
-                print(
-                    "Pressing F for YouTube fullscreen..."
-                )
-
-                self.page.keyboard.press(
-                    "f"
-                )
-
-                self.page.wait_for_timeout(
-                    1500
-                )
-
-                # --------------------------------------------------
-                # Press F11 through the OS keyboard controller.
-                #
-                # F11 is a browser/window-level shortcut, so keep
-                # this outside Playwright page.keyboard.
-                # --------------------------------------------------
-
-                print(
-                    "Pressing F11 for browser fullscreen..."
-                )
-
-                self.keyboard.press_key(
-                    "f11"
-                )
-
-                self.page.wait_for_timeout(
-                    1500
+                return self._retry_action(
+                    _click
                 )
 
             except Exception as error:
 
                 print(
-                    f"Fullscreen keyboard warning : {error}"
+                    f"Google result click error : "
+                    f"{error}"
                 )
 
-            print(
-                f"Playing : {search_query}"
-            )
+                return False
 
-            return True
+    # ======================================================
+    # Play YouTube
+    # ======================================================
 
-        try:
+    def play_youtube(
+        self,
+        query,
+        new_tab=False,
+    ):
 
-            return self._retry_action(
-                _play,
-                query
-            )
-
-        except TimeoutError:
-
-            print(
-                "Video page did not load."
-            )
+        if not query:
 
             return False
 
-        except Error as error:
+        with self._lock:
 
-            print(
-                f"Playwright Error : {error}"
-            )
+            if not self.youtube_search(
+                query,
+                new_tab=new_tab,
+            ):
 
-            return False
+                return False
 
-        except Exception as error:
+            def _play():
 
-            print(
-                f"Play Error : {error}"
-            )
+                selectors = [
 
-            return False
+                    "ytd-video-renderer a#thumbnail",
 
-    # --------------------------------------------------
+                    "ytd-video-renderer h3 a",
+
+                    "ytd-video-renderer #thumbnail",
+
+                ]
+
+                video = None
+
+                for selector in selectors:
+
+                    locator = self.page.locator(
+                        selector
+                    )
+
+                    if locator.count() > 0:
+
+                        video = locator.first
+
+                        break
+
+                if video is None:
+
+                    print(
+                        "No YouTube video found."
+                    )
+
+                    return False
+
+                video.wait_for(
+                    state="visible",
+                    timeout=15000,
+                )
+
+                video.scroll_into_view_if_needed()
+
+                video.click(
+                    timeout=15000,
+                    force=True,
+                )
+
+                try:
+
+                    self.page.wait_for_load_state(
+                        "domcontentloaded",
+                        timeout=20000,
+                    )
+
+                except PlaywrightTimeoutError:
+
+                    pass
+
+                player = (
+                    self.page.locator(
+                        "video.html5-main-video"
+                    ).first
+                )
+
+                player.wait_for(
+                    state="attached",
+                    timeout=15000,
+                )
+
+                self._bring_page_to_front()
+
+                try:
+
+                    self.page.keyboard.press("f")
+
+                except Exception as error:
+
+                    print(
+                        f"YouTube fullscreen warning : "
+                        f"{error}"
+                    )
+
+                try:
+
+                    self.keyboard.press_key(
+                        "f11"
+                    )
+
+                except Exception as error:
+
+                    print(
+                        f"Browser fullscreen warning : "
+                        f"{error}"
+                    )
+
+                print(
+                    f"Playing : {query}"
+                )
+
+                return True
+
+            try:
+
+                return self._retry_action(
+                    _play
+                )
+
+            except Exception as error:
+
+                print(
+                    f"Play error : {error}"
+                )
+
+                return False
+
+    # ======================================================
     # Current URL
-    # --------------------------------------------------
+    # ======================================================
 
     def current_url(self):
 
-        if not self._connect():
-            return None
+        with self._lock:
 
-        try:
+            if not self._connect():
 
-            return self.page.url
+                return None
 
-        except Exception:
+            try:
 
-            self._reset_browser()
+                return self._retry_action(
+                    lambda: self.page.url
+                )
 
-            return None
+            except Exception as error:
 
-    # --------------------------------------------------
-    # Refresh Page
-    # --------------------------------------------------
+                print(
+                    f"Current URL error : {error}"
+                )
+
+                return None
+
+    # ======================================================
+    # Refresh
+    # ======================================================
 
     def refresh(self):
 
-        if not self._connect():
-            return False
+        with self._lock:
 
-        try:
+            if not self._connect():
 
-            self.page.reload(
-                wait_until="domcontentloaded"
-            )
+                return False
 
-            return True
+            def _refresh():
 
-        except Exception as error:
+                self.page.reload(
+                    wait_until="domcontentloaded",
+                    timeout=self.NAVIGATION_TIMEOUT,
+                )
+
+                self._bring_page_to_front()
+
+                return True
+
+            try:
+
+                return self._retry_action(
+                    _refresh
+                )
+
+            except Exception as error:
+
+                print(
+                    f"Refresh error : {error}"
+                )
+
+                return False
+
+    # ======================================================
+    # Close
+    # ======================================================
+
+    def close(self):
+
+        with self._lock:
+
+            if self._closed:
+
+                return
+
+            self._closed = True
 
             print(
-                f"Refresh Error : {error}"
+                "Shutting down Playwright controller..."
             )
 
             self._reset_browser()
 
-            return False
+            self._stop_playwright_driver()
 
-    # --------------------------------------------------
-    # Close Browser Controller
-    # --------------------------------------------------
-
-    def close(self):
-        """
-        Gracefully shutdown Playwright.
-        """
-
-        if self._closed:
-
-            return
-
-        self._closed = True
-
-        try:
-
-            if (
-
-                self.page
-
-                and
-
-                not self.page.is_closed()
-
-            ):
-
-                self.page.close()
-
-        except Exception:
-
-            pass
-
-        try:
-
-            if self.context:
-
-                self.context.close()
-
-        except Exception:
-
-            pass
-
-        try:
-
-            if self.browser:
-
-                self.browser.close()
-
-        except Exception:
-
-            pass
-
-        try:
-
-            if self.playwright:
-
-                self.playwright.stop()
-
-        except Exception:
-
-            pass
-
-        self._reset_browser()
-
-        self.playwright = None
-
-        self.context = None
-
-        self.browser = None
-
-        self.page = None
-
-        print(
-            "Playwright shutdown completed."
-        )
+            print(
+                "Playwright shutdown completed."
+            )

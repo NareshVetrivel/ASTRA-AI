@@ -15,12 +15,15 @@ Features
 ✓ Stop current speech
 ✓ Explicit success/failure reporting
 ✓ Compatible with TextToSpeech fallback manager
+✓ Uses the same Python interpreter as ASTRA-AI
 """
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import subprocess
+import sys
 import tempfile
 import threading
 from pathlib import Path
@@ -32,7 +35,10 @@ class PiperTTSEngine:
     """
     Offline Piper TTS engine.
 
-    This engine does not require internet access.
+    This engine uses the same Python interpreter that runs
+    ASTRA-AI. This prevents Windows PATH from launching a
+    different Python installation where the piper package is
+    not installed.
 
     Default model:
 
@@ -47,9 +53,12 @@ class PiperTTSEngine:
         # Paths
         # --------------------------------------------------
 
-        self.project_root = Path(
-            __file__
-        ).resolve().parent.parent
+        self.project_root = (
+            Path(__file__)
+            .resolve()
+            .parent
+            .parent
+        )
 
         self.model_path = (
             self.project_root
@@ -67,10 +76,25 @@ class PiperTTSEngine:
 
         # --------------------------------------------------
         # Piper command
+        #
+        # IMPORTANT:
+        #
+        # Do NOT use:
+        #
+        #     python -m piper
+        #
+        # because Windows may resolve "python" to a system
+        # Python installation instead of ASTRA's virtual
+        # environment.
+        #
+        # sys.executable always points to the Python
+        # interpreter currently running ASTRA-AI.
         # --------------------------------------------------
 
+        self.python_executable = sys.executable
+
         self.piper_command = [
-            "python",
+            self.python_executable,
             "-m",
             "piper",
         ]
@@ -104,6 +128,12 @@ class PiperTTSEngine:
         self.volume = 1.0
 
         # --------------------------------------------------
+        # Process timeout
+        # --------------------------------------------------
+
+        self.generation_timeout = 120
+
+        # --------------------------------------------------
         # Validate model
         # --------------------------------------------------
 
@@ -130,6 +160,42 @@ class PiperTTSEngine:
             )
 
         # --------------------------------------------------
+        # Validate Piper installation
+        # --------------------------------------------------
+
+        self.piper_available = (
+            self._check_piper_available()
+        )
+
+        if not self.piper_available:
+
+            print(
+                "\nPiper TTS Warning : "
+                "Piper Python module is not available."
+            )
+
+            print(
+                "ASTRA Python Interpreter : "
+                f"{self.python_executable}"
+            )
+
+            print(
+                "Install Piper into the same Python "
+                "environment used by ASTRA-AI."
+            )
+
+        else:
+
+            print(
+                "Piper TTS module detected."
+            )
+
+            print(
+                "Piper Python Interpreter : "
+                f"{self.python_executable}"
+            )
+
+        # --------------------------------------------------
         # Pygame mixer
         # --------------------------------------------------
 
@@ -144,6 +210,33 @@ class PiperTTSEngine:
             print(
                 f"Piper pygame initialization error : {error}"
             )
+
+    # ======================================================
+    # Piper Installation Validation
+    # ======================================================
+
+    def _check_piper_available(self):
+        """
+        Check whether the Piper module is installed in the
+        same Python environment that is running ASTRA-AI.
+        """
+
+        try:
+
+            return (
+                importlib.util.find_spec(
+                    "piper"
+                )
+                is not None
+            )
+
+        except Exception as error:
+
+            print(
+                f"Piper module check error : {error}"
+            )
+
+            return False
 
     # ======================================================
     # Model Validation
@@ -165,6 +258,25 @@ class PiperTTSEngine:
         )
 
     # ======================================================
+    # Process Creation Flags
+    # ======================================================
+
+    @staticmethod
+    def _creation_flags():
+        """
+        Return Windows-safe subprocess creation flags.
+        """
+
+        if hasattr(
+            subprocess,
+            "CREATE_NO_WINDOW"
+        ):
+
+            return subprocess.CREATE_NO_WINDOW
+
+        return 0
+
+    # ======================================================
     # Generate WAV
     # ======================================================
 
@@ -182,6 +294,10 @@ class PiperTTSEngine:
             True when generation succeeds.
         """
 
+        if self._closed:
+
+            return False
+
         if not self._model_available():
 
             print(
@@ -191,9 +307,30 @@ class PiperTTSEngine:
 
             return False
 
+        if not self.piper_available:
+
+            print(
+                "Piper TTS Error : "
+                "Piper is not installed in the active "
+                "ASTRA Python environment."
+            )
+
+            print(
+                "Active Python : "
+                f"{self.python_executable}"
+            )
+
+            return False
+
         if not text:
 
             return False
+
+        if self.stop_event.is_set():
+
+            return False
+
+        process = None
 
         try:
 
@@ -211,6 +348,10 @@ class PiperTTSEngine:
                 str(output_file),
 
             ]
+
+            print(
+                "Generating Piper speech..."
+            )
 
             # --------------------------------------------------
             # Piper reads text from stdin.
@@ -233,16 +374,7 @@ class PiperTTSEngine:
                 errors="replace",
 
                 creationflags=(
-
-                    subprocess.CREATE_NO_WINDOW
-
-                    if hasattr(
-                        subprocess,
-                        "CREATE_NO_WINDOW"
-                    )
-
-                    else 0
-
+                    self._creation_flags()
                 ),
 
             )
@@ -255,12 +387,15 @@ class PiperTTSEngine:
 
                     input=str(text),
 
+                    timeout=self.generation_timeout,
+
                 )
 
-            except Exception as error:
+            except subprocess.TimeoutExpired:
 
                 print(
-                    f"Piper process communication error : {error}"
+                    "Piper TTS Error : "
+                    "Audio generation timed out."
                 )
 
                 try:
@@ -271,11 +406,41 @@ class PiperTTSEngine:
 
                     pass
 
+                try:
+
+                    stdout, stderr = process.communicate(
+                        timeout=5
+                    )
+
+                except Exception:
+
+                    pass
+
+                return False
+
+            except Exception as error:
+
+                print(
+                    f"Piper process communication error : {error}"
+                )
+
+                try:
+
+                    if process.poll() is None:
+
+                        process.kill()
+
+                except Exception:
+
+                    pass
+
                 return False
 
             finally:
 
-                self.current_process = None
+                if self.current_process is process:
+
+                    self.current_process = None
 
             # --------------------------------------------------
             # Stop requested
@@ -293,6 +458,11 @@ class PiperTTSEngine:
 
                 print(
                     "\nPiper TTS Generate Error"
+                )
+
+                print(
+                    "Python Interpreter Used : "
+                    f"{self.python_executable}"
                 )
 
                 if stderr:
@@ -331,11 +501,19 @@ class PiperTTSEngine:
 
             return True
 
-        except FileNotFoundError:
+        except FileNotFoundError as error:
 
             print(
                 "Piper TTS Error : "
-                "Python/Piper command was not found."
+                "Python executable was not found."
+            )
+
+            print(
+                f"Expected Python : {self.python_executable}"
+            )
+
+            print(
+                f"Details : {error}"
             )
 
             return False
@@ -347,6 +525,12 @@ class PiperTTSEngine:
             )
 
             return False
+
+        finally:
+
+            if self.current_process is process:
+
+                self.current_process = None
 
     # ======================================================
     # Blocking Speak
@@ -436,6 +620,10 @@ class PiperTTSEngine:
 
                 pygame.mixer.music.load(
                     output_file
+                )
+
+                pygame.mixer.music.set_volume(
+                    self.volume
                 )
 
                 pygame.mixer.music.play()
@@ -552,6 +740,8 @@ class PiperTTSEngine:
 
             self.stop()
 
+            self.stop_event.clear()
+
             self.current_thread = threading.Thread(
 
                 target=self.speak_blocking,
@@ -559,6 +749,8 @@ class PiperTTSEngine:
                 args=(text,),
 
                 daemon=True,
+
+                name="ASTRA-Piper-TTS",
 
             )
 
@@ -591,6 +783,16 @@ class PiperTTSEngine:
 
                     process.terminate()
 
+                    try:
+
+                        process.wait(
+                            timeout=2
+                        )
+
+                    except subprocess.TimeoutExpired:
+
+                        process.kill()
+
             except Exception:
 
                 try:
@@ -601,7 +803,11 @@ class PiperTTSEngine:
 
                     pass
 
-            self.current_process = None
+            finally:
+
+                if self.current_process is process:
+
+                    self.current_process = None
 
         # --------------------------------------------------
         # Stop pygame playback
@@ -675,7 +881,7 @@ class PiperTTSEngine:
         volume
     ):
         """
-        Store volume for API compatibility.
+        Set Piper playback volume.
         """
 
         try:
@@ -684,8 +890,6 @@ class PiperTTSEngine:
                 volume
             )
 
-            # Keep value inside a sensible range.
-
             self.volume = max(
                 0.0,
                 min(
@@ -693,6 +897,18 @@ class PiperTTSEngine:
                     1.0
                 )
             )
+
+            try:
+
+                if pygame.mixer.get_init():
+
+                    pygame.mixer.music.set_volume(
+                        self.volume
+                    )
+
+            except Exception:
+
+                pass
 
         except (
             TypeError,
@@ -722,6 +938,30 @@ class PiperTTSEngine:
         self._closed = True
 
         self.stop()
+
+        thread = self.current_thread
+
+        if (
+
+            thread
+
+            and
+            thread.is_alive()
+
+            and
+            thread is not threading.current_thread()
+
+        ):
+
+            try:
+
+                thread.join(
+                    timeout=2
+                )
+
+            except Exception:
+
+                pass
 
         self.current_thread = None
 
