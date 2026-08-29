@@ -1,5 +1,6 @@
 import os
 import re
+import html
 
 from PySide6.QtCore import (
     Qt,
@@ -332,6 +333,17 @@ class MainWindow(QMainWindow):
         super().__init__()
 
         self._closing = False
+
+        # ----------------------------------
+        # Graceful Okii, byee! See youu soon 🫶 Shutdown
+        # ----------------------------------
+        # The native window X must NOT destroy the window immediately.
+        # First show the AvatarWidget goodbye state for 4 seconds,
+        # then perform the normal resource cleanup and close.
+        self._shutdown_goodbye_started = False
+        self._shutdown_finalizing = False
+        self._goodbye_tts_signal_connected = False
+        self._goodbye_tts_finished = False
 
         # ----------------------------------
         # Backend
@@ -696,6 +708,24 @@ class MainWindow(QMainWindow):
 
         # Compatibility reference for backend code.
         self.avatar_widget = self.center_panel.avatar_widget
+
+        # --------------------------------------------------
+        # Goodbye shutdown ownership
+        # --------------------------------------------------
+        # AvatarWidget's goodbye_finished signal only marks the end of
+        # the visual 4-second avatar timer. It MUST NOT close the main
+        # window because the goodbye TTS sentence may still be speaking.
+        # The TextToSpeech speech_finished signal is the single source
+        # of truth for the final shutdown.
+        #
+        # Therefore we intentionally do NOT connect:
+        #
+        #     avatar_widget.goodbye_finished -> close
+        #
+        # The avatar remains visible while TTS is running. If TTS takes
+        # longer than 4 seconds, the avatar timer may finish, but the
+        # application remains alive until the complete TTS sentence ends.
+        # --------------------------------------------------
 
         # --------------------------------------------------
         # Thinking Avatar Synchronization
@@ -8181,6 +8211,259 @@ class MainWindow(QMainWindow):
         )
 
     # =====================================================
+    # Clickable Gemini Website Links
+    # =====================================================
+
+    @staticmethod
+    def _gemini_reply_to_link_html(
+        reply: str
+    ) -> str:
+        """
+        Convert Gemini's plain/markdown response into safe QLabel HTML
+        while making website URLs clickable.
+
+        Supported forms:
+            https://example.com
+            http://example.com
+            [Official Website](https://example.com)
+
+        The visible response text is preserved; only detected website
+        targets are converted into <a href="...">...</a> elements.
+        """
+
+        text = str(reply or "").strip()
+
+        if not text:
+            return ""
+
+        # Escape everything first so Gemini output can never inject
+        # arbitrary HTML into the Qt label.
+        escaped = html.escape(text)
+
+        # Markdown links: [label](https://...)
+        markdown_pattern = re.compile(
+            r"\[([^\]]+)\]\((https?://[^\s)<>]+)\)"
+        )
+
+        def replace_markdown(match):
+            label = match.group(1)
+            url = match.group(2)
+            return (
+                f'<a href="{html.escape(url, quote=True)}">'
+                f'{label}</a>'
+            )
+
+        escaped = markdown_pattern.sub(
+            replace_markdown,
+            escaped,
+        )
+
+        # Bare URLs that were not already converted into an anchor.
+        url_pattern = re.compile(
+            r'(?<!["=])(https?://[^\s<]+)'
+        )
+
+        def replace_url(match):
+            url = match.group(1)
+
+            # Strip punctuation that commonly follows a URL in prose.
+            trailing = ""
+            while url and url[-1] in ".,!?;:":
+                trailing = url[-1] + trailing
+                url = url[:-1]
+
+            if not url:
+                return match.group(1)
+
+            return (
+                f'<a href="{html.escape(url, quote=True)}">'
+                f'{url}</a>'
+                f'{trailing}'
+            )
+
+        escaped = url_pattern.sub(
+            replace_url,
+            escaped,
+        )
+
+        # Preserve normal line breaks in QLabel rich text.
+        return escaped.replace(
+            "\n",
+            "<br>"
+        )
+
+    def _open_gemini_website_link(
+        self,
+        url: str
+    ):
+        """
+        Open a website clicked inside a Gemini response using ASTRA's
+        existing BrowserController instead of launching an unrelated
+        browser session.
+        """
+
+        if self._closing:
+            return
+
+        url = str(url or "").strip()
+
+        if not re.match(
+            r"^https?://",
+            url,
+            flags=re.IGNORECASE,
+        ):
+            return
+
+        print(
+            f"Gemini Website Link Clicked : {url}"
+        )
+
+        success = False
+
+        try:
+            browser_controller = getattr(
+                self,
+                "browser_controller",
+                None,
+            )
+
+            if browser_controller is not None:
+                success = bool(
+                    browser_controller.open_url_current_tab(
+                        url
+                    )
+                )
+
+                # If the current ASTRA browser tab is not available,
+                # fall back to the controller's normal website opener.
+                if not success:
+                    success = bool(
+                        browser_controller.open_website(
+                            url,
+                            browser="chrome",
+                        )
+                    )
+
+        except Exception as error:
+            print(
+                f"Gemini Website Open Error : {error}"
+            )
+
+        if success:
+            self.status_label.setText(
+                "Status : Website Opened"
+            )
+            try:
+                self.mic_widget.update_ai_message(
+                    f"Opening website: {url}"
+                )
+            except Exception:
+                pass
+        else:
+            self.status_label.setText(
+                "Status : Website Open Failed"
+            )
+            try:
+                self.conversation_panel.show_error(
+                    f"I couldn't open the website:\n{url}"
+                )
+            except Exception:
+                pass
+
+    def _make_latest_gemini_response_clickable(
+        self,
+        reply: str
+    ):
+        """
+        Upgrade only the latest Gemini response bubble so website links
+        become real clickable links.
+
+        This keeps ConversationPanel's existing public API unchanged.
+        """
+
+        panel = getattr(
+            self,
+            "conversation_panel",
+            None,
+        )
+
+        if panel is None:
+            return
+
+        try:
+            message_widgets = getattr(
+                panel,
+                "_message_widgets",
+                [],
+            )
+
+            if not message_widgets:
+                return
+
+            latest_bubble = message_widgets[-1]
+
+            text_label = latest_bubble.findChild(
+                QLabel,
+                "MessageText",
+            )
+
+            if text_label is None:
+                return
+
+            link_html = self._gemini_reply_to_link_html(
+                reply
+            )
+
+            # No URL was found. Keep the existing plain-text label.
+            if "<a href=" not in link_html:
+                return
+
+            # Disconnect an earlier handler if this widget was reused.
+            try:
+                text_label.linkActivated.disconnect(
+                    self._open_gemini_website_link
+                )
+            except (TypeError, RuntimeError):
+                pass
+
+            text_label.setTextFormat(
+                Qt.RichText
+            )
+            text_label.setTextInteractionFlags(
+                Qt.TextBrowserInteraction
+            )
+            text_label.setOpenExternalLinks(
+                False
+            )
+            text_label.linkActivated.connect(
+                self._open_gemini_website_link
+            )
+            text_label.setText(
+                link_html
+            )
+
+            # Keep links visually obvious without changing the existing
+            # ConversationPanel stylesheet.
+            text_label.setStyleSheet(
+                """
+                QLabel#MessageText {
+                    color: #1F2937;
+                    font-size: 14px;
+                    background: transparent;
+                }
+                QLabel#MessageText a {
+                    color: #2563EB;
+                    text-decoration: underline;
+                }
+                """
+            )
+
+        except Exception as error:
+            print(
+                f"Gemini Link UI Error : {error}"
+            )
+
+    # =====================================================
     # Gemini Reply
     # =====================================================
 
@@ -8221,6 +8504,12 @@ class MainWindow(QMainWindow):
         try:
 
             self.conversation_panel.show_ai_response(
+                reply
+            )
+
+            # Gemini can return an official website as a normal URL or
+            # as a markdown link. Make that link clickable in ASTRA.
+            self._make_latest_gemini_response_clickable(
                 reply
             )
 
@@ -9025,6 +9314,328 @@ class MainWindow(QMainWindow):
         )
 
     # --------------------------------------------------
+    # Okii, byee! See youu soon 🫶 Shutdown
+    # --------------------------------------------------
+
+    def _speak_then_close(self, message):
+        """
+        Speak ``message`` and close the MainWindow immediately after
+        the TTS request finishes.
+
+        No fixed shutdown delay is used. The TextToSpeech manager emits
+        ``speech_finished(bool)`` only after the active speech provider
+        has completed, so that signal is the source of truth.
+        """
+
+        tts = getattr(self, "tts", None)
+
+        if tts is None:
+
+            print(
+                "[ASTRA SHUTDOWN] TTS object is unavailable. "
+                "Closing immediately."
+            )
+
+            self._finish_goodbye_shutdown()
+            return False
+
+        try:
+
+            speech_finished_signal = getattr(
+                tts,
+                "speech_finished",
+                None,
+            )
+
+            # Connect before speak() so a very short speech cannot finish
+            # before MainWindow starts listening for the completion signal.
+            if (
+                speech_finished_signal is not None
+                and hasattr(speech_finished_signal, "connect")
+            ):
+
+                if not self._goodbye_tts_signal_connected:
+
+                    speech_finished_signal.connect(
+                        self._on_goodbye_tts_finished
+                    )
+
+                    self._goodbye_tts_signal_connected = True
+
+                    print(
+                        "[ASTRA SHUTDOWN] TTS completion signal connected."
+                    )
+
+                print(
+                    "[ASTRA SHUTDOWN] Speaking goodbye..."
+                )
+
+                result = tts.speak(message)
+
+                if result is not None:
+
+                    print(
+                        "[ASTRA SHUTDOWN] Goodbye TTS started. "
+                        "Waiting for speech_finished."
+                    )
+
+                    return True
+
+                print(
+                    "[ASTRA SHUTDOWN] Goodbye TTS did not start. "
+                    "Closing immediately."
+                )
+
+                self._finish_goodbye_shutdown()
+                return False
+
+            # Compatibility fallback for a TTS implementation that does
+            # not expose speech_finished. Poll the actual speaking state;
+            # this is not a fixed shutdown delay.
+            print(
+                "[ASTRA SHUTDOWN] speech_finished signal unavailable. "
+                "Using speaking-state completion fallback."
+            )
+
+            result = tts.speak(message)
+
+            if result is None:
+
+                self._finish_goodbye_shutdown()
+                return False
+
+            self._wait_for_goodbye_tts_completion()
+            return True
+
+        except Exception as error:
+
+            print(
+                f"[ASTRA SHUTDOWN] Goodbye TTS error: {error}"
+            )
+
+            self._finish_goodbye_shutdown()
+            return False
+
+    def _wait_for_goodbye_tts_completion(self):
+        """
+        Compatibility fallback when TTS has no speech_finished signal.
+
+        The check follows the real TTS speaking state rather than waiting
+        for an arbitrary number of milliseconds.
+        """
+
+        if getattr(self, "_shutdown_finalizing", False):
+            return
+
+        tts = getattr(self, "tts", None)
+
+        if tts is None:
+            self._finish_goodbye_shutdown()
+            return
+
+        try:
+
+            speaking_method = getattr(
+                tts,
+                "speaking",
+                None,
+            )
+
+            if callable(speaking_method):
+
+                if speaking_method():
+
+                    QTimer.singleShot(
+                        50,
+                        self._wait_for_goodbye_tts_completion
+                    )
+                    return
+
+                self._finish_goodbye_shutdown()
+                return
+
+            # If there is no way to query completion, fail safe instead of
+            # leaving the application open forever.
+            self._finish_goodbye_shutdown()
+
+        except Exception as error:
+
+            print(
+                f"[ASTRA SHUTDOWN] TTS completion check error: {error}"
+            )
+
+            self._finish_goodbye_shutdown()
+
+    def _begin_goodbye_shutdown(self, event=None):
+        """
+        Start the goodbye sequence without destroying the window.
+
+        The MainWindow remains alive until TTS reports completion.
+        There is no fixed shutdown timer.
+        """
+
+        if getattr(self, "_shutdown_finalizing", False):
+            if event is not None:
+                event.ignore()
+            return False
+
+        if getattr(self, "_shutdown_goodbye_started", False):
+            if event is not None:
+                event.ignore()
+            return True
+
+        self._shutdown_goodbye_started = True
+        self._closing = True
+        self._goodbye_tts_finished = False
+
+        goodbye_message = "Seri da… naan kelamburen, seekiram vaa da."
+
+        print("\n========== ASTRA GOODBYE ==========")
+        print(f"ASTRA : {goodbye_message}")
+
+        # ----------------------------------------------
+        # Prevent new voice / wake-word work.
+        # ----------------------------------------------
+
+        self.manual_listening_requested = False
+        self.wake_word_enabled = False
+        self.wake_word_running = False
+        self.processing_voice = False
+
+        # ----------------------------------------------
+        # Stop active voice worker without blocking GUI.
+        # ----------------------------------------------
+
+        voice_worker = getattr(self, "voice_worker", None)
+
+        if voice_worker is not None:
+
+            try:
+
+                if voice_worker.isRunning():
+
+                    voice_worker.stop()
+
+                    print(
+                        "[ASTRA SHUTDOWN] VoiceWorker stop requested."
+                    )
+
+            except Exception as error:
+
+                print(
+                    f"[ASTRA SHUTDOWN] VoiceWorker stop error: {error}"
+                )
+
+        # ----------------------------------------------
+        # Show goodbye avatar.
+        # ----------------------------------------------
+
+        avatar_widget = getattr(self, "avatar_widget", None)
+
+        try:
+
+            if avatar_widget is not None:
+
+                if hasattr(avatar_widget, "set_state"):
+                    avatar_widget.set_state("goodbye")
+
+                elif hasattr(avatar_widget, "set_avatar_state"):
+                    avatar_widget.set_avatar_state("goodbye")
+
+        except Exception as error:
+
+            print(
+                f"[ASTRA SHUTDOWN] Goodbye avatar error: {error}"
+            )
+
+        # ----------------------------------------------
+        # Update visible goodbye UI.
+        # ----------------------------------------------
+
+        try:
+            self.status_label.setText("Status : Goodbye")
+        except Exception:
+            pass
+
+        try:
+            self.mic_widget.update_ai_message(goodbye_message)
+        except Exception:
+            pass
+
+        try:
+            self.conversation_label.setText(goodbye_message)
+        except Exception:
+            pass
+
+        try:
+            self.left_panel.set_listening("Goodbye")
+            self.left_panel.set_thinking("Inactive")
+            self.left_panel.set_speaking("Speaking")
+        except Exception:
+            pass
+
+        QApplication.processEvents()
+
+        # ----------------------------------------------
+        # TTS owns the exact completion point.
+        # ----------------------------------------------
+
+        self._speak_then_close(goodbye_message)
+
+        if event is not None:
+            event.ignore()
+
+        return True
+
+    def _on_goodbye_tts_finished(self, success=True):
+        """
+        Close the MainWindow immediately when the goodbye TTS finishes.
+        """
+
+        if getattr(self, "_shutdown_finalizing", False):
+            return
+
+        if not getattr(self, "_shutdown_goodbye_started", False):
+            return
+
+        if getattr(self, "_goodbye_tts_finished", False):
+            return
+
+        self._goodbye_tts_finished = True
+
+        print(
+            "[ASTRA SHUTDOWN] Goodbye TTS finished. "
+            f"Success : {bool(success)}"
+        )
+
+        # TTS completion is the ONLY normal trigger for final shutdown.
+        # _finish_goodbye_shutdown() marks the final-close state and then
+        # re-enters closeEvent(), where the existing cleanup is preserved.
+        self._finish_goodbye_shutdown()
+
+    def _finish_goodbye_shutdown(self):
+        """
+        Transition immediately from completed goodbye TTS to final cleanup.
+        """
+
+        if getattr(self, "_shutdown_finalizing", False):
+            return
+
+        if not getattr(self, "_shutdown_goodbye_started", False):
+            return
+
+        print(
+            "[ASTRA SHUTDOWN] Goodbye complete. "
+            "Starting final cleanup."
+        )
+
+        self._shutdown_finalizing = True
+
+        # No artificial delay. This immediately re-enters closeEvent()
+        # so the existing worker/backend cleanup remains intact.
+        self.close()
+
+    # --------------------------------------------------
     # Close Event
     # --------------------------------------------------
 
@@ -9033,10 +9644,33 @@ class MainWindow(QMainWindow):
         event
     ):
         """
-        Safely shut down all background workers
-        and backend resources before destroying
-        the main window.
+        Safely shut down all background workers and backend resources.
+
+        First native-X close request:
+            X -> goodbye.png -> goodbye TTS completes -> final cleanup -> close
+
+        Second/internal close request after goodbye:
+            normal resource cleanup -> application exits
         """
+
+        # --------------------------------------------------
+        # FIRST CLOSE REQUEST
+        # --------------------------------------------------
+        # Do not allow Qt to destroy the window yet. The goodbye avatar
+        # must remain visible for the complete 4-second interval.
+        # --------------------------------------------------
+
+        if not self._shutdown_finalizing:
+
+            self._begin_goodbye_shutdown(
+                event
+            )
+
+            return
+
+        # --------------------------------------------------
+        # FINAL CLOSE PASS
+        # --------------------------------------------------
 
         self._closing = True
 
@@ -9085,14 +9719,6 @@ class MainWindow(QMainWindow):
 
                     chat_worker.requestInterruption()
 
-                    # --------------------------------------------------
-                    # Do NOT use a long blocking wait here.
-                    #
-                    # Gemini network call itself may be inside the
-                    # worker. The application is already closing, so
-                    # we only give the worker a short graceful window.
-                    # --------------------------------------------------
-
                     if chat_worker.wait(
                         1500
                     ):
@@ -9135,11 +9761,6 @@ class MainWindow(QMainWindow):
 
                     voice_worker.stop()
 
-                    # ---------------------------------
-                    # Wait longer than recognizer's
-                    # phrase_time_limit (6 seconds)
-                    # ---------------------------------
-
                     if not voice_worker.wait(
                         8000
                     ):
@@ -9153,10 +9774,6 @@ class MainWindow(QMainWindow):
                         print(
                             "VoiceWorker stopped successfully."
                         )
-
-                # ---------------------------------
-                # Clear reference only after stop
-                # ---------------------------------
 
                 self.voice_worker = None
 
@@ -9292,6 +9909,8 @@ class MainWindow(QMainWindow):
         # Destroy Main Window only after
         # worker cleanup
         # ---------------------------------
+
+        event.accept()
 
         super().closeEvent(
             event
