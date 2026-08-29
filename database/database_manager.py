@@ -11,6 +11,9 @@ Supports:
 - Indexed files
 - Indexed folders
 - File and folder synchronization
+- Context-aware conversation memory
+- Persistent user context
+- Command history
 - Thread-safe database access
 
 ASTRA-AI V1
@@ -68,13 +71,6 @@ class DatabaseManager:
 
         # --------------------------------------
         # Connect Database
-        #
-        # check_same_thread=False is required
-        # because:
-        #
-        # - Main application uses SQLite
-        # - InitializationWorker uses SQLite
-        # - Watchdog FileMonitor uses SQLite
         # --------------------------------------
 
         self.connection = sqlite3.connect(
@@ -83,8 +79,10 @@ class DatabaseManager:
             timeout=30
         )
 
-        # Improve SQLite behavior for
-        # concurrent read/write operations.
+        # --------------------------------------
+        # Improve SQLite Concurrency
+        # --------------------------------------
+
         self.connection.execute(
             "PRAGMA journal_mode=WAL"
         )
@@ -127,6 +125,15 @@ class DatabaseManager:
             )
 
     # --------------------------------------------------
+
+    def _now(self):
+        """
+        Return current timestamp.
+        """
+
+        return datetime.now().isoformat()
+
+    # --------------------------------------------------
     # Commit
     # --------------------------------------------------
 
@@ -137,7 +144,9 @@ class DatabaseManager:
 
         with self.lock:
 
-            self.connection.commit()
+            if self.connection:
+
+                self.connection.commit()
 
     # --------------------------------------------------
     # Batch Commit
@@ -148,9 +157,7 @@ class DatabaseManager:
         Commit pending bulk inserts.
         """
 
-        with self.lock:
-
-            self.connection.commit()
+        self.commit()
 
     # ==================================================
     # DATABASE SETUP
@@ -253,9 +260,91 @@ class DatabaseManager:
                 """
             )
 
+            # ======================================
+            # CONTEXT-AWARE CONVERSATION MEMORY
+            # ======================================
+
+            self.cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS
+                conversation_context (
+
+                    id INTEGER
+                    PRIMARY KEY AUTOINCREMENT,
+
+                    user_command TEXT
+                    NOT NULL,
+
+                    assistant_response TEXT,
+
+                    intent TEXT,
+
+                    target TEXT,
+
+                    context_data TEXT,
+
+                    created_at TEXT
+                    NOT NULL
+
+                )
+                """
+            )
+
             # --------------------------------------
-            # Useful Indexes
+            # Persistent User Context
             # --------------------------------------
+
+            self.cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS
+                user_context (
+
+                    id INTEGER
+                    PRIMARY KEY AUTOINCREMENT,
+
+                    context_key TEXT
+                    UNIQUE NOT NULL,
+
+                    context_value TEXT,
+
+                    updated_at TEXT
+                    NOT NULL
+
+                )
+                """
+            )
+
+            # --------------------------------------
+            # Command History
+            # --------------------------------------
+
+            self.cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS
+                command_history (
+
+                    id INTEGER
+                    PRIMARY KEY AUTOINCREMENT,
+
+                    command TEXT
+                    NOT NULL,
+
+                    intent TEXT,
+
+                    target TEXT,
+
+                    status TEXT,
+
+                    created_at TEXT
+                    NOT NULL
+
+                )
+                """
+            )
+
+            # ======================================
+            # INDEXES
+            # ======================================
 
             self.cursor.execute(
                 """
@@ -289,6 +378,30 @@ class DatabaseManager:
                 """
             )
 
+            self.cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS
+                idx_context_created_at
+                ON conversation_context(created_at)
+                """
+            )
+
+            self.cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS
+                idx_context_intent
+                ON conversation_context(intent)
+                """
+            )
+
+            self.cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS
+                idx_history_created_at
+                ON command_history(created_at)
+                """
+            )
+
             self.connection.commit()
 
     # ==================================================
@@ -302,9 +415,6 @@ class DatabaseManager:
         full_path,
         source="SCANNER"
     ):
-        """
-        Insert or update an application.
-        """
 
         try:
 
@@ -330,7 +440,7 @@ class DatabaseManager:
                             full_path
                         ),
                         source,
-                        datetime.now().isoformat()
+                        self._now()
                     )
                 )
 
@@ -353,9 +463,6 @@ class DatabaseManager:
         alias,
         application_name
     ):
-        """
-        Store application alias.
-        """
 
         try:
 
@@ -395,9 +502,6 @@ class DatabaseManager:
         self,
         name
     ):
-        """
-        Return application details.
-        """
 
         with self.lock:
 
@@ -423,9 +527,6 @@ class DatabaseManager:
         self,
         alias
     ):
-        """
-        Return application alias.
-        """
 
         with self.lock:
 
@@ -446,9 +547,6 @@ class DatabaseManager:
     # --------------------------------------------------
 
     def get_all_applications(self):
-        """
-        Return all applications.
-        """
 
         with self.lock:
 
@@ -471,9 +569,6 @@ class DatabaseManager:
         self,
         name
     ):
-        """
-        Check whether application exists.
-        """
 
         with self.lock:
 
@@ -496,9 +591,6 @@ class DatabaseManager:
     # --------------------------------------------------
 
     def application_count(self):
-        """
-        Return total applications.
-        """
 
         with self.lock:
 
@@ -524,9 +616,6 @@ class DatabaseManager:
         last_modified,
         commit=True
     ):
-        """
-        Insert or update indexed file.
-        """
 
         try:
 
@@ -570,7 +659,7 @@ class DatabaseManager:
                         full_path,
                         file_size,
                         last_modified,
-                        datetime.now().isoformat()
+                        self._now()
                     )
                 )
 
@@ -594,9 +683,6 @@ class DatabaseManager:
         self,
         name
     ):
-        """
-        Return indexed file.
-        """
 
         with self.lock:
 
@@ -623,10 +709,6 @@ class DatabaseManager:
         self,
         full_path
     ):
-        """
-        Return indexed file
-        using its full path.
-        """
 
         full_path = (
             self._normalize_path(
@@ -658,9 +740,6 @@ class DatabaseManager:
         self,
         keyword
     ):
-        """
-        Search matching files.
-        """
 
         with self.lock:
 
@@ -685,9 +764,6 @@ class DatabaseManager:
     # --------------------------------------------------
 
     def get_all_files(self):
-        """
-        Return all indexed files.
-        """
 
         with self.lock:
 
@@ -710,9 +786,6 @@ class DatabaseManager:
         self,
         extension
     ):
-        """
-        Search files by extension.
-        """
 
         extension = extension.lower()
 
@@ -745,10 +818,6 @@ class DatabaseManager:
         self,
         full_path
     ):
-        """
-        Check whether file exists
-        in database.
-        """
 
         full_path = (
             self._normalize_path(
@@ -780,10 +849,6 @@ class DatabaseManager:
         self,
         minimum_size_mb
     ):
-        """
-        Search files larger than
-        the given size.
-        """
 
         minimum_size = (
             minimum_size_mb
@@ -816,9 +881,6 @@ class DatabaseManager:
         self,
         days
     ):
-        """
-        Search recently modified files.
-        """
 
         with self.lock:
 
@@ -844,9 +906,6 @@ class DatabaseManager:
     # --------------------------------------------------
 
     def file_count(self):
-        """
-        Return total indexed files.
-        """
 
         with self.lock:
 
@@ -867,22 +926,15 @@ class DatabaseManager:
         new_name,
         new_path
     ):
-        """
-        Update renamed file.
-        """
 
         try:
 
-            old_path = (
-                self._normalize_path(
-                    old_path
-                )
+            old_path = self._normalize_path(
+                old_path
             )
 
-            new_path = (
-                self._normalize_path(
-                    new_path
-                )
+            new_path = self._normalize_path(
+                new_path
             )
 
             new_file = Path(
@@ -908,10 +960,7 @@ class DatabaseManager:
 
                 file_size = None
 
-                last_modified = (
-                    datetime.now()
-                    .isoformat()
-                )
+                last_modified = self._now()
 
             with self.lock:
 
@@ -949,7 +998,7 @@ class DatabaseManager:
 
                         last_modified,
 
-                        datetime.now().isoformat(),
+                        self._now(),
 
                         old_path
                     )
@@ -974,101 +1023,14 @@ class DatabaseManager:
         old_path,
         new_path
     ):
-        """
-        Update moved file path.
-        """
 
-        try:
-
-            old_path = (
-                self._normalize_path(
-                    old_path
-                )
-            )
-
-            new_path = (
-                self._normalize_path(
-                    new_path
-                )
-            )
-
-            new_file = Path(
+        return self.update_file_name(
+            old_path=old_path,
+            new_name=Path(
                 new_path
-            )
-
-            if new_file.exists():
-
-                file_size = (
-                    new_file.stat()
-                    .st_size
-                )
-
-                last_modified = (
-                    datetime.fromtimestamp(
-                        new_file.stat()
-                        .st_mtime
-                    )
-                    .isoformat()
-                )
-
-            else:
-
-                file_size = None
-
-                last_modified = (
-                    datetime.now()
-                    .isoformat()
-                )
-
-            with self.lock:
-
-                self.cursor.execute(
-                    """
-                    UPDATE files
-                    SET
-
-                        name = ?,
-
-                        extension = ?,
-
-                        full_path = ?,
-
-                        file_size = ?,
-
-                        last_modified = ?,
-
-                        last_scanned = ?
-
-                    WHERE full_path = ?
-                    """,
-                    (
-                        new_file.stem.lower(),
-
-                        new_file.suffix.lower(),
-
-                        new_path,
-
-                        file_size,
-
-                        last_modified,
-
-                        datetime.now().isoformat(),
-
-                        old_path
-                    )
-                )
-
-                self.connection.commit()
-
-            return True
-
-        except Exception as error:
-
-            print(
-                f"Update File Path Error : {error}"
-            )
-
-            return False
+            ).stem,
+            new_path=new_path
+        )
 
     # --------------------------------------------------
 
@@ -1076,9 +1038,6 @@ class DatabaseManager:
         self,
         full_path
     ):
-        """
-        Remove file from database.
-        """
 
         try:
 
@@ -1119,9 +1078,6 @@ class DatabaseManager:
         file_path,
         commit=True
     ):
-        """
-        Insert or refresh one file entry.
-        """
 
         try:
 
@@ -1129,11 +1085,11 @@ class DatabaseManager:
                 file_path
             )
 
-            if not file.exists():
-
-                return False
-
-            if not file.is_file():
+            if (
+                not file.exists()
+                or
+                not file.is_file()
+            ):
 
                 return False
 
@@ -1175,10 +1131,6 @@ class DatabaseManager:
         self,
         full_path
     ):
-        """
-        Remove missing file
-        from database.
-        """
 
         return self.delete_file(
             full_path
@@ -1187,16 +1139,11 @@ class DatabaseManager:
     # --------------------------------------------------
 
     def clear_files(self):
-        """
-        Remove only indexed files.
-        """
 
         with self.lock:
 
             self.cursor.execute(
-                """
-                DELETE FROM files
-                """
+                "DELETE FROM files"
             )
 
             self.connection.commit()
@@ -1212,9 +1159,6 @@ class DatabaseManager:
         last_modified=None,
         commit=True
     ):
-        """
-        Insert or update indexed folder.
-        """
 
         try:
 
@@ -1242,10 +1186,7 @@ class DatabaseManager:
 
                 else:
 
-                    last_modified = (
-                        datetime.now()
-                        .isoformat()
-                    )
+                    last_modified = self._now()
 
             with self.lock:
 
@@ -1278,7 +1219,7 @@ class DatabaseManager:
 
                         last_modified,
 
-                        datetime.now().isoformat()
+                        self._now()
                     )
                 )
 
@@ -1303,9 +1244,6 @@ class DatabaseManager:
         folder_path,
         commit=True
     ):
-        """
-        Insert or refresh one folder entry.
-        """
 
         try:
 
@@ -1313,11 +1251,11 @@ class DatabaseManager:
                 folder_path
             )
 
-            if not folder.exists():
-
-                return False
-
-            if not folder.is_dir():
+            if (
+                not folder.exists()
+                or
+                not folder.is_dir()
+            ):
 
                 return False
 
@@ -1352,9 +1290,6 @@ class DatabaseManager:
         self,
         name
     ):
-        """
-        Return indexed folder.
-        """
 
         with self.lock:
 
@@ -1380,9 +1315,6 @@ class DatabaseManager:
         self,
         full_path
     ):
-        """
-        Return folder using its path.
-        """
 
         full_path = (
             self._normalize_path(
@@ -1413,9 +1345,6 @@ class DatabaseManager:
         self,
         keyword
     ):
-        """
-        Search matching folders.
-        """
 
         with self.lock:
 
@@ -1439,9 +1368,6 @@ class DatabaseManager:
     # --------------------------------------------------
 
     def get_all_folders(self):
-        """
-        Return all indexed folders.
-        """
 
         with self.lock:
 
@@ -1463,10 +1389,6 @@ class DatabaseManager:
         self,
         full_path
     ):
-        """
-        Check whether folder exists
-        in database.
-        """
 
         full_path = (
             self._normalize_path(
@@ -1495,9 +1417,6 @@ class DatabaseManager:
     # --------------------------------------------------
 
     def folder_count(self):
-        """
-        Return total indexed folders.
-        """
 
         with self.lock:
 
@@ -1518,22 +1437,15 @@ class DatabaseManager:
         new_name,
         new_path
     ):
-        """
-        Update renamed folder.
-        """
 
         try:
 
-            old_path = (
-                self._normalize_path(
-                    old_path
-                )
+            old_path = self._normalize_path(
+                old_path
             )
 
-            new_path = (
-                self._normalize_path(
-                    new_path
-                )
+            new_path = self._normalize_path(
+                new_path
             )
 
             with self.lock:
@@ -1558,9 +1470,9 @@ class DatabaseManager:
 
                         new_path,
 
-                        datetime.now().isoformat(),
+                        self._now(),
 
-                        datetime.now().isoformat(),
+                        self._now(),
 
                         old_path
                     )
@@ -1585,74 +1497,21 @@ class DatabaseManager:
         old_path,
         new_path
     ):
-        """
-        Update moved folder path.
-        """
 
         try:
 
-            old_path = (
-                self._normalize_path(
-                    old_path
-                )
-            )
-
-            new_path = (
-                self._normalize_path(
-                    new_path
-                )
-            )
-
-            folder = Path(
+            new_folder = Path(
                 new_path
             )
 
-            with self.lock:
+            return self.update_folder_name(
 
-                self.cursor.execute(
-                    """
-                    UPDATE folders
-                    SET
+                old_path=old_path,
 
-                        name = ?,
+                new_name=new_folder.name,
 
-                        full_path = ?,
-
-                        last_modified = ?,
-
-                        last_scanned = ?
-
-                    WHERE full_path = ?
-                    """,
-                    (
-                        folder.name.lower(),
-
-                        new_path,
-
-                        (
-                            datetime.fromtimestamp(
-                                folder.stat()
-                                .st_mtime
-                            )
-                            .isoformat()
-
-                            if folder.exists()
-
-                            else
-
-                            datetime.now()
-                            .isoformat()
-                        ),
-
-                        datetime.now().isoformat(),
-
-                        old_path
-                    )
-                )
-
-                self.connection.commit()
-
-            return True
+                new_path=new_path
+            )
 
         except Exception as error:
 
@@ -1668,9 +1527,6 @@ class DatabaseManager:
         self,
         full_path
     ):
-        """
-        Remove folder from database.
-        """
 
         try:
 
@@ -1710,10 +1566,6 @@ class DatabaseManager:
         self,
         full_path
     ):
-        """
-        Remove missing folder
-        from database.
-        """
 
         return self.delete_folder(
             full_path
@@ -1722,19 +1574,717 @@ class DatabaseManager:
     # --------------------------------------------------
 
     def clear_folders(self):
-        """
-        Remove only indexed folders.
-        """
 
         with self.lock:
 
             self.cursor.execute(
-                """
-                DELETE FROM folders
-                """
+                "DELETE FROM folders"
             )
 
             self.connection.commit()
+
+    # ==================================================
+    # CONTEXT-AWARE MEMORY METHODS
+    # ==================================================
+
+    def add_conversation_context(
+        self,
+        user_command,
+        assistant_response=None,
+        intent=None,
+        target=None,
+        context_data=None
+    ):
+        """
+        Store one conversation interaction.
+
+        context_data can contain additional
+        information required for follow-up
+        commands.
+        """
+
+        try:
+
+            with self.lock:
+
+                self.cursor.execute(
+                    """
+                    INSERT INTO
+                    conversation_context
+                    (
+                        user_command,
+                        assistant_response,
+                        intent,
+                        target,
+                        context_data,
+                        created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        user_command,
+                        assistant_response,
+                        intent,
+                        target,
+                        context_data,
+                        self._now()
+                    )
+                )
+
+                self.connection.commit()
+
+            return True
+
+        except Exception as error:
+
+            print(
+                f"Conversation Context Error : "
+                f"{error}"
+            )
+
+            return False
+
+    # --------------------------------------------------
+
+    def get_recent_context(
+        self,
+        limit=10
+    ):
+        """
+        Return recent conversation context.
+
+        Newest context is returned first.
+        """
+
+        try:
+
+            limit = max(
+                1,
+                int(limit)
+            )
+
+            with self.lock:
+
+                self.cursor.execute(
+                    """
+                    SELECT
+                        id,
+                        user_command,
+                        assistant_response,
+                        intent,
+                        target,
+                        context_data,
+                        created_at
+                    FROM conversation_context
+                    ORDER BY id DESC
+                    LIMIT ?
+                    """,
+                    (
+                        limit,
+                    )
+                )
+
+                return self.cursor.fetchall()
+
+        except Exception as error:
+
+            print(
+                f"Get Recent Context Error : "
+                f"{error}"
+            )
+
+            return []
+
+    # --------------------------------------------------
+
+    def get_latest_context(
+        self
+    ):
+        """
+        Return the latest conversation context.
+        """
+
+        contexts = (
+            self.get_recent_context(
+                limit=1
+            )
+        )
+
+        if contexts:
+
+            return contexts[0]
+
+        return None
+
+    # --------------------------------------------------
+
+    def get_context_by_intent(
+        self,
+        intent,
+        limit=10
+    ):
+        """
+        Return recent context for
+        a specific intent.
+        """
+
+        try:
+
+            limit = max(
+                1,
+                int(limit)
+            )
+
+            with self.lock:
+
+                self.cursor.execute(
+                    """
+                    SELECT
+                        id,
+                        user_command,
+                        assistant_response,
+                        intent,
+                        target,
+                        context_data,
+                        created_at
+                    FROM conversation_context
+                    WHERE intent = ?
+                    ORDER BY id DESC
+                    LIMIT ?
+                    """,
+                    (
+                        intent,
+                        limit
+                    )
+                )
+
+                return self.cursor.fetchall()
+
+        except Exception as error:
+
+            print(
+                f"Get Context By Intent Error : "
+                f"{error}"
+            )
+
+            return []
+
+    # --------------------------------------------------
+
+    def clear_conversation_context(
+        self
+    ):
+        """
+        Clear temporary conversation memory.
+        """
+
+        try:
+
+            with self.lock:
+
+                self.cursor.execute(
+                    """
+                    DELETE FROM
+                    conversation_context
+                    """
+                )
+
+                self.connection.commit()
+
+            return True
+
+        except Exception as error:
+
+            print(
+                f"Clear Conversation Context Error : "
+                f"{error}"
+            )
+
+            return False
+
+    # --------------------------------------------------
+
+    def trim_conversation_context(
+        self,
+        keep_last=100
+    ):
+        """
+        Keep only the latest context records.
+
+        Prevents unlimited database growth.
+        """
+
+        try:
+
+            keep_last = max(
+                1,
+                int(keep_last)
+            )
+
+            with self.lock:
+
+                self.cursor.execute(
+                    """
+                    DELETE FROM conversation_context
+                    WHERE id NOT IN
+                    (
+                        SELECT id
+                        FROM conversation_context
+                        ORDER BY id DESC
+                        LIMIT ?
+                    )
+                    """,
+                    (
+                        keep_last,
+                    )
+                )
+
+                self.connection.commit()
+
+            return True
+
+        except Exception as error:
+
+            print(
+                f"Trim Context Error : {error}"
+            )
+
+            return False
+
+    # ==================================================
+    # USER CONTEXT METHODS
+    # ==================================================
+
+    def set_user_context(
+        self,
+        context_key,
+        context_value
+    ):
+        """
+        Store persistent user context.
+
+        Example:
+
+        preferred_browser -> chrome
+        last_opened_file -> report.pdf
+        """
+
+        try:
+
+            context_key = (
+                str(context_key)
+                .strip()
+                .lower()
+            )
+
+            with self.lock:
+
+                self.cursor.execute(
+                    """
+                    INSERT INTO
+                    user_context
+                    (
+                        context_key,
+                        context_value,
+                        updated_at
+                    )
+                    VALUES (?, ?, ?)
+
+                    ON CONFLICT(context_key)
+                    DO UPDATE SET
+
+                        context_value =
+                        excluded.context_value,
+
+                        updated_at =
+                        excluded.updated_at
+                    """,
+                    (
+                        context_key,
+                        str(context_value),
+
+                        self._now()
+                    )
+                )
+
+                self.connection.commit()
+
+            return True
+
+        except Exception as error:
+
+            print(
+                f"Set User Context Error : "
+                f"{error}"
+            )
+
+            return False
+
+    # --------------------------------------------------
+
+    def get_user_context(
+        self,
+        context_key,
+        default=None
+    ):
+        """
+        Get one persistent context value.
+        """
+
+        try:
+
+            context_key = (
+                str(context_key)
+                .strip()
+                .lower()
+            )
+
+            with self.lock:
+
+                self.cursor.execute(
+                    """
+                    SELECT context_value
+                    FROM user_context
+                    WHERE context_key = ?
+                    """,
+                    (
+                        context_key,
+                    )
+                )
+
+                result = (
+                    self.cursor.fetchone()
+                )
+
+                if result:
+
+                    return result[0]
+
+                return default
+
+        except Exception as error:
+
+            print(
+                f"Get User Context Error : "
+                f"{error}"
+            )
+
+            return default
+
+    # --------------------------------------------------
+
+    def get_all_user_context(
+        self
+    ):
+        """
+        Return all persistent context.
+        """
+
+        try:
+
+            with self.lock:
+
+                self.cursor.execute(
+                    """
+                    SELECT
+                        context_key,
+                        context_value,
+                        updated_at
+                    FROM user_context
+                    ORDER BY context_key
+                    """
+                )
+
+                return self.cursor.fetchall()
+
+        except Exception as error:
+
+            print(
+                f"Get All User Context Error : "
+                f"{error}"
+            )
+
+            return []
+
+    # --------------------------------------------------
+
+    def delete_user_context(
+        self,
+        context_key
+    ):
+        """
+        Delete one persistent context item.
+        """
+
+        try:
+
+            context_key = (
+                str(context_key)
+                .strip()
+                .lower()
+            )
+
+            with self.lock:
+
+                self.cursor.execute(
+                    """
+                    DELETE FROM user_context
+                    WHERE context_key = ?
+                    """,
+                    (
+                        context_key,
+                    )
+                )
+
+                self.connection.commit()
+
+            return True
+
+        except Exception as error:
+
+            print(
+                f"Delete User Context Error : "
+                f"{error}"
+            )
+
+            return False
+
+    # --------------------------------------------------
+
+    def clear_user_context(
+        self
+    ):
+        """
+        Remove all persistent user context.
+        """
+
+        try:
+
+            with self.lock:
+
+                self.cursor.execute(
+                    """
+                    DELETE FROM user_context
+                    """
+                )
+
+                self.connection.commit()
+
+            return True
+
+        except Exception as error:
+
+            print(
+                f"Clear User Context Error : "
+                f"{error}"
+            )
+
+            return False
+
+    # ==================================================
+    # COMMAND HISTORY METHODS
+    # ==================================================
+
+    def add_command_history(
+        self,
+        command,
+        intent=None,
+        target=None,
+        status="SUCCESS"
+    ):
+        """
+        Store executed command history.
+        """
+
+        try:
+
+            with self.lock:
+
+                self.cursor.execute(
+                    """
+                    INSERT INTO
+                    command_history
+                    (
+                        command,
+                        intent,
+                        target,
+                        status,
+                        created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        command,
+                        intent,
+                        target,
+                        status,
+                        self._now()
+                    )
+                )
+
+                self.connection.commit()
+
+            return True
+
+        except Exception as error:
+
+            print(
+                f"Command History Error : "
+                f"{error}"
+            )
+
+            return False
+
+    # --------------------------------------------------
+
+    def get_recent_commands(
+        self,
+        limit=20
+    ):
+        """
+        Return recently executed commands.
+        """
+
+        try:
+
+            limit = max(
+                1,
+                int(limit)
+            )
+
+            with self.lock:
+
+                self.cursor.execute(
+                    """
+                    SELECT
+                        id,
+                        command,
+                        intent,
+                        target,
+                        status,
+                        created_at
+                    FROM command_history
+                    ORDER BY id DESC
+                    LIMIT ?
+                    """,
+                    (
+                        limit,
+                    )
+                )
+
+                return self.cursor.fetchall()
+
+        except Exception as error:
+
+            print(
+                f"Get Recent Commands Error : "
+                f"{error}"
+            )
+
+            return []
+
+    # --------------------------------------------------
+
+    def get_last_command(
+        self
+    ):
+        """
+        Return the most recently
+        executed command.
+        """
+
+        commands = (
+            self.get_recent_commands(
+                limit=1
+            )
+        )
+
+        if commands:
+
+            return commands[0]
+
+        return None
+
+    # --------------------------------------------------
+
+    def clear_command_history(
+        self
+    ):
+        """
+        Clear command execution history.
+        """
+
+        try:
+
+            with self.lock:
+
+                self.cursor.execute(
+                    """
+                    DELETE FROM command_history
+                    """
+                )
+
+                self.connection.commit()
+
+            return True
+
+        except Exception as error:
+
+            print(
+                f"Clear Command History Error : "
+                f"{error}"
+            )
+
+            return False
+
+    # --------------------------------------------------
+
+    def trim_command_history(
+        self,
+        keep_last=500
+    ):
+        """
+        Prevent unlimited command
+        history growth.
+        """
+
+        try:
+
+            keep_last = max(
+                1,
+                int(keep_last)
+            )
+
+            with self.lock:
+
+                self.cursor.execute(
+                    """
+                    DELETE FROM command_history
+                    WHERE id NOT IN
+                    (
+                        SELECT id
+                        FROM command_history
+                        ORDER BY id DESC
+                        LIMIT ?
+                    )
+                    """,
+                    (
+                        keep_last,
+                    )
+                )
+
+                self.connection.commit()
+
+            return True
+
+        except Exception as error:
+
+            print(
+                f"Trim Command History Error : "
+                f"{error}"
+            )
+
+            return False
 
     # ==================================================
     # CLEANUP / SYNCHRONIZATION
@@ -1744,10 +2294,6 @@ class DatabaseManager:
         self,
         commit=True
     ):
-        """
-        Remove database entries for
-        files that no longer exist.
-        """
 
         try:
 
@@ -1805,10 +2351,6 @@ class DatabaseManager:
         self,
         commit=True
     ):
-        """
-        Remove database entries for
-        folders that no longer exist.
-        """
 
         try:
 
@@ -1864,7 +2406,9 @@ class DatabaseManager:
     # DATABASE CLEANUP
     # ==================================================
 
-    def clear_database(self):
+    def clear_database(
+        self
+    ):
         """
         Remove all stored ASTRA data.
         """
@@ -1872,27 +2416,31 @@ class DatabaseManager:
         with self.lock:
 
             self.cursor.execute(
-                """
-                DELETE FROM applications
-                """
+                "DELETE FROM applications"
             )
 
             self.cursor.execute(
-                """
-                DELETE FROM aliases
-                """
+                "DELETE FROM aliases"
             )
 
             self.cursor.execute(
-                """
-                DELETE FROM files
-                """
+                "DELETE FROM files"
             )
 
             self.cursor.execute(
-                """
-                DELETE FROM folders
-                """
+                "DELETE FROM folders"
+            )
+
+            self.cursor.execute(
+                "DELETE FROM conversation_context"
+            )
+
+            self.cursor.execute(
+                "DELETE FROM user_context"
+            )
+
+            self.cursor.execute(
+                "DELETE FROM command_history"
             )
 
             self.connection.commit()
@@ -1901,7 +2449,9 @@ class DatabaseManager:
     # CLOSE DATABASE
     # ==================================================
 
-    def close(self):
+    def close(
+        self
+    ):
         """
         Close SQLite connection safely.
         """

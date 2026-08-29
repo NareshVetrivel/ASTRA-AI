@@ -12,6 +12,14 @@ from automation.screen_recorder import ScreenRecorder
 from automation.file_system_agent import FileSystemAgent
 from ff_agent import FileFolderAgent
 
+# --------------------------------------------------
+# Persistent Context Manager
+# --------------------------------------------------
+try:
+    from core.context_manager import ContextManager
+except ImportError:
+        ContextManager = None
+
 class CommandDispatcher:
 
     """
@@ -53,6 +61,29 @@ class CommandDispatcher:
         self.whisper = whisper
 
         self.gemini = gemini_client
+
+        # --------------------------------------------------
+        # Context-Aware Memory
+        # --------------------------------------------------
+        self.context_manager = None
+
+        if ContextManager is not None:
+
+            try:
+
+                self.context_manager = ContextManager()
+
+                print(
+                    "Context Manager initialized."
+                )
+
+            except Exception as error:
+
+                print(
+                    f"Context Manager Init Error : {error}"
+                )
+
+        self._active_context_payload = None
 
         self.screen_recorder = ScreenRecorder()
 
@@ -527,6 +558,374 @@ class CommandDispatcher:
         return statuses.get(intent, "Status : File/Folder Operation Completed")
 
 
+    # ==================================================
+    # CONTEXT-AWARE COMMAND HELPERS
+    # ==================================================
+
+    def _build_context_payload(
+        self,
+        intent=None,
+        entity=None,
+        typed_text=None,
+        browser=None,
+        website=None,
+        search_query=None,
+        profile=None,
+        user_text=None,
+        multi_command=False,
+        selection=None,
+    ):
+
+        return {
+
+            "intent": intent,
+            "entity": entity,
+            "typed_text": typed_text,
+            "browser": browser,
+            "website": website,
+            "search_query": search_query,
+            "profile": profile,
+            "user_text": user_text,
+            "multi_command": multi_command,
+            "selection": selection,
+
+        }
+
+    # --------------------------------------------------
+
+    def _apply_context_resolution(
+        self,
+        payload
+    ):
+        """
+        Resolve follow-up commands without changing the
+        existing dispatcher flow when no context exists.
+        """
+
+        manager = self.context_manager
+
+        if manager is None:
+
+            return payload
+
+        original = dict(
+            payload
+        )
+
+        command = (
+
+            original.get("user_text")
+
+            or
+
+            original.get("typed_text")
+
+            or
+
+            ""
+        )
+
+        methods = (
+
+            "resolve_command",
+
+            "resolve",
+
+            "apply_context",
+
+            "enrich_command",
+
+        )
+
+        for method_name in methods:
+
+            method = getattr(
+
+                manager,
+
+                method_name,
+
+                None
+
+            )
+
+            if not callable(method):
+
+                continue
+
+            try:
+
+                try:
+
+                    resolved = method(
+
+                        command=command,
+
+                        intent=original.get(
+                            "intent"
+                        ),
+
+                        entity=original.get(
+                            "entity"
+                        ),
+
+                        context=original,
+
+                    )
+
+                except TypeError:
+
+                    try:
+
+                        resolved = method(
+
+                            command,
+
+                            original.get(
+                                "intent"
+                            ),
+
+                            original.get(
+                                "entity"
+                            ),
+
+                        )
+
+                    except TypeError:
+
+                        resolved = method(
+                            command
+                        )
+
+                if resolved is None:
+
+                    continue
+
+                if isinstance(
+                    resolved,
+                    dict
+                ):
+
+                    merged = dict(
+                        original
+                    )
+
+                    for key, value in resolved.items():
+
+                        if (
+
+                            key in merged
+
+                            and
+
+                            value is not None
+
+                        ):
+
+                            merged[key] = value
+
+                    return merged
+
+                if isinstance(
+                    resolved,
+                    (tuple, list)
+                ):
+
+                    merged = dict(
+                        original
+                    )
+
+                    if len(resolved) >= 1:
+
+                        merged["intent"] = (
+
+                            resolved[0]
+
+                            or
+
+                            merged["intent"]
+
+                        )
+
+                    if len(resolved) >= 2:
+
+                        if resolved[1] is not None:
+
+                            merged["entity"] = (
+                                resolved[1]
+                            )
+
+                    if len(resolved) >= 3:
+
+                        merged["user_text"] = (
+
+                            resolved[2]
+
+                            or
+
+                            merged["user_text"]
+
+                        )
+
+                    return merged
+
+                if isinstance(
+                    resolved,
+                    str
+                ):
+
+                    resolved = resolved.strip()
+
+                    if resolved:
+
+                        merged = dict(
+                            original
+                        )
+
+                        merged["user_text"] = (
+                            resolved
+                        )
+
+                        return merged
+
+            except Exception as error:
+
+                print(
+                    "Context Resolution Error :",
+                    error
+                )
+
+        return original
+
+    # --------------------------------------------------
+
+    def _remember_context(
+        self,
+        payload
+    ):
+        """
+        Persist only successfully completed command context.
+        """
+
+        manager = self.context_manager
+
+        if manager is None:
+
+            return
+
+        payload = dict(
+            payload or {}
+        )
+
+        methods = (
+
+            "update_context",
+
+            "remember",
+
+            "record_context",
+
+            "add_context",
+
+            "save_context",
+
+        )
+
+        for method_name in methods:
+
+            method = getattr(
+
+                manager,
+
+                method_name,
+
+                None
+
+            )
+
+            if not callable(method):
+
+                continue
+
+            try:
+
+                try:
+
+                    method(
+
+                        intent=payload.get(
+                            "intent"
+                        ),
+
+                        entity=payload.get(
+                            "entity"
+                        ),
+
+                        user_text=payload.get(
+                            "user_text"
+                        ),
+
+                        typed_text=payload.get(
+                            "typed_text"
+                        ),
+
+                        browser=payload.get(
+                            "browser"
+                        ),
+
+                        website=payload.get(
+                            "website"
+                        ),
+
+                        search_query=payload.get(
+                            "search_query"
+                        ),
+
+                        profile=payload.get(
+                            "profile"
+                        ),
+
+                        selection=payload.get(
+                            "selection"
+                        ),
+
+                        payload=payload,
+
+                    )
+
+                except TypeError:
+
+                    try:
+
+                        method(
+                            payload
+                        )
+
+                    except TypeError:
+
+                        method(
+
+                            payload.get(
+                                "intent"
+                            ),
+
+                            payload.get(
+                                "entity"
+                            ),
+
+                        )
+
+                return
+
+            except Exception as error:
+
+                print(
+                    "Context Save Error :",
+                    error
+                )
+
+    # --------------------------------------------------
+
     # --------------------------------------------------
     # Helper : Standard Response
     # --------------------------------------------------
@@ -563,6 +962,22 @@ class CommandDispatcher:
         # Preserve optional orchestration data such as
         # multiple-file candidates for the UI.
         result.update(extra)
+
+        # Persist only successful completed commands.
+        if success:
+
+            try:
+
+                self._remember_context(
+                    self._active_context_payload
+                )
+
+            except Exception as error:
+
+                print(
+                    "Context Persist Error :",
+                    error
+                )
 
         return result
 
@@ -1161,6 +1576,41 @@ class CommandDispatcher:
         )
 
     # --------------------------------------------------
+    # Helper : Resolve AI Conversation Message
+    # --------------------------------------------------
+
+    @staticmethod
+    def resolve_ai_conversation_message(
+        user_text=None,
+        typed_text=None,
+        entity=None,
+    ):
+        """
+        Return the complete original user message for DHEEPTHI.
+
+        Context-aware conversation must preserve the user's
+        full utterance. Extracted entities are only used as a
+        final fallback because entity extraction can remove the
+        actual meaning of follow-up questions.
+        """
+
+        for value in (
+            user_text,
+            typed_text,
+            entity,
+        ):
+
+            if value is None:
+                continue
+
+            message = str(value).strip()
+
+            if message:
+                return message
+
+        return ""
+
+    # --------------------------------------------------
     # Dispatcher
     # --------------------------------------------------
 
@@ -1187,6 +1637,119 @@ class CommandDispatcher:
         """
 
         try:
+
+            # ==================================================
+            # CONTEXT-AWARE COMMAND RESOLUTION
+            # ==================================================
+
+            context_payload = (
+
+                self._build_context_payload(
+
+                    intent=intent,
+
+                    entity=entity,
+
+                    typed_text=typed_text,
+
+                    browser=browser,
+
+                    website=website,
+
+                    search_query=search_query,
+
+                    profile=profile,
+
+                    user_text=user_text,
+
+                    multi_command=multi_command,
+
+                    selection=selection,
+
+                )
+
+            )
+
+            context_payload = (
+
+                self._apply_context_resolution(
+                    context_payload
+                )
+
+            )
+
+            intent = context_payload.get(
+                "intent",
+                intent
+            )
+
+            entity = context_payload.get(
+                "entity",
+                entity
+            )
+
+            typed_text = context_payload.get(
+                "typed_text",
+                typed_text
+            )
+
+            browser = context_payload.get(
+                "browser",
+                browser
+            )
+
+            website = context_payload.get(
+                "website",
+                website
+            )
+
+            search_query = context_payload.get(
+                "search_query",
+                search_query
+            )
+
+            profile = context_payload.get(
+                "profile",
+                profile
+            )
+
+            user_text = context_payload.get(
+                "user_text",
+                user_text
+            )
+
+            selection = context_payload.get(
+                "selection",
+                selection
+            )
+
+            self._active_context_payload = (
+
+                self._build_context_payload(
+
+                    intent=intent,
+
+                    entity=entity,
+
+                    typed_text=typed_text,
+
+                    browser=browser,
+
+                    website=website,
+
+                    search_query=search_query,
+
+                    profile=profile,
+
+                    user_text=user_text,
+
+                    multi_command=multi_command,
+
+                    selection=selection,
+
+                )
+
+            )
 
             # Preserve the complete command context. If filesystem
             # resolution becomes ambiguous, this payload is returned
@@ -1232,17 +1795,139 @@ class CommandDispatcher:
             if agent_result is not None:
                 return agent_result
 
-            # -------------------------
-            # AI Conversation
-            # -------------------------
+            # ==================================================
+            # CONTEXT-AWARE AI CONVERSATION
+            # ==================================================
+            #
+            # IntentDetector routes normal questions, follow-up
+            # questions, topic continuation and conversational
+            # messages here as "ai_chat".
+            #
+            # IMPORTANT:
+            # Always send the complete original user message to
+            # GeminiClient. Do not rebuild the message from an
+            # extracted entity because that can destroy context.
+            #
+            # Examples:
+            #
+            #   "MCA admission pathi sollu"
+            #   "athoda eligibility enna?"
+            #   "continue"
+            #   "what about that?"
+            #
+            # GeminiClient owns the temporary conversation history
+            # and combines recent history with this current message.
 
             if intent == "ai_chat":
 
-                reply = self.gemini.generate_response(
-                    user_text or typed_text or entity or ""
+                conversation_message = (
+                    self.resolve_ai_conversation_message(
+                        user_text=user_text,
+                        typed_text=typed_text,
+                        entity=entity,
+                    )
                 )
 
-                self.tts.speak(reply)
+                if not conversation_message:
+
+                    reply = (
+                        "Enna venum nu sollu da."
+                    )
+
+                    try:
+
+                        self.tts.speak(reply)
+
+                    except Exception:
+
+                        pass
+
+                    return self.response(
+
+                        False,
+
+                        "",
+
+                        "Status : Empty AI Message",
+
+                        reply
+
+                    )
+
+                try:
+
+                    reply = (
+                        self.gemini.generate_response(
+                            conversation_message
+                        )
+                    )
+
+                except Exception as error:
+
+                    print(
+                        "AI Conversation Error :",
+                        error
+                    )
+
+                    reply = (
+                        "Sorry da, ippo response generate "
+                        "panna mudila."
+                    )
+
+                    try:
+
+                        self.tts.speak(reply)
+
+                    except Exception:
+
+                        pass
+
+                    return self.response(
+
+                        False,
+
+                        "",
+
+                        "Status : AI Failed",
+
+                        reply
+
+                    )
+
+                reply = str(
+                    reply or ""
+                ).strip()
+
+                if not reply:
+
+                    reply = (
+                        "Sorry da, ippo proper response "
+                        "generate panna mudila."
+                    )
+
+                    try:
+
+                        self.tts.speak(reply)
+
+                    except Exception:
+
+                        pass
+
+                    return self.response(
+
+                        False,
+
+                        "",
+
+                        "Status : Empty AI Response",
+
+                        reply
+
+                    )
+
+                self.tts.speak(
+                    reply
+                )
 
                 return self.response(
 

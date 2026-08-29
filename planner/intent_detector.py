@@ -6,6 +6,8 @@ from the recognized speech text using
 keyword and fuzzy matching.
 """
 
+import re
+
 from rapidfuzz import process, fuzz
 
 
@@ -410,6 +412,115 @@ class IntentDetector:
             "stop pannu": "stop",
         }
 
+    # ==================================================
+    # CONTEXT-AWARE AI CHAT ROUTING
+    # ==================================================
+
+    def _is_explicit_automation_command(self, text):
+        """
+        Return True only when the message clearly asks ASTRA
+        to perform a desktop action.
+
+        This protects normal conversation from being routed to
+        automation merely because words such as "open",
+        "close", "copy" or "search" appear inside a
+        question or explanation.
+        """
+
+        if not text:
+            return False
+
+        text = text.strip().lower()
+
+        explicit_patterns = (
+            r"^(open|start|run|launch)\b",
+            r"^(close|exit|quit|terminate)\b",
+            r"^(type|write|copy|paste|cut|undo|redo)\b",
+            r"^(click|double click|right click|scroll)\b",
+            r"^(minimize|maximize|restore)\b",
+            r"^(mute|lock|shutdown|restart|reboot|sleep|logout|signout)\b",
+            r"^(take )?screenshot\b",
+            r"^(set|increase|decrease|turn) (the )?(volume|brightness)\b",
+            r"^(create|delete|rename|move|copy|compress|extract)\b.*\b(file|folder|document|zip|archive)\b",
+            r"^(search|google|youtube|play)\b",
+            r"^(new tab|close tab|next tab|previous tab|refresh|go back|go forward)\b",
+            r"^(press )?(enter|tab|backspace|delete|escape|esc|space|home|end)\b",
+            r"^(open )?(settings|task manager|file explorer|camera|control panel|cmd|powershell)\b",
+            r"^(start|stop) (screen )?recording\b",
+        )
+
+        return any(re.search(pattern, text) for pattern in explicit_patterns)
+
+    def _is_conversational_message(self, text):
+        """
+        Detect questions, follow-ups and natural conversation.
+
+        The detector intentionally does not need to resolve the
+        previous topic itself. Returning ``ai_chat`` sends the message
+        to GeminiClient, where the temporary conversation history
+        resolves references such as "that", "it", "continue"
+        and "what about this?".
+        """
+
+        if not text:
+            return False
+
+        text = text.strip().lower()
+
+        # Clear questions must never accidentally execute an action.
+        question_patterns = (
+            r"^(what|who|why|when|where|which|whose|whom|how)\b",
+            r"^(enna|enna da|ethu|edhu|yaaru|yaru|yen|en|epdi|eppadi|eppo|engae|enga|ethuku|etharku)\b",
+            r"\b(can|could|would|should|is|are|do|does|did|will)\s+(you|i|we|this|that|it)\b",
+            r"\b(meaning|difference|compare|explain|describe|define|teach|guide|summary|summarize)\b",
+        )
+
+        if any(re.search(pattern, text) for pattern in question_patterns):
+            return True
+
+        # Time / date / day queries belong to AI chat so the model can
+        # answer directly instead of searching the desktop UI.
+        temporal_terms = (
+            "time", "date", "day", "today", "tomorrow",
+            "yesterday", "kannum", "innaiku", "innikku",
+            "naalai", "netru",
+        )
+
+        if any(term in text for term in temporal_terms):
+            if any(token in text for token in (
+                "what", "enna", "ethu", "edhu", "tell",
+                "sollu", "solunga", "sollunga", "current",
+                "now", "ippo", "ippa", "innaiku", "today",
+            )):
+                return True
+
+        # Short acknowledgements and follow-ups must retain the active
+        # topic through GeminiClient conversation history.
+        follow_ups = {
+            "why", "how", "then", "continue", "go on",
+            "tell me more", "explain more", "what about that",
+            "what about this", "and then", "after that",
+            "okay then", "seri then", "appo", "aprm",
+            "apram", "athuku apram", "idhu enna",
+            "athu enna", "adhula enna", "idha explain pannu",
+            "atha explain pannu", "continue da",
+        }
+
+        if text in follow_ups:
+            return True
+
+        # Natural identity, greeting and knowledge requests.
+        conversational_phrases = (
+            "who are you", "your name", "who created you",
+            "creator", "astra-ai", "dheepthi", "hello",
+            "hi ", "thanks", "thank you", "nandri",
+            "pathi", "pati", "puriyala", "puriya",
+            "sollu", "solunga", "sollunga", "detail ah",
+            "full detail", "example", "examples",
+        )
+
+        return any(phrase in text for phrase in conversational_phrases)
+
     def detect_intent(self, text):
         """
         Detect user intent.
@@ -477,7 +588,6 @@ class IntentDetector:
             text
             .replace("bdf", "pdf")
             .replace("estaday", "yesterday")
-            .replace("study", "today")
             .replace("you tube", "youtube")
             .replace("you to", "youtube")
             .replace("g mail", "gmail")
@@ -503,6 +613,22 @@ class IntentDetector:
 
             text = text.replace(old, new)
 
+        # ==================================================
+        # CONTEXT-AWARE CONVERSATION PRIORITY
+        # ==================================================
+        #
+        # Explicit desktop commands keep automation priority.
+        # Questions, follow-ups and natural conversation are routed
+        # to Gemini so the existing temporary history can resolve
+        # the active topic and previous entities.
+        # ==================================================
+
+        if not self._is_explicit_automation_command(text):
+
+            if self._is_conversational_message(text):
+
+                return "ai_chat"
+
         # ---------------------------------
         # Voice / Whisper Punctuation Cleanup
         # ---------------------------------
@@ -517,8 +643,6 @@ class IntentDetector:
         # filesystem commands are detected
         # reliably.
         # ---------------------------------
-
-        import re
 
         text = re.sub(
             r"[,\.;:!?]+",

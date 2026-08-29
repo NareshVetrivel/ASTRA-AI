@@ -3282,11 +3282,26 @@ class MainWindow(QMainWindow):
 
         if intent == "ai_chat":
 
+            # Voice and typed chat share the same persistent
+            # self.gemini instance. Preserve the complete recognized
+            # message so follow-up/context meaning is not lost.
+            conversation_message = str(
+                text or ""
+            ).strip()
+
+            if not conversation_message:
+
+                self._unlock_after_speech(
+                    restart_wake=True
+                )
+
+                return
+
             self.lock_microphone()
 
             try:
                 ai_reply = self.gemini.generate_response(
-                    text
+                    conversation_message
                 )
 
                 if not ai_reply or not str(ai_reply).strip():
@@ -6827,8 +6842,14 @@ class MainWindow(QMainWindow):
 
         if intent == "ai_chat":
 
+            # Always preserve the complete original message.
+            # GeminiClient combines it with temporary session history.
+            conversation_message = str(
+                original_text or normalized_text or ""
+            ).strip()
+
             self._start_text_gemini_chat(
-                original_text
+                conversation_message
             )
 
             return
@@ -6863,6 +6884,23 @@ class MainWindow(QMainWindow):
         """
 
         if self._closing:
+            return
+
+        text = str(
+            text or ""
+        ).strip()
+
+        if not text:
+
+            try:
+
+                self.conversation_panel.show_error(
+                    "Please enter a message."
+                )
+
+            except Exception:
+                pass
+
             return
 
         if self.gemini is None:
