@@ -1,6 +1,7 @@
 import os
 import re
 import html
+import random
 
 from PySide6.QtCore import (
     Qt,
@@ -72,6 +73,27 @@ from automation.browser_controller import BrowserController
 from automation.file_monitor import FileMonitor
 
 from workers.initialization_worker import InitializationWorker
+
+
+# =====================================================
+# FINAL ASTRA-AI STARTUP / GOODBYE GREETINGS
+# =====================================================
+
+OPEN_GREETINGS = [
+    "Vanakkam! Naan DHEEPTHI. Ungalukku assist panna ready-ah iruken.",
+    "Vanakkam! Naan DHEEPTHI. Sollunga, enna help venum?",
+    "Hello! Naan DHEEPTHI. Ungaloda task-ku assist panna ready.",
+    "Vanakkam! DHEEPTHI online. Sollunga, enna seiyanum?",
+    "Hello! Naan DHEEPTHI. Ungaloda command-ku ready-ah iruken.",
+]
+
+CLOSE_GREETINGS = [
+    "Okay… ippo namma session complete. Next time continue pannalaam.",
+    "Okay… indha session inga mudiyudhu. Thirumbi sandhippom.",
+    "Seri… ippo naan purappaduren. Adutha murai thodarnthu pesalaam.",
+    "Seri… ippo kelamburen. Next time meet pannalaam.",
+    "Seri… ippo naan kelamburen. Meendum thevaipadumbodhu sandhippom.",
+]
 
 
 # =====================================================
@@ -338,8 +360,8 @@ class MainWindow(QMainWindow):
         # Graceful Okii, byee! See youu soon 🫶 Shutdown
         # ----------------------------------
         # The native window X must NOT destroy the window immediately.
-        # First show the AvatarWidget goodbye state for 4 seconds,
-        # then perform the normal resource cleanup and close.
+        # First show the AvatarWidget goodbye state and play the selected
+        # goodbye TTS, then perform the normal resource cleanup and close.
         self._shutdown_goodbye_started = False
         self._shutdown_finalizing = False
         self._goodbye_tts_signal_connected = False
@@ -5085,8 +5107,17 @@ class MainWindow(QMainWindow):
 
             if self.tts is not None:
 
+                # Select exactly one opening greeting for this launch.
+                # The HELLO avatar is already visible and remains active
+                # until _wait_for_startup_greeting detects full TTS completion.
+                startup_greeting = random.choice(OPEN_GREETINGS)
+
+                print(
+                    f"[STARTUP] Selected greeting : {startup_greeting}"
+                )
+
                 self.tts.speak(
-                    "Hello Naresh, I am Dheepthi, Welcome"
+                    startup_greeting
                 )
 
                 print(
@@ -9488,7 +9519,14 @@ class MainWindow(QMainWindow):
         self._closing = True
         self._goodbye_tts_finished = False
 
-        goodbye_message = "Seri da… naan kelamburen, seekiram vaa da."
+        # Select exactly one closing greeting for this shutdown.
+        # The goodbye avatar is shown before TTS starts and remains visible
+        # until speech_finished triggers the final close path.
+        goodbye_message = random.choice(CLOSE_GREETINGS)
+
+        print(
+            f"[ASTRA SHUTDOWN] Selected goodbye : {goodbye_message}"
+        )
 
         print("\n========== ASTRA GOODBYE ==========")
         print(f"ASTRA : {goodbye_message}")
