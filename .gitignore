@@ -108,3 +108,5 @@ database/astra.db-shm
 database/astra.db-wal
 
 terminal_output.txt
+
+noted_files.md

@@ -7,11 +7,24 @@ DHEEPTHI Wake Word Support
 ---------------------------
 DHEEPTHI is the AI assistant name.
 
-Supported wake words:
-    - dheepthi
-    - hey dheepthi
-    - okay dheepthi
-    - ok dheepthi
+This module handles:
+
+    - Microphone recording
+    - Natural speech capture
+    - Silence / pause handling
+    - Faster-Whisper transcription
+    - Audio level monitoring
+    - DHEEPTHI wake-word detection
+    - Wake-word + command detection
+    - Confirmation listening
+
+Performance target:
+
+    Intel i5
+    8 GB RAM
+
+The module is intentionally kept compatible with
+the existing ASTRA-AI voice architecture.
 """
 
 from __future__ import annotations
@@ -22,7 +35,6 @@ from difflib import SequenceMatcher
 
 import numpy as np
 import sounddevice as sd
-
 import speech_recognition as sr
 
 from faster_whisper import WhisperModel
@@ -33,7 +45,11 @@ class WhisperRecognizer:
     Offline Speech Recognition using Faster-Whisper.
 
     Handles:
+
         - Microphone recording
+        - Natural command capture
+        - Ambient noise calibration
+        - Silence detection
         - Faster-Whisper transcription
         - Audio level monitoring
         - DHEEPTHI wake-word detection
@@ -41,12 +57,60 @@ class WhisperRecognizer:
         - Confirmation listening
     """
 
+    # ==================================================
+    # Performance / Recording Configuration
+    # ==================================================
+
+    # Maximum duration of one spoken command.
+    #
+    # This replaces the old 6-second hard cutoff.
+    MAX_PHRASE_SECONDS = 20
+
+    # SpeechRecognition uses pause_threshold to decide when
+    # the user has stopped speaking.
+    #
+    # Slightly higher value allows natural pauses.
+    PAUSE_THRESHOLD = 0.75
+
+    # Minimum amount of speech before SpeechRecognition
+    # considers the phrase valid.
+    PHRASE_THRESHOLD = 0.30
+
+    # Amount of silence retained around speech.
+    NON_SPEAKING_DURATION = 0.40
+
+    # Initial ambient calibration duration.
+    AMBIENT_CALIBRATION_SECONDS = 0.40
+
+    # Minimum accepted energy threshold.
+    MIN_ENERGY_THRESHOLD = 120
+
+    # Maximum accepted energy threshold.
+    MAX_ENERGY_THRESHOLD = 900
+
+    # Faster-Whisper model.
+    #
+    # "base" + int8 is suitable for an i5 + 8 GB machine.
+    WHISPER_MODEL = "base"
+
+    # CPU configuration.
+    CPU_THREADS = 4
+    NUM_WORKERS = 1
+
+    # ==================================================
+    # Initialization
+    # ==================================================
+
     def __init__(self):
         """
-        Initialize Whisper model and microphone.
+        Initialize Faster-Whisper and microphone resources.
         """
 
         self.recognizer = sr.Recognizer()
+
+        # ---------------------------------
+        # Dynamic Energy
+        # ---------------------------------
 
         self.recognizer.dynamic_energy_threshold = True
 
@@ -56,13 +120,33 @@ class WhisperRecognizer:
 
         self.recognizer.dynamic_energy_ratio = 1.5
 
-        self.recognizer.pause_threshold = 0.55
+        # ---------------------------------
+        # Natural Speech Settings
+        # ---------------------------------
 
-        self.recognizer.non_speaking_duration = 0.35
+        self.recognizer.pause_threshold = (
+            self.PAUSE_THRESHOLD
+        )
+
+        self.recognizer.phrase_threshold = (
+            self.PHRASE_THRESHOLD
+        )
+
+        self.recognizer.non_speaking_duration = (
+            self.NON_SPEAKING_DURATION
+        )
 
         self.recognizer.operation_timeout = None
 
+        # ---------------------------------
+        # Microphone
+        # ---------------------------------
+
         self.microphone = sr.Microphone()
+
+        # ---------------------------------
+        # Faster-Whisper
+        # ---------------------------------
 
         self.model = None
 
@@ -86,9 +170,11 @@ class WhisperRecognizer:
 
         self._closing = False
 
-        # Used to interrupt active
-        # microphone operations safely.
         self._stop_requested = False
+
+        self._noise_calibrated = False
+
+        self.last_audio = None
 
         # ---------------------------------
         # DHEEPTHI Wake Word Variations
@@ -140,7 +226,6 @@ class WhisperRecognizer:
             "ok dheepthi",
             "ok deepthi",
             "ok deepti",
-
         )
 
         # ---------------------------------
@@ -164,11 +249,10 @@ class WhisperRecognizer:
 
             "deep-d",
             "deep d",
-
         )
 
         # ---------------------------------
-        # Phrases that must NOT activate
+        # Phrases That Must NOT Activate
         # ---------------------------------
 
         self.wake_reject_phrases = (
@@ -181,10 +265,7 @@ class WhisperRecognizer:
             "deep voice",
             "deep breath",
             "deep breathing",
-
         )
-
-        self.wake_word_active = False
 
         self.wake_word_active = False
 
@@ -193,6 +274,9 @@ class WhisperRecognizer:
     # ==================================================
 
     def load_model(self):
+        """
+        Load Faster-Whisper lazily.
+        """
 
         if self.model is not None:
 
@@ -206,16 +290,15 @@ class WhisperRecognizer:
 
             self.model = WhisperModel(
 
-                "base",
+                self.WHISPER_MODEL,
 
                 device="cpu",
 
                 compute_type="int8",
 
-                cpu_threads=6,
+                cpu_threads=self.CPU_THREADS,
 
-                num_workers=1
-
+                num_workers=self.NUM_WORKERS,
             )
 
             print(
@@ -223,10 +306,6 @@ class WhisperRecognizer:
             )
 
         except Exception as error:
-
-            import traceback
-
-            traceback.print_exc()
 
             print(
                 f"Whisper Load Error : {error}"
@@ -242,56 +321,81 @@ class WhisperRecognizer:
         self,
         indata,
         frames,
-        time,
-        status
+        time_info,
+        status,
     ):
+        """
+        Update the UI audio-level meter.
+
+        The callback intentionally does very little work so
+        that it does not block the PortAudio callback thread.
+        """
 
         if status:
 
+            # Input overflow is diagnostic information.
+            # Do not crash the recorder because of it.
             print(
                 f"Audio Status : {status}"
             )
 
-        rms = np.sqrt(
-            np.mean(
-                np.square(indata)
+        try:
+
+            if indata is None:
+
+                return
+
+            if len(indata) == 0:
+
+                return
+
+            rms = np.sqrt(
+                np.mean(
+                    np.square(indata)
+                )
             )
-        )
 
-        level = min(
-            float(rms) * 22.0,
-            1.0
-        )
-
-        # ---------------------------------
-        # Smooth Audio Level
-        # ---------------------------------
-
-        self.audio_level = (
-
-            self.audio_level * 0.75
-
-            +
-
-            level * 0.25
-
-        )
-
-        # ---------------------------------
-        # Send Level To UI
-        # ---------------------------------
-
-        if self.level_callback is not None:
-
-            self.level_callback(
-                self.audio_level
+            level = min(
+                float(rms) * 22.0,
+                1.0,
             )
+
+            # Smooth UI level.
+            self.audio_level = (
+
+                self.audio_level * 0.80
+
+                +
+
+                level * 0.20
+            )
+
+            if self.level_callback is not None:
+
+                try:
+
+                    self.level_callback(
+                        self.audio_level
+                    )
+
+                except Exception:
+
+                    pass
+
+        except Exception:
+
+            pass
 
     # ==================================================
     # Start Audio Meter
     # ==================================================
 
     def start_audio_meter(self):
+        """
+        Start the optional UI audio meter.
+
+        The meter is deliberately lightweight.
+        """
 
         if self._closing:
 
@@ -309,14 +413,15 @@ class WhisperRecognizer:
 
                 samplerate=16000,
 
-                blocksize=512,
+                blocksize=1024,
 
                 dtype="float32",
 
-                latency="low",
+                # Higher latency is safer on a modest
+                # CPU and reduces callback pressure.
+                latency="high",
 
-                callback=self._audio_callback
-
+                callback=self._audio_callback,
             )
 
             self.audio_stream.start()
@@ -334,6 +439,9 @@ class WhisperRecognizer:
     # ==================================================
 
     def stop_audio_meter(self):
+        """
+        Stop the UI audio meter safely.
+        """
 
         if self.audio_stream is None:
 
@@ -342,6 +450,12 @@ class WhisperRecognizer:
         try:
 
             self.audio_stream.stop()
+
+        except Exception:
+
+            pass
+
+        try:
 
             self.audio_stream.close()
 
@@ -357,8 +471,82 @@ class WhisperRecognizer:
 
         if self.level_callback is not None:
 
-            self.level_callback(
-                0.0
+            try:
+
+                self.level_callback(
+                    0.0
+                )
+
+            except Exception:
+
+                pass
+
+    # ==================================================
+    # Microphone Calibration
+    # ==================================================
+
+    def _calibrate_microphone(
+        self,
+        source,
+    ):
+        """
+        Perform ambient-noise calibration once.
+
+        Calibration is intentionally short so the user does
+        not experience a long delay every time they speak.
+        """
+
+        if self._noise_calibrated:
+
+            return
+
+        try:
+
+            print(
+                "🎧 Calibrating microphone..."
+            )
+
+            self.recognizer.adjust_for_ambient_noise(
+
+                source,
+
+                duration=self.AMBIENT_CALIBRATION_SECONDS,
+            )
+
+            calibrated_threshold = int(
+                self.recognizer.energy_threshold
+            )
+
+            calibrated_threshold = max(
+
+                self.MIN_ENERGY_THRESHOLD,
+
+                min(
+                    calibrated_threshold,
+                    self.MAX_ENERGY_THRESHOLD,
+                ),
+            )
+
+            self.recognizer.energy_threshold = (
+                calibrated_threshold
+            )
+
+            self._noise_calibrated = True
+
+            print(
+                "🎧 Microphone calibrated."
+            )
+
+            print(
+                f"Energy Threshold : "
+                f"{self.recognizer.energy_threshold}"
+            )
+
+        except Exception as error:
+
+            print(
+                f"Microphone Calibration Error : "
+                f"{error}"
             )
 
     # ==================================================
@@ -367,10 +555,24 @@ class WhisperRecognizer:
 
     def record_audio(self):
         """
-        Record audio from microphone safely.
+        Record one complete natural speech phrase.
 
-        Uses a short microphone timeout so that the
-        shutdown flag can be checked continuously.
+        The old implementation used:
+
+            phrase_time_limit=6
+
+        which could cut long commands.
+
+        This implementation uses:
+
+            - pause_threshold
+            - phrase_threshold
+            - non_speaking_duration
+            - 20-second maximum phrase limit
+
+        Therefore the user can naturally pause while speaking,
+        while SpeechRecognition still ends the phrase after
+        sufficient silence.
 
         Returns
         -------
@@ -378,7 +580,17 @@ class WhisperRecognizer:
             Path to temporary WAV file.
         """
 
+        audio = None
+
         try:
+
+            if self.microphone is None:
+
+                print(
+                    "Microphone is unavailable."
+                )
+
+                return None
 
             with self.microphone as source:
 
@@ -386,45 +598,24 @@ class WhisperRecognizer:
                     "🎤 Listening..."
                 )
 
-                self.start_audio_meter()
-
                 # ---------------------------------
-                # Ambient Noise Calibration
+                # Calibration
                 # ---------------------------------
 
-                if not hasattr(
-                    self,
-                    "_noise_calibrated"
-                ):
-
-                    self.recognizer.adjust_for_ambient_noise(
-
-                        source,
-
-                        duration=0.3
-
-                    )
-
-                    self.recognizer.energy_threshold = max(
-
-                        150,
-
-                        int(
-                            self.recognizer.energy_threshold
-                            * 0.85
-                        )
-
-                    )
-
-                    self._noise_calibrated = True
+                self._calibrate_microphone(
+                    source
+                )
 
                 # ---------------------------------
-                # Stop Check Before Listening
+                # Stop Check
                 # ---------------------------------
 
                 if (
+
                     self._closing
+
                     or
+
                     self._stop_requested
                 ):
 
@@ -435,62 +626,44 @@ class WhisperRecognizer:
                     return None
 
                 # ---------------------------------
-                # Wait for Speech
+                # Audio Meter
                 #
-                # IMPORTANT:
-                # timeout=1 prevents the microphone
-                # from blocking forever.
+                # Start AFTER calibration so the
+                # calibration period does not generate
+                # unnecessary UI/audio-stream pressure.
                 # ---------------------------------
 
-                audio = None
-
-                while (
-
-                    not self._closing
-
-                    and
-
-                    not self._stop_requested
-
-                ):
-
-                    try:
-
-                        audio = self.recognizer.listen(
-
-                            source,
-
-                            timeout=1,
-
-                            phrase_time_limit=6
-
-                        )
-
-                        # ---------------------------------
-                        # Speech captured
-                        # ---------------------------------
-
-                        break
-
-                    except sr.WaitTimeoutError:
-
-                        # ---------------------------------
-                        # No speech during this 1-second
-                        # window.
-                        #
-                        # Loop again so shutdown flags
-                        # can be checked.
-                        # ---------------------------------
-
-                        continue
+                self.start_audio_meter()
 
                 # ---------------------------------
-                # Shutdown / Stop Requested
+                # Natural Phrase Capture
+                # ---------------------------------
+
+                print(
+                    "🎙️ Speak your command..."
+                )
+
+                audio = self.recognizer.listen(
+
+                    source,
+
+                    timeout=None,
+
+                    phrase_time_limit=(
+                        self.MAX_PHRASE_SECONDS
+                    ),
+                )
+
+                # ---------------------------------
+                # Stop Check
                 # ---------------------------------
 
                 if (
+
                     self._closing
+
                     or
+
                     self._stop_requested
                 ):
 
@@ -500,11 +673,21 @@ class WhisperRecognizer:
 
                     return None
 
-                # ---------------------------------
-                # Safety Check
-                # ---------------------------------
-
                 if audio is None:
+
+                    print(
+                        "No audio captured."
+                    )
+
+                    return None
+
+                frame_data = audio.frame_data
+
+                if not frame_data:
+
+                    print(
+                        "Captured audio is empty."
+                    )
 
                     return None
 
@@ -514,36 +697,81 @@ class WhisperRecognizer:
 
                 print(
                     "Audio Bytes :",
-                    len(
-                        audio.frame_data
-                    )
+                    len(frame_data),
                 )
 
             # ---------------------------------
-            # Save Temporary Audio
+            # Save WAV
             # ---------------------------------
 
             temp_file = os.path.abspath(
                 "temp_audio.wav"
             )
 
-            with open(
-                temp_file,
-                "wb"
-            ) as file:
+            try:
 
-                file.write(
-                    audio.get_wav_data()
+                with open(
+                    temp_file,
+                    "wb",
+                ) as file:
+
+                    file.write(
+                        audio.get_wav_data()
+                    )
+
+            except Exception as error:
+
+                print(
+                    f"Audio File Write Error : "
+                    f"{error}"
                 )
+
+                return None
 
             self.last_audio = temp_file
 
+            print(
+                "Audio File :",
+                temp_file,
+            )
+
+            try:
+
+                print(
+                    "File Size :",
+                    os.path.getsize(
+                        temp_file
+                    ),
+                )
+
+            except Exception:
+
+                pass
+
             return temp_file
+
+        except sr.WaitTimeoutError:
+
+            print(
+                "Microphone listening timed out."
+            )
+
+            return None
+
+        except OSError as error:
+
+            print(
+                f"Microphone / Audio Device Error : "
+                f"{error}"
+            )
+
+            return None
 
         except Exception as error:
 
             print(
-                f"Audio Recording Error : {error}"
+                f"Audio Recording Error : "
+                f"{error}"
             )
 
             return None
@@ -553,16 +781,82 @@ class WhisperRecognizer:
             self.stop_audio_meter()
 
     # ==================================================
+    # Repetitive Garbage Detection
+    # ==================================================
+
+    @staticmethod
+    def _is_repetitive_garbage(
+        text: str,
+    ) -> bool:
+        """
+        Detect obvious ASR hallucination/repetition.
+
+        Examples:
+
+            a a a a a a a
+            a-a-a-a-a-a
+            the the the the the
+
+        This is deliberately conservative.
+        """
+
+        if not text:
+
+            return True
+
+        words = re.findall(
+            r"[a-z]+",
+            text.lower(),
+        )
+
+        if len(words) < 5:
+
+            return False
+
+        unique_words = set(words)
+
+        # Entire transcript is one repeated word.
+        if len(unique_words) == 1:
+
+            return True
+
+        counts: dict[str, int] = {}
+
+        for word in words:
+
+            counts[word] = (
+                counts.get(word, 0) + 1
+            )
+
+        highest_count = max(
+            counts.values()
+        )
+
+        # Extremely dominant repeated token.
+        if (
+
+            highest_count >= 8
+
+            and
+
+            highest_count / len(words) >= 0.80
+        ):
+
+            return True
+
+        return False
+
+    # ==================================================
     # Faster-Whisper Listen
     # ==================================================
 
     def listen(
         self,
-        retries=1
+        retries=1,
     ):
         """
-        Listen from microphone and convert
-        speech into text using Faster-Whisper.
+        Record microphone audio and transcribe using
+        Faster-Whisper.
 
         Returns
         -------
@@ -602,7 +896,21 @@ class WhisperRecognizer:
                     audio_file
                 )
 
-                if audio_file:
+                if audio_file is None:
+
+                    continue
+
+                if not os.path.exists(
+                    audio_file
+                ):
+
+                    print(
+                        "Audio file does not exist."
+                    )
+
+                    continue
+
+                try:
 
                     print(
                         "File Size :",
@@ -611,9 +919,13 @@ class WhisperRecognizer:
                         )
                     )
 
-                if audio_file is None:
+                except Exception:
 
-                    continue
+                    pass
+
+                # ---------------------------------
+                # Transcription
+                # ---------------------------------
 
                 print(
                     "🧠 Transcribing..."
@@ -626,28 +938,31 @@ class WhisperRecognizer:
 
                         language="en",
 
-                        beam_size=1,
+                        # Better decoding than the previous
+                        # beam_size=1 configuration.
+                        beam_size=3,
 
-                        best_of=1,
+                        best_of=3,
 
+                        # VAD removes non-speech portions.
                         vad_filter=True,
 
                         vad_parameters={
 
-                            "min_silence_duration_ms": 180,
+                            "min_silence_duration_ms": 350,
 
-                            "speech_pad_ms": 120,
+                            "speech_pad_ms": 180,
 
-                            "threshold": 0.45
-
+                            "threshold": 0.45,
                         },
 
+                        # Prevent previous transcript context
+                        # from influencing the next command.
                         condition_on_previous_text=False,
 
                         temperature=0.0,
 
-                        word_timestamps=False
-
+                        word_timestamps=False,
                     )
                 )
 
@@ -655,10 +970,10 @@ class WhisperRecognizer:
 
                     segment.text.strip()
 
-                    for segment in segments
+                    for segment
+                    in segments
 
                     if segment.text.strip()
-
                 )
 
                 text = " ".join(
@@ -677,6 +992,10 @@ class WhisperRecognizer:
                     "===========================\n"
                 )
 
+                # ---------------------------------
+                # Normalize Transcript
+                # ---------------------------------
+
                 if text:
 
                     text = (
@@ -685,55 +1004,68 @@ class WhisperRecognizer:
 
                         .replace(
                             "  ",
-                            " "
+                            " ",
                         )
 
                         .replace(
                             " ,",
-                            ","
+                            ",",
                         )
 
                         .replace(
                             " .",
-                            "."
+                            ".",
                         )
 
                         .replace(
                             " ?",
-                            "?"
+                            "?",
                         )
 
                         .replace(
                             " !",
-                            "!"
+                            "!",
                         )
 
                         .strip()
-
                     )
 
-                    try:
+                    # ---------------------------------
+                    # Garbage Protection
+                    # ---------------------------------
 
-                        os.remove(
-                            audio_file
-                        )
-
-                    except Exception:
-
-                        pass
-
-                    return (
+                    if self._is_repetitive_garbage(
                         text
-                        .strip()
-                        .lower()
-                    )
+                    ):
+
+                        print(
+                            "Rejected repetitive ASR "
+                            "garbage."
+                        )
+
+                        text = ""
+
+                    if text:
+
+                        try:
+
+                            os.remove(
+                                audio_file
+                            )
+
+                        except Exception:
+
+                            pass
+
+                        return (
+                            text
+                            .strip()
+                            .lower()
+                        )
 
                 print(
-
-                    f"No speech detected. Retry "
-
-                    f"{attempt + 1}/{retries}"
-
+                    f"No valid speech detected. "
+                    f"Retry {attempt + 1}/{retries}"
                 )
 
                 try:
@@ -750,6 +1082,8 @@ class WhisperRecognizer:
 
                     pass
 
+                audio_file = None
+
             return None
 
         except Exception as error:
@@ -757,14 +1091,18 @@ class WhisperRecognizer:
             self.stop_audio_meter()
 
             print(
-                f"\nWhisper Error : {error}"
+                f"\nWhisper Error :",
+                error
             )
 
             try:
 
                 if (
+
                     audio_file
+
                     and
+
                     os.path.exists(
                         audio_file
                     )
@@ -780,13 +1118,17 @@ class WhisperRecognizer:
 
             return None
 
+        finally:
+
+            self.stop_audio_meter()
+
     # ==================================================
     # Normalize Wake Word Text
     # ==================================================
 
     def normalize_wake_text(
         self,
-        text
+        text,
     ):
         """
         Normalize text for DHEEPTHI detection.
@@ -806,24 +1148,23 @@ class WhisperRecognizer:
 
             .replace(
                 ".",
-                ""
+                "",
             )
 
             .replace(
                 ",",
-                ""
+                "",
             )
 
             .replace(
                 "?",
-                ""
+                "",
             )
 
             .replace(
                 "!",
-                ""
+                "",
             )
-
         )
 
     # ==================================================
@@ -832,14 +1173,11 @@ class WhisperRecognizer:
 
     def wake_word_similarity(
         self,
-        word
+        word,
     ):
         """
-        Calculate similarity between a Whisper-generated
-        word and the DHEEPTHI pronunciation family.
-
-        This is intentionally used only for wake-word
-        candidates, not for normal command detection.
+        Calculate similarity between a recognized word
+        and the DHEEPTHI pronunciation family.
         """
 
         if not word:
@@ -847,11 +1185,22 @@ class WhisperRecognizer:
             return 0.0
 
         word = (
+
             word
+
             .lower()
+
             .strip()
-            .replace("-", "")
-            .replace("_", "")
+
+            .replace(
+                "-",
+                "",
+            )
+
+            .replace(
+                "_",
+                "",
+            )
         )
 
         candidates = (
@@ -866,7 +1215,6 @@ class WhisperRecognizer:
             "dhepthi",
             "dheethi",
             "dhethi",
-
         )
 
         best_score = 0.0
@@ -874,9 +1222,12 @@ class WhisperRecognizer:
         for candidate in candidates:
 
             score = SequenceMatcher(
+
                 None,
+
                 word,
-                candidate
+
+                candidate,
             ).ratio()
 
             if score > best_score:
@@ -891,30 +1242,10 @@ class WhisperRecognizer:
 
     def contains_wake_word(
         self,
-        text
+        text,
     ):
         """
         Strong DHEEPTHI wake-word detection.
-
-        Handles:
-            dheepthi
-            deepthi
-            deepti
-            deepthee
-            deep the
-            deep tea
-            deeply
-            deep please
-            deep t
-            deep deep wake up
-            deepdeep make up
-
-        Normal phrases such as:
-            deep sleep
-            deep thought
-            deep water
-
-        are rejected to reduce false activation.
         """
 
         normalized = (
@@ -955,10 +1286,6 @@ class WhisperRecognizer:
 
             if phrase in normalized:
 
-                # Do not accept if the complete
-                # phrase is an explicitly rejected
-                # normal expression.
-
                 if normalized in self.wake_reject_phrases:
 
                     return False
@@ -984,7 +1311,6 @@ class WhisperRecognizer:
 
         for word in words:
 
-            # Ignore very short words.
             if len(word) < 5:
 
                 continue
@@ -994,17 +1320,6 @@ class WhisperRecognizer:
                     word
                 )
             )
-
-            # High similarity threshold.
-            #
-            # This catches things like:
-            #
-            # deepthee
-            # deepthi
-            # deeply
-            # deeptee
-            #
-            # without accepting "deep" alone.
 
             if score >= 0.78:
 
@@ -1023,10 +1338,6 @@ class WhisperRecognizer:
             remaining = words[
                 deep_index + 1:
             ]
-
-            # ---------------------------------
-            # Deep + pronunciation endings
-            # ---------------------------------
 
             allowed_following_words = {
 
@@ -1055,32 +1366,30 @@ class WhisperRecognizer:
 
                     return True
 
-            # ---------------------------------
-            # "deep deep wake up"
-            # ---------------------------------
-
             if (
+
                 "wake" in remaining
+
                 or
+
                 "up" in remaining
             ):
 
                 return True
 
-            # ---------------------------------
-            # "deep deep make up"
-            # ---------------------------------
-
             if (
+
                 "make" in remaining
+
                 and
+
                 "up" in remaining
             ):
 
                 return True
 
         # ---------------------------------
-        # "deepdeep" / joined transcription
+        # Joined transcription
         # ---------------------------------
 
         joined_candidates = (
@@ -1089,7 +1398,6 @@ class WhisperRecognizer:
             "deepdee",
             "deepthi",
             "deepthee",
-
         )
 
         for candidate in joined_candidates:
@@ -1106,7 +1414,7 @@ class WhisperRecognizer:
 
     def remove_wake_word(
         self,
-        text
+        text,
     ):
         """
         Remove DHEEPTHI and known Whisper wake-word
@@ -1170,7 +1478,6 @@ class WhisperRecognizer:
 
             "beep the",
             "weep the",
-
         )
 
         # ---------------------------------
@@ -1180,7 +1487,7 @@ class WhisperRecognizer:
         prefixes = sorted(
             prefixes,
             key=len,
-            reverse=True
+            reverse=True,
         )
 
         for prefix in prefixes:
@@ -1218,7 +1525,6 @@ class WhisperRecognizer:
             "dheethi",
             "dhethi",
             "deeply",
-
         )
 
         words = original.split()
@@ -1240,7 +1546,7 @@ class WhisperRecognizer:
                 ).strip()
 
             # ---------------------------------
-            # Fuzzy first-word wake detection
+            # Fuzzy first-word detection
             # ---------------------------------
 
             if len(first_word) >= 5:
@@ -1265,15 +1571,10 @@ class WhisperRecognizer:
 
     def listen_for_wake_word(
         self,
-        retries=1
+        retries=1,
     ):
         """
         Continuously listen for DHEEPTHI.
-
-        Returns
-        -------
-        bool
-            True when DHEEPTHI is detected.
         """
 
         self.wake_word_active = True
@@ -1289,7 +1590,6 @@ class WhisperRecognizer:
             and
 
             not self._closing
-
         ):
 
             text = self.listen(
@@ -1322,11 +1622,10 @@ class WhisperRecognizer:
 
     def listen_for_wake_command(
         self,
-        retries=1
+        retries=1,
     ):
         """
-        Listen for DHEEPTHI and return
-        the command.
+        Listen for DHEEPTHI and return the command.
 
         Supports:
 
@@ -1339,10 +1638,6 @@ class WhisperRecognizer:
         And:
 
             "Dheepthi start screen recording"
-
-        Returns
-        -------
-        str | None
         """
 
         self.wake_word_active = True
@@ -1354,7 +1649,6 @@ class WhisperRecognizer:
             and
 
             not self._closing
-
         ):
 
             text = self.listen(
@@ -1431,29 +1725,16 @@ class WhisperRecognizer:
     # ==================================================
 
     def stop_wake_word(
-        self
+        self,
     ):
         """
-        Stop DHEEPTHI wake-word listening
-        and request the active microphone operation
-        to terminate as soon as possible.
+        Stop DHEEPTHI wake-word listening and request
+        active microphone operations to terminate.
         """
-
-        # ---------------------------------
-        # Stop Wake Loop
-        # ---------------------------------
 
         self.wake_word_active = False
 
-        # ---------------------------------
-        # Request Current Recording Stop
-        # ---------------------------------
-
         self._stop_requested = True
-
-        # ---------------------------------
-        # Stop Audio Meter
-        # ---------------------------------
 
         try:
 
@@ -1473,20 +1754,15 @@ class WhisperRecognizer:
 
     def listen_confirmation(
         self,
-        retries=3
+        retries=3,
     ):
         """
         Listen for:
 
-        Yes
-
-        No
-
-        Cancel
-
-        Returns
-        -------
-        str | None
+            Yes
+            No
+            Cancel
+            Stop
         """
 
         for _ in range(
@@ -1513,62 +1789,45 @@ class WhisperRecognizer:
 
                 .replace(
                     ".",
-                    ""
+                    "",
                 )
 
                 .replace(
                     ",",
-                    ""
+                    "",
                 )
 
                 .replace(
                     "!",
-                    ""
+                    "",
                 )
 
                 .replace(
                     "?",
-                    ""
+                    "",
                 )
-
             )
-
-            # ---------------------------------
-            # Common Whisper Mistakes
-            # ---------------------------------
 
             normalization = {
 
                 "yep": "yes",
-
                 "yup": "yes",
-
                 "yeah": "yes",
-
                 "yess": "yes",
-
                 "yea": "yes",
-
                 "you": "yes",
 
                 "ok": "yes",
-
                 "okay": "yes",
-
                 "confirm": "yes",
-
                 "sure": "yes",
-
                 "correct": "yes",
 
                 "nope": "no",
-
                 "nah": "no",
 
                 "cancel it": "cancel",
-
-                "stop it": "stop"
-
+                "stop it": "stop",
             }
 
             for old, new in (
@@ -1613,31 +1872,13 @@ class WhisperRecognizer:
     def close(self):
         """
         Release microphone resources safely.
-
-        This method is called during application shutdown.
         """
-
-        # ---------------------------------
-        # Prevent new microphone operations
-        # ---------------------------------
 
         self._closing = True
 
-        # ---------------------------------
-        # Stop Wake Word Loop
-        # ---------------------------------
-
         self.wake_word_active = False
 
-        # ---------------------------------
-        # Request Active Recording Stop
-        # ---------------------------------
-
         self._stop_requested = True
-
-        # ---------------------------------
-        # Stop Audio Meter
-        # ---------------------------------
 
         try:
 
@@ -1647,21 +1888,9 @@ class WhisperRecognizer:
 
             pass
 
-        # ---------------------------------
-        # Remove UI Callback
-        # ---------------------------------
-
         self.level_callback = None
 
-        # ---------------------------------
-        # Release Microphone
-        # ---------------------------------
-
         self.microphone = None
-
-        # ---------------------------------
-        # Release Recognizer
-        # ---------------------------------
 
         self.recognizer = None
 
