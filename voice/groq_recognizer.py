@@ -4,31 +4,114 @@ Groq Speech Recognition Module
 
 Online Speech-to-Text using Groq Whisper.
 
-Primary model:
-    whisper-large-v3-turbo
+ASTRA-AI / DHEEPTHI Voice Lifecycle
+------------------------------------
 
-Purpose:
-    - Keep Groq STT isolated from the existing local
-      Faster-Whisper recognizer.
-    - Accept an existing WAV/audio file.
-    - Send the audio to Groq.
-    - Return a clean transcript.
-    - Expose rate-limit/network failures clearly so
-      the caller can fall back to local Whisper.
+Wake stage:
 
-IMPORTANT:
-    This module does NOT modify or depend on the existing
-    whisper_recognizer.py implementation.
+    5-second recorded WAV
+            ↓
+       Groq Whisper
+            ↓
+      DHEEPTHI detected?
+       ├── NO  → next 5-second window
+       └── YES
+              ↓
+       Fresh command recording
+              ↓
+          Groq Whisper
+              ↓
+       Command Dispatcher
+
+IMPORTANT
+---------
+This module DOES NOT record from the microphone.
+
+Microphone recording remains outside this module.
+
+This module is responsible for:
+
+    - Groq STT HTTP transport
+    - Audio-file transcription
+    - Wake-window transcription
+    - Fresh-command transcription
+    - DHEEPTHI wake-word detection
+    - Wake-word removal compatibility helper
+    - Error handling
+    - Transcript cleanup
+    - Cloudflare/403 handling without retry loops
+
+The local Faster-Whisper recognizer remains available
+independently for the local wake-word stage.
+
+IMPORTANT HTTP TRANSPORT NOTE
+-----------------------------
+The Groq Python SDK audio transcription request was
+returning Cloudflare HTTP 403 / Error 1010:
+
+    browser_signature_banned
+
+A direct httpx multipart request to the same Groq endpoint
+was tested successfully with HTTP 200.
+
+Therefore this module intentionally uses direct httpx
+multipart HTTP for audio transcription instead of the
+Groq Python SDK audio endpoint.
+
+This changes ONLY the transport layer.
+ASTRA wake-word and command logic remains unchanged.
 """
 
 from __future__ import annotations
 
 import os
 import re
+from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Any
 
-from groq import Groq
+import httpx
+from dotenv import load_dotenv
+
+
+# ======================================================
+# Environment Loading
+# ======================================================
+
+# ASTRA-AI project root:
+#
+#     ASTRA-AI/
+#         .env
+#         voice/
+#             groq_recognizer.py
+#
+# __file__:
+#
+#     ASTRA-AI/voice/groq_recognizer.py
+#
+# parents[1]:
+#
+#     ASTRA-AI/
+#
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+ENV_FILE = PROJECT_ROOT / ".env"
+
+# Load the project-level .env immediately.
+#
+# This is intentionally done at module import time because
+# WhisperRecognizer may create GroqRecognizer during its
+# own initialization.
+#
+# Therefore main_window.py does NOT need to load .env first.
+load_dotenv(
+    dotenv_path=ENV_FILE,
+    override=False,
+)
+
+
+# ======================================================
+# Exceptions
+# ======================================================
 
 
 class GroqSTTError(Exception):
@@ -39,56 +122,217 @@ class GroqSTTRateLimitError(GroqSTTError):
     """Raised when Groq rate limits are reached."""
 
 
+class GroqSTTAccessError(GroqSTTError):
+    """Raised when Groq/Cloudflare blocks the API request."""
+
+
 class GroqSTTConfigurationError(GroqSTTError):
-    """Raised when Groq STT configuration is missing or invalid."""
+    """Raised when Groq STT configuration is missing."""
+
+
+# ======================================================
+# Groq Recognizer
+# ======================================================
 
 
 class GroqRecognizer:
     """
-    Groq-based Speech-to-Text recognizer.
+    Groq Whisper Speech-to-Text recognizer.
 
-    This class is intentionally independent from the existing
-    Faster-Whisper recognizer so that the local recognizer can
-    remain available as a fallback.
+    The recognizer accepts an already-recorded audio file.
 
-    Environment variables:
+    It supports two distinct ASTRA voice stages:
 
-        GROQ_API_KEY
-            Groq API key.
+        1. Wake Window
+           - recorded audio window
+           - Groq transcription
+           - DHEEPTHI detection
 
-        GROQ_STT_MODEL
-            Optional model name.
-            Defaults to whisper-large-v3-turbo.
+        2. Fresh Command
+           - NEW microphone recording
+           - Groq transcription
+           - command returned to caller
+
+    The wake recording is NEVER reused as the command
+    recording.
+
+    Audio transcription uses direct httpx HTTP transport
+    because the Groq SDK audio endpoint was triggering
+    Cloudflare HTTP 403 / Error 1010 in this environment.
     """
+
+    # ==================================================
+    # Configuration
+    # ==================================================
 
     DEFAULT_MODEL = "whisper-large-v3-turbo"
 
-    # Maximum useful transcript length protection.
     MAX_TEXT_LENGTH = 10000
+
+    # ==================================================
+    # Groq API
+    # ==================================================
+
+    GROQ_BASE_URL = (
+        "https://api.groq.com/openai/v1"
+    )
+
+    GROQ_TRANSCRIPTION_URL = (
+        f"{GROQ_BASE_URL}/audio/transcriptions"
+    )
+
+    # ==================================================
+    # HTTP User-Agent
+    # ==================================================
+
+    DEFAULT_USER_AGENT = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/131.0.0.0 Safari/537.36"
+    )
+
+    # ==================================================
+    # DHEEPTHI Wake Words
+    # ==================================================
+
+    WAKE_WORDS = (
+        "dheepthi",
+        "deepthi",
+        "deepti",
+        "deepthee",
+        "deepthy",
+        "deeptee",
+        "dhepti",
+        "dhepthi",
+        "dheethi",
+        "dhethi",
+
+        "deep the",
+        "deep thee",
+        "deep tea",
+        "deep thi",
+        "deep tee",
+        "deep ti",
+
+        "dheep the",
+        "dheep thee",
+        "dheep tea",
+        "dheep thi",
+        "dheep tee",
+        "dheep ti",
+
+        "beep the",
+        "weep the",
+
+        "hey dheepthi",
+        "hey deepthi",
+        "hey deepti",
+        "hey deepthee",
+
+        "okay dheepthi",
+        "okay deepthi",
+        "okay deepti",
+
+        "ok dheepthi",
+        "ok deepthi",
+        "ok deepti",
+    )
+
+    # ==================================================
+    # Common Groq / Whisper Interpretations
+    # ==================================================
+
+    WAKE_PHRASE_VARIATIONS = (
+        "deeply",
+        "deep please",
+        "deep t",
+        "deep ti",
+        "deep thi",
+        "deep thee",
+        "deep tee",
+        "deep d",
+        "deep deep",
+        "deepdeep",
+        "deep deep wake up",
+        "deepdeep wake up",
+        "deep deep make up",
+        "deepdeep make up",
+    )
+
+    # ==================================================
+    # Reject Obvious Normal English
+    # ==================================================
+
+    WAKE_REJECT_PHRASES = (
+        "deep sleep",
+        "sleep deeply",
+        "deep thought",
+        "deep thoughts",
+        "deep water",
+        "deep voice",
+        "deep breath",
+        "deep breathing",
+    )
+
+    # ==================================================
+    # Fuzzy Wake Candidates
+    # ==================================================
+
+    WAKE_CANDIDATES = (
+        "dheepthi",
+        "deepthi",
+        "deepti",
+        "deepthee",
+        "deepthy",
+        "deeptee",
+        "dhepti",
+        "dhepthi",
+        "dheethi",
+        "dhethi",
+    )
+
+    WAKE_SINGLE_WORD_THRESHOLD = 0.76
+
+    WAKE_FUZZY_THRESHOLD = 0.72
+
+    # ==================================================
+    # Initialization
+    # ==================================================
 
     def __init__(
         self,
         api_key: str | None = None,
         model: str | None = None,
     ) -> None:
-        """
-        Initialize the Groq STT client.
 
-        Parameters
-        ----------
-        api_key:
-            Optional API key. If omitted, GROQ_API_KEY from
-            environment variables is used.
+        # --------------------------------------------------
+        # Ensure .env is loaded.
+        #
+        # This second call is intentional and harmless.
+        # It also protects direct construction of this class
+        # after environment changes during runtime.
+        # --------------------------------------------------
 
-        model:
-            Optional Groq STT model. If omitted,
-            GROQ_STT_MODEL is used, then the default model.
-        """
+        load_dotenv(
+            dotenv_path=ENV_FILE,
+            override=False,
+        )
+
+        # --------------------------------------------------
+        # API Key
+        # --------------------------------------------------
 
         self.api_key = (
             api_key
-            or os.getenv("GROQ_API_KEY", "").strip()
+            or os.getenv(
+                "GROQ_API_KEY",
+                "",
+            ).strip()
         )
+
+        # --------------------------------------------------
+        # Model
+        # --------------------------------------------------
 
         self.model = (
             model
@@ -99,30 +343,72 @@ class GroqRecognizer:
             or self.DEFAULT_MODEL
         )
 
+        # --------------------------------------------------
+        # Configuration Validation
+        # --------------------------------------------------
+
         if not self.api_key:
+
             raise GroqSTTConfigurationError(
-                "GROQ_API_KEY is not configured."
+                "GROQ_API_KEY is not configured. "
+                f"Checked environment and .env at: {ENV_FILE}"
             )
 
-        self.client = Groq(
-            api_key=self.api_key
+        # ==================================================
+        # Direct HTTP Client
+        # ==================================================
+
+        self.default_headers = {
+            "Authorization": (
+                f"Bearer {self.api_key}"
+            ),
+            "User-Agent": (
+                self.DEFAULT_USER_AGENT
+            ),
+            "Accept": "application/json",
+        }
+
+        self.http_client = httpx.Client(
+            headers=self.default_headers,
+            timeout=httpx.Timeout(
+                connect=30.0,
+                read=60.0,
+                write=60.0,
+                pool=30.0,
+            ),
+            follow_redirects=True,
         )
+
+        # --------------------------------------------------
+        # Startup Logs
+        # --------------------------------------------------
 
         print(
             f"Groq STT Ready | Model : {self.model}"
         )
 
-    # ==================================================
-    # File Validation
-    # ==================================================
+        print(
+            "Groq STT User-Agent : "
+            f"{self.DEFAULT_USER_AGENT}"
+        )
+
+        print(
+            "Groq STT Transport : Direct HTTP"
+        )
+
+        print(
+            "Groq STT Environment : "
+            f"{ENV_FILE}"
+        )
+
+    # ======================================================
+    # Audio File Validation
+    # ======================================================
 
     def _validate_audio_file(
         self,
         audio_file: str | Path,
     ) -> Path:
-        """
-        Validate the supplied audio file.
-        """
 
         path = Path(
             audio_file
@@ -148,33 +434,24 @@ class GroqRecognizer:
 
         return path
 
-    # ==================================================
-    # Transcript Cleanup
-    # ==================================================
+    # ======================================================
+    # General Text Normalization
+    # ======================================================
 
     @staticmethod
     def normalize_text(
         text: str | None,
     ) -> str:
-        """
-        Clean and normalize the returned transcript.
-
-        This does NOT attempt to change the meaning of the
-        user's command.
-        """
 
         if not text:
-
             return ""
 
         text = str(text)
 
-        # Normalize whitespace.
         text = " ".join(
             text.split()
         )
 
-        # Remove accidental whitespace before punctuation.
         text = re.sub(
             r"\s+([,.!?;:])",
             r"\1",
@@ -183,30 +460,51 @@ class GroqRecognizer:
 
         return text.strip()
 
-    # ==================================================
-    # Basic Garbage Detection
-    # ==================================================
+    # ======================================================
+    # Wake Text Normalization
+    # ======================================================
+
+    @staticmethod
+    def normalize_wake_text(
+        text: str | None,
+    ) -> str:
+
+        if not text:
+            return ""
+
+        text = str(
+            text
+        ).lower().strip()
+
+        text = re.sub(
+            r"[^a-z0-9\s_-]+",
+            " ",
+            text,
+        )
+
+        text = text.replace(
+            "_",
+            " ",
+        )
+
+        text = re.sub(
+            r"\s+",
+            " ",
+            text,
+        )
+
+        return text.strip()
+
+    # ======================================================
+    # Garbage Detection
+    # ======================================================
 
     @staticmethod
     def _is_repetitive_garbage(
         text: str,
     ) -> bool:
-        """
-        Detect obvious repeated-token transcription garbage.
-
-        Examples:
-
-            a a a a a a
-            A-A-A-A-A-A
-            the the the the
-
-        This is deliberately conservative. It should reject
-        obvious ASR garbage without trying to interpret normal
-        user speech.
-        """
 
         if not text:
-
             return True
 
         words = re.findall(
@@ -215,22 +513,21 @@ class GroqRecognizer:
         )
 
         if len(words) < 5:
-
             return False
 
-        unique_words = set(words)
-
-        if len(unique_words) == 1:
-
+        if len(set(words)) == 1:
             return True
 
-        # Very strong repeated single-token pattern.
         counts: dict[str, int] = {}
 
         for word in words:
 
             counts[word] = (
-                counts.get(word, 0) + 1
+                counts.get(
+                    word,
+                    0,
+                )
+                + 1
             )
 
         highest_count = max(
@@ -239,27 +536,21 @@ class GroqRecognizer:
 
         if (
             highest_count >= 8
-            and highest_count / len(words) >= 0.80
+            and
+            highest_count / len(words) >= 0.80
         ):
-
             return True
 
         return False
 
-    # ==================================================
+    # ======================================================
     # Groq Error Classification
-    # ==================================================
+    # ======================================================
 
     @staticmethod
     def _raise_groq_error(
         error: Exception,
     ) -> None:
-        """
-        Convert common Groq failures into useful ASTRA-level
-        exceptions.
-
-        The raw exception is retained as the cause.
-        """
 
         status_code = getattr(
             error,
@@ -267,59 +558,109 @@ class GroqRecognizer:
             None,
         )
 
+        response = getattr(
+            error,
+            "response",
+            None,
+        )
+
+        if response is not None:
+
+            response_status = getattr(
+                response,
+                "status_code",
+                None,
+            )
+
+            if response_status is not None:
+                status_code = response_status
+
+        error_text = str(
+            error
+        ).lower()
+
+        # --------------------------------------------------
+        # Rate limit
+        # --------------------------------------------------
+
         if status_code == 429:
 
             raise GroqSTTRateLimitError(
                 "Groq STT rate limit reached."
             ) from error
 
-        error_text = str(
-            error
-        ).lower()
-
         if (
             "rate limit" in error_text
-            or "too many requests" in error_text
-            or "429" in error_text
+            or
+            "too many requests" in error_text
+            or
+            "429" in error_text
         ):
 
             raise GroqSTTRateLimitError(
                 "Groq STT rate limit reached."
             ) from error
 
+        # --------------------------------------------------
+        # Cloudflare / 403
+        # --------------------------------------------------
+
+        if status_code == 403:
+
+            if (
+                "cloudflare" in error_text
+                or
+                "browser_signature_banned"
+                in error_text
+                or
+                "error 1010" in error_text
+                or
+                "access denied" in error_text
+            ):
+
+                raise GroqSTTAccessError(
+                    "Groq STT was blocked by Cloudflare "
+                    "(HTTP 403 / Error 1010)."
+                ) from error
+
+            raise GroqSTTAccessError(
+                "Groq STT request was forbidden "
+                "(HTTP 403)."
+            ) from error
+
+        # --------------------------------------------------
+        # Cloudflare text without status
+        # --------------------------------------------------
+
+        if (
+            "browser_signature_banned"
+            in error_text
+            or
+            "error 1010" in error_text
+            or
+            "cloudflare" in error_text
+        ):
+
+            raise GroqSTTAccessError(
+                "Groq STT was blocked by Cloudflare."
+            ) from error
+
+        # --------------------------------------------------
+        # Generic error
+        # --------------------------------------------------
+
         raise GroqSTTError(
             f"Groq STT request failed: {error}"
         ) from error
 
-    # ==================================================
-    # Transcribe Audio
-    # ==================================================
+    # ======================================================
+    # Core Groq Transcription
+    # ======================================================
 
     def transcribe(
         self,
         audio_file: str | Path,
     ) -> str:
-        """
-        Transcribe an existing audio file using Groq Whisper.
-
-        Parameters
-        ----------
-        audio_file:
-            Path to a WAV/audio file.
-
-        Returns
-        -------
-        str
-            Clean transcript.
-
-        Raises
-        ------
-        GroqSTTRateLimitError
-            When Groq rate limits are reached.
-
-        GroqSTTError
-            For other Groq or audio failures.
-        """
 
         path = self._validate_audio_file(
             audio_file
@@ -334,8 +675,20 @@ class GroqRecognizer:
         )
 
         print(
-            f"Audio Size : {path.stat().st_size} bytes"
+            f"Audio Size : "
+            f"{path.stat().st_size} bytes"
         )
+
+        print(
+            "Transport : Direct HTTP multipart"
+        )
+
+        data = {
+            "model": self.model,
+            "response_format": "text",
+            "language": "en",
+            "temperature": "0.0",
+        }
 
         try:
 
@@ -343,62 +696,102 @@ class GroqRecognizer:
                 "rb"
             ) as audio:
 
-                transcription = (
-                    self.client.audio.transcriptions.create(
-                        file=audio,
-                        model=self.model,
-                        response_format="text",
-                        language="en",
-                        temperature=0.0,
+                files = {
+                    "file": (
+                        path.name,
+                        audio,
+                        "audio/wav",
                     )
+                }
+
+                response = self.http_client.post(
+                    self.GROQ_TRANSCRIPTION_URL,
+                    data=data,
+                    files=files,
                 )
 
-            # Depending on SDK response handling,
-            # response may behave as a string or expose
-            # a text attribute.
-            if isinstance(
-                transcription,
-                str,
-            ):
+            # ------------------------------------------------
+            # Status Handling
+            # ------------------------------------------------
 
-                text = transcription
+            if response.status_code >= 400:
 
-            else:
-
-                text = getattr(
-                    transcription,
-                    "text",
-                    "",
+                error_message = (
+                    f"HTTP {response.status_code}: "
+                    f"{response.text}"
                 )
+
+                class _GroqHTTPError(Exception):
+                    pass
+
+                http_error = _GroqHTTPError(
+                    error_message
+                )
+
+                http_error.status_code = (
+                    response.status_code
+                )
+
+                http_error.response = response
+
+                self._raise_groq_error(
+                    http_error
+                )
+
+            # ------------------------------------------------
+            # Response
+            # ------------------------------------------------
+
+            response_text = response.text
 
             text = self.normalize_text(
-                text
+                response_text
             )
+
+            # ------------------------------------------------
+            # Empty response
+            # ------------------------------------------------
 
             if not text:
 
                 print(
-                    "Groq STT returned empty transcript."
+                    "Groq STT returned empty "
+                    "transcript."
                 )
 
                 return ""
+
+            # ------------------------------------------------
+            # Repetitive garbage
+            # ------------------------------------------------
 
             if self._is_repetitive_garbage(
                 text
             ):
 
                 print(
-                    "Groq STT rejected obvious repetitive "
-                    "transcription garbage."
+                    "Groq STT rejected obvious "
+                    "repetitive transcription garbage."
                 )
 
                 return ""
 
+            # ------------------------------------------------
+            # Maximum transcript length
+            # ------------------------------------------------
+
             if len(text) > self.MAX_TEXT_LENGTH:
 
-                text = text[
-                    : self.MAX_TEXT_LENGTH
-                ].rstrip()
+                text = (
+                    text[
+                        :self.MAX_TEXT_LENGTH
+                    ]
+                    .rstrip()
+                )
+
+            # ------------------------------------------------
+            # Success log
+            # ------------------------------------------------
 
             print(
                 "\n========== GROQ STT =========="
@@ -415,8 +808,26 @@ class GroqRecognizer:
             return text
 
         except GroqSTTError:
-
             raise
+
+        except httpx.HTTPStatusError as error:
+
+            self._raise_groq_error(
+                error
+            )
+
+        except httpx.TimeoutException as error:
+
+            raise GroqSTTError(
+                "Groq STT request timed out."
+            ) from error
+
+        except httpx.RequestError as error:
+
+            raise GroqSTTError(
+                f"Groq STT network request failed: "
+                f"{error}"
+            ) from error
 
         except Exception as error:
 
@@ -424,24 +835,481 @@ class GroqRecognizer:
                 error
             )
 
-            # Defensive fallback for static type checkers.
+        return ""
+
+    # ======================================================
+    # Wake Window Transcription
+    # ======================================================
+
+    def transcribe_wake_window(
+        self,
+        audio_file: str | Path,
+    ) -> str:
+
+        print(
+            "\n========== GROQ WAKE WINDOW =========="
+        )
+
+        print(
+            "Groq STT: processing wake window..."
+        )
+
+        try:
+
+            text = self.transcribe(
+                audio_file
+            )
+
+        except GroqSTTAccessError as error:
+
+            print(
+                f"Groq Wake Access Error : {error}"
+            )
+
             return ""
 
-    # ==================================================
-    # Alias
-    # ==================================================
+        except GroqSTTRateLimitError as error:
+
+            print(
+                f"Groq Wake Rate Limit : {error}"
+            )
+
+            return ""
+
+        except GroqSTTError as error:
+
+            print(
+                f"Groq Wake STT Error : {error}"
+            )
+
+            return ""
+
+        print(
+            f"DHEEPTHI Standby Input : "
+            f"{text or '<empty>'}"
+        )
+
+        print(
+            "======================================\n"
+        )
+
+        return text
+
+    # ======================================================
+    # Fresh Command Transcription
+    # ======================================================
+
+    def transcribe_command(
+        self,
+        audio_file: str | Path,
+    ) -> str:
+
+        print(
+            "\n========== GROQ COMMAND =========="
+        )
+
+        print(
+            "Groq STT: processing fresh "
+            "command audio..."
+        )
+
+        try:
+
+            text = self.transcribe(
+                audio_file
+            )
+
+        except GroqSTTAccessError as error:
+
+            print(
+                f"Groq Command Access Error : {error}"
+            )
+
+            return ""
+
+        except GroqSTTRateLimitError as error:
+
+            print(
+                f"Groq Command Rate Limit : {error}"
+            )
+
+            return ""
+
+        except GroqSTTError as error:
+
+            print(
+                f"Groq Command STT Error : {error}"
+            )
+
+            return ""
+
+        print(
+            f"Command Transcript : "
+            f"{text or '<empty>'}"
+        )
+
+        print(
+            "==================================\n"
+        )
+
+        return text
+
+    # ======================================================
+    # Wake Word Similarity
+    # ======================================================
+
+    @classmethod
+    def wake_word_similarity(
+        cls,
+        word: str,
+    ) -> float:
+
+        cleaned = re.sub(
+            r"[^a-z]+",
+            "",
+            (word or "").lower(),
+        )
+
+        if not cleaned:
+            return 0.0
+
+        return max(
+            SequenceMatcher(
+                None,
+                cleaned,
+                candidate,
+            ).ratio()
+            for candidate in cls.WAKE_CANDIDATES
+        )
+
+    # ======================================================
+    # Wake-Like Token
+    # ======================================================
+
+    @classmethod
+    def _is_wake_like_token(
+        cls,
+        token: str,
+    ) -> bool:
+
+        token = re.sub(
+            r"[^a-z]+",
+            "",
+            token.lower(),
+        )
+
+        if len(token) < 5:
+            return False
+
+        return (
+            cls.wake_word_similarity(
+                token
+            )
+            >= cls.WAKE_SINGLE_WORD_THRESHOLD
+        )
+
+    # ======================================================
+    # Deep Family Detection
+    # ======================================================
+
+    @classmethod
+    def _contains_deep_family(
+        cls,
+        words: list[str],
+    ) -> bool:
+
+        for index, word in enumerate(
+            words
+        ):
+
+            if word != "deep":
+                continue
+
+            following = words[
+                index + 1:
+            ]
+
+            if not following:
+                continue
+
+            if following[0] in {
+                "the",
+                "thee",
+                "tea",
+                "thi",
+                "tee",
+                "ti",
+                "t",
+                "d",
+                "please",
+            }:
+
+                return True
+
+            if (
+                "wake" in following
+                and
+                "up" in following
+            ):
+
+                return True
+
+            if (
+                "make" in following
+                and
+                "up" in following
+            ):
+
+                return True
+
+        return False
+
+    # ======================================================
+    # DHEEPTHI Wake Detection
+    # ======================================================
+
+    @classmethod
+    def contains_wake_word(
+        cls,
+        text: str | None,
+    ) -> bool:
+
+        normalized = cls.normalize_wake_text(
+            text
+        )
+
+        if not normalized:
+            return False
+
+        # --------------------------------------------------
+        # Reject obvious normal English.
+        # --------------------------------------------------
+
+        if normalized in cls.WAKE_REJECT_PHRASES:
+            return False
+
+        # --------------------------------------------------
+        # Exact known wake phrases.
+        # --------------------------------------------------
+
+        for wake in cls.WAKE_WORDS:
+
+            if re.search(
+                rf"\b{re.escape(wake)}\b",
+                normalized,
+            ):
+
+                return True
+
+        # --------------------------------------------------
+        # Known ASR wake variations.
+        # --------------------------------------------------
+
+        if normalized in cls.WAKE_PHRASE_VARIATIONS:
+            return True
+
+        # --------------------------------------------------
+        # Token detection.
+        # --------------------------------------------------
+
+        words = normalized.split()
+
+        for word in words:
+
+            if cls._is_wake_like_token(
+                word
+            ):
+
+                return True
+
+        # --------------------------------------------------
+        # Deep family.
+        # --------------------------------------------------
+
+        if cls._contains_deep_family(
+            words
+        ):
+
+            return True
+
+        # --------------------------------------------------
+        # Joined transcription.
+        # --------------------------------------------------
+
+        joined = "".join(
+            words
+        )
+
+        for candidate in (
+            "deepdeep",
+            "deepdee",
+            "deepthi",
+            "deepthee",
+            "dheepthi",
+        ):
+
+            if candidate in joined:
+                return True
+
+        # --------------------------------------------------
+        # Whole phrase fuzzy matching.
+        #
+        # Restricted to short utterances so normal
+        # commands are not accidentally classified as
+        # DHEEPTHI.
+        # --------------------------------------------------
+
+        if len(words) <= 4:
+
+            for candidate in cls.WAKE_CANDIDATES:
+
+                score = SequenceMatcher(
+                    None,
+                    joined,
+                    candidate,
+                ).ratio()
+
+                if (
+                    score
+                    >= cls.WAKE_FUZZY_THRESHOLD
+                ):
+
+                    return True
+
+        return False
+
+    # ======================================================
+    # Remove Wake Word
+    # ======================================================
+
+    @classmethod
+    def remove_wake_word(
+        cls,
+        text: str | None,
+    ) -> str:
+
+        if not text:
+            return ""
+
+        original = text.strip()
+
+        normalized = cls.normalize_wake_text(
+            original
+        )
+
+        prefixes = (
+            "hey dheepthi",
+            "hey deepthi",
+            "hey deepti",
+            "hey deepthee",
+
+            "okay dheepthi",
+            "okay deepthi",
+            "okay deepti",
+
+            "ok dheepthi",
+            "ok deepthi",
+            "ok deepti",
+
+            "deep deep wake up",
+            "deepdeep wake up",
+
+            "deep deep make up",
+            "deepdeep make up",
+
+            "deep please",
+
+            "deep the",
+            "deep thee",
+            "deep tea",
+            "deep thi",
+            "deep tee",
+            "deep ti",
+            "deep t",
+            "deep d",
+
+            "dheep the",
+            "dheep thee",
+            "dheep tea",
+            "dheep thi",
+            "dheep tee",
+            "dheep ti",
+
+            "beep the",
+            "weep the",
+        )
+
+        for prefix in sorted(
+            prefixes,
+            key=len,
+            reverse=True,
+        ):
+
+            if normalized.startswith(
+                prefix
+            ):
+
+                words = original.split()
+
+                prefix_count = len(
+                    prefix.split()
+                )
+
+                return " ".join(
+                    words[prefix_count:]
+                ).strip()
+
+        # --------------------------------------------------
+        # Single-word wake variants.
+        # --------------------------------------------------
+
+        words = original.split()
+
+        if not words:
+            return ""
+
+        first_word = re.sub(
+            r"^[^\w-]+|[^\w-]+$",
+            "",
+            words[0].lower(),
+        )
+
+        single_words = {
+            "dheepthi",
+            "deepthi",
+            "deepti",
+            "deepthee",
+            "deepthy",
+            "deeptee",
+            "dhepti",
+            "dhepthi",
+            "dheethi",
+            "dhethi",
+            "deeply",
+        }
+
+        if (
+            first_word in single_words
+            or
+            cls._is_wake_like_token(
+                first_word
+            )
+        ):
+
+            return " ".join(
+                words[1:]
+            ).strip()
+
+        return original
+
+    # ======================================================
+    # Compatibility Alias
+    # ======================================================
 
     def listen(
         self,
         audio_file: str | Path,
     ) -> str | None:
-        """
-        Compatibility alias.
-
-        This method expects an already-recorded audio file.
-        Microphone recording remains the responsibility of
-        the existing ASTRA speech-recognition layer.
-        """
 
         try:
 
@@ -459,38 +1327,65 @@ class GroqRecognizer:
 
             return None
 
-    # ==================================================
+    # ======================================================
     # Health Check
-    # ==================================================
+    # ======================================================
 
-    def is_configured(self) -> bool:
-        """
-        Return True when a Groq API key is configured.
-        """
+    def is_configured(
+        self,
+    ) -> bool:
 
         return bool(
             self.api_key
         )
 
-    def get_model(self) -> str:
-        """
-        Return the currently configured STT model.
-        """
+    # ======================================================
+    # Model
+    # ======================================================
+
+    def get_model(
+        self,
+    ) -> str:
 
         return self.model
 
-    # ==================================================
-    # Safe Representation
-    # ==================================================
+    # ======================================================
+    # Cleanup
+    # ======================================================
 
-    def __repr__(self) -> str:
-        """
-        Safe representation that never exposes the API key.
-        """
+    def close(
+        self,
+    ) -> None:
+
+        http_client = getattr(
+            self,
+            "http_client",
+            None,
+        )
+
+        if http_client is not None:
+
+            try:
+
+                http_client.close()
+
+            except Exception:
+                pass
+
+            self.http_client = None
+
+    # ======================================================
+    # Safe Representation
+    # ======================================================
+
+    def __repr__(
+        self,
+    ) -> str:
 
         return (
             f"GroqRecognizer("
             f"model={self.model!r}, "
-            f"configured={self.is_configured()!r}"
+            f"configured="
+            f"{self.is_configured()!r}"
             f")"
         )

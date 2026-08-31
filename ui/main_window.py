@@ -2,9 +2,59 @@ import os
 import re
 import html
 import random
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+
+# =====================================================
+# ASTRA-AI ENVIRONMENT
+# =====================================================
+#
+# main_window.py is the main UI/controller entry point.
+# Load the project .env here so every backend created by
+# MainWindow can access environment-based API credentials.
+#
+# IMPORTANT:
+# - Never print the actual API key.
+# - Existing functionality is preserved.
+# - main.py remains a lightweight application launcher.
+# =====================================================
+
+PROJECT_ROOT = (
+    Path(__file__)
+    .resolve()
+    .parents[1]
+)
+
+ENV_FILE = (
+    PROJECT_ROOT
+    / ".env"
+)
+
+load_dotenv(
+    ENV_FILE
+)
+
+GROQ_API_KEY = (
+    os.getenv(
+        "GROQ_API_KEY",
+        ""
+    )
+    .strip()
+)
+
+GROQ_STT_MODEL = (
+    os.getenv(
+        "GROQ_STT_MODEL",
+        "whisper-large-v3-turbo"
+    )
+    .strip()
+)
 
 from PySide6.QtCore import (
     Qt,
+    QUrl,
     QCoreApplication,
     QThread,
     Signal,
@@ -19,6 +69,7 @@ from PySide6.QtGui import (
     QColor,
     QFont,
     QIcon,
+    QDesktopServices,
 )
 
 from PySide6.QtWidgets import (
@@ -48,7 +99,7 @@ from ui.widgets.background_widget import BackgroundWidget
 from ui.widgets.mic_widget import MicWidget
 from ui.widgets.file_selection_panel import FileSelectionPanel
 
-from voice.whisper_recognizer import WhisperRecognizer
+from voice.speech_recognition import SpeechRecognizer
 from voice.text_to_speech import TextToSpeech
 
 from planner.intent_detector import IntentDetector
@@ -101,153 +152,156 @@ CLOSE_GREETINGS = [
 # =====================================================
 
 class VoiceWorker(QThread):
+    """Background voice worker for ASTRA-AI.
+
+    Voice pipeline:
+
+        WAKE MODE
+            Local Faster-Whisper -> DHEEPTHI detection
+            -> discard wake audio -> fresh command capture
+
+        MANUAL MODE
+            Fresh microphone capture -> existing command STT path
+
+    IMPORTANT:
+        Wake detection is owned by SpeechRecognizer.
+        MainWindow does not duplicate wake-word recognition.
+        After DHEEPTHI is detected, the wake recording is discarded and
+        a completely fresh recording is made for the actual command.
+    """
 
     command_ready = Signal(str)
-
     finished = Signal()
-
     audio_level = Signal(float)
 
-    def __init__(
-        self,
-        recognizer,
-        tts,
-        wake_word_mode=False
-    ):
-
+    def __init__(self, recognizer, tts, wake_word_mode=False):
         super().__init__()
-
         self.recognizer = recognizer
-
-        self._stop = False
-
         self.tts = tts
+        self.wake_word_mode = bool(wake_word_mode)
+        self._stop = False
+        self._command_emitted = False
 
-        self.wake_word_mode = wake_word_mode
-
-        self.recognizer.level_callback = (
-            self.audio_level.emit
-        )
+        # SpeechRecognizer calls this callback from its audio thread.
+        # Emit a Qt signal here; MainWindow/MicWidget then receive the
+        # level through Qt's queued signal mechanism.
+        try:
+            self.recognizer.level_callback = self.audio_level.emit
+        except Exception as error:
+            print(f"VoiceWorker Audio Callback Error : {error}")
 
     def run(self):
-
         try:
-
-            if (
-                self._stop
-                or self.isInterruptionRequested()
-            ):
-
+            if self._stop or self.isInterruptionRequested():
                 return
 
-            # ---------------------------------
-            # DHEEPTHI Wake Word Mode
-            # ---------------------------------
-
             if self.wake_word_mode:
+                print("\n========== DHEEPTHI / FASTER-WHISPER ==========")
+                print("DHEEPTHI standby: LOCAL Faster-Whisper wake detection.")
+                print("Groq wake detection: DISABLED")
 
-                print(
-                    "\n========== DHEEPTHI =========="
-                )
-
-                print(
-                    "DHEEPTHI is waiting for wake word..."
-                )
-
-                command = (
-                    self.recognizer.listen_for_wake_command(
-                        retries=1
-                    )
-                )
-
-            # ---------------------------------
-            # Manual Microphone Mode
-            # ---------------------------------
-
-            else:
-
-                # IMPORTANT:
-                # Do not speak while the microphone is active.
-                # Speaking here causes Whisper to capture ASTRA's
-                # own voice and can trigger feedback / false commands.
-
-                self.msleep(180)
+                detected = self.recognizer.listen_for_wake_word()
 
                 if (
-                    self._stop
+                    not detected
+                    or self._stop
                     or self.isInterruptionRequested()
                 ):
+                    return
 
+                # The wake-word recording is owned and discarded by the
+                # recognizer.  Start a completely fresh recording for the
+                # actual command so "DHEEPTHI" can never become the command.
+                print("\n⚡ DHEEPTHI detected.")
+
+                # --------------------------------------------------
+                # 3. TTS -> "Listening"
+                # --------------------------------------------------
+                # Speak only after DHEEPTHI is detected.  The wake
+                # recording is already discarded by WhisperRecognizer.
+                # Wait for TTS to finish before opening the microphone
+                # so ASTRA cannot hear its own voice.
+                try:
+                    if self.tts is not None:
+                        self.tts.speak("Listening")
+
+                        while (
+                            self.tts.speaking()
+                            and not self._stop
+                            and not self.isInterruptionRequested()
+                        ):
+                            self.msleep(30)
+
+                except Exception as error:
+                    print(f"TTS Listening Error : {error}")
+
+                if self._stop or self.isInterruptionRequested():
+                    return
+
+                # --------------------------------------------------
+                # 4. FRESH COMMAND MICROPHONE CAPTURE
+                # --------------------------------------------------
+                # IMPORTANT:
+                # Never call the generic listen(retries=...) path here.
+                # The new WhisperRecognizer API explicitly provides
+                # listen_after_wake_word() for the second-stage capture.
+                # This guarantees that the DHEEPTHI wake recording is
+                # not reused as the user's command.
+                print("🎤 Starting a NEW command recording...")
+
+                command = self.recognizer.listen_after_wake_word(
+                    timeout=5,
+                    phrase_time_limit=20,
+                )
+            else:
+                # Manual microphone mode.
+                self.msleep(180)
+
+                if self._stop or self.isInterruptionRequested():
                     return
 
                 command = self.recognizer.listen(
-                    retries=2
+                    timeout=5,
+                    phrase_time_limit=20,
+                    calibrate=False,
                 )
 
-            # ---------------------------------
-            # Stop Check
-            # ---------------------------------
-
-            if (
-                self._stop
-                or self.isInterruptionRequested()
-            ):
-
+            if self._stop or self.isInterruptionRequested():
                 return
 
-            # ---------------------------------
-            # Command Ready
-            # ---------------------------------
-
             if command:
+                command = str(command).strip()
+                if command and not self._command_emitted:
+                    self._command_emitted = True
+                    print(f"Command Ready : {command}")
+                    self.command_ready.emit(command)
 
-                print(
-                    f"Command Ready : {command}"
-                )
-
-                self.command_ready.emit(
-                    command
-                )
-
+        except TypeError as error:
+            # Do not fall back to listen(retries=...) in wake mode.
+            # That legacy fallback was the source of the old
+            # "unexpected keyword argument 'retries'" integration path
+            # and could reopen the wrong microphone lifecycle.
+            print(f"VoiceWorker API Error : {error}")
+        except Exception as error:
+            print(f"VoiceWorker Error : {error}")
         finally:
-
             self.finished.emit()
 
     def stop(self):
-        """
-        Request the voice worker to stop safely.
-
-        The recognizer is asked to stop first so that
-        any active wake-word/audio operation can return.
-        """
-
+        """Stop the worker and interrupt any active microphone operation."""
         self._stop = True
-
         self.requestInterruption()
 
-        # ---------------------------------
-        # Stop recognizer operations
-        # ---------------------------------
-
         try:
-
             self.recognizer.stop_wake_word()
-
-        except Exception as error:
-
-            print(
-                f"Recognizer Wake Stop Error : {error}"
-            )
+        except Exception:
+            pass
 
         try:
-
             self.recognizer.stop_audio_meter()
+        except Exception:
+            pass
 
-        except Exception as error:
-
-            print(
-                f"Recognizer Meter Stop Error : {error}"
-            )
 
 # =====================================================
 # Gemini Conversation Worker
@@ -367,6 +421,24 @@ class MainWindow(QMainWindow):
         self._goodbye_tts_signal_connected = False
         self._goodbye_tts_finished = False
 
+        # Startup greeting owns the microphone until TTS is fully finished.
+        self._startup_greeting_active = False
+        self._startup_greeting_finished = False
+        self._startup_sequence_complete = False
+        self._startup_tts_signal_connected = False
+        self._startup_tts_started_signal_connected = False
+        self._startup_tts_observed_speaking = False
+        self._startup_greeting_started_at = None
+        self._startup_greeting_token = 0
+        self._startup_tts_request_id = None
+        self._startup_unlock_watchdog = None
+        self._startup_poll_timer = None
+
+        # Safety timeout only. Normal unlock happens from the real
+        # TTS completion signal or the speaking-state fallback.
+        self._startup_unlock_watchdog_ms = 30000
+        self._startup_min_fallback_wait_ms = 7000
+
         # ----------------------------------
         # Backend
         # ----------------------------------
@@ -412,6 +484,27 @@ class MainWindow(QMainWindow):
         self.file_monitor = None
 
         self.gemini = None
+
+        # ----------------------------------
+        # Groq Speech-to-Text Configuration
+        # ----------------------------------
+        #
+        # The key is loaded from the project .env above.
+        # Keep only configuration state here; the actual STT
+        # implementation remains owned by the voice layer.
+        # ----------------------------------
+
+        self.groq_api_key = (
+            GROQ_API_KEY
+        )
+
+        self.groq_stt_model = (
+            GROQ_STT_MODEL
+        )
+
+        self.groq_stt_available = bool(
+            self.groq_api_key
+        )
 
         # ----------------------------------
         # Runtime
@@ -507,6 +600,14 @@ class MainWindow(QMainWindow):
         # CommandDispatcher returns a non-blocking confirmation
         # request. MainWindow owns the microphone confirmation flow.
         self._pending_confirmation = None
+
+        # ----------------------------------
+        # Pending Microsoft Word clarification
+        # ----------------------------------
+        # Preserve the original Word action while the user supplies
+        # missing information such as rows/columns, path, text, font,
+        # or other required parameters.
+        self._pending_word_clarification = None
 
         # ----------------------------------
         # Window
@@ -1121,15 +1222,43 @@ class MainWindow(QMainWindow):
         print("\n========== BACKEND ==========")
 
         # ------------------------------------------
+        # Groq STT Environment Check
+        # ------------------------------------------
+        #
+        # Do not expose the secret itself in logs.
+        # This confirms that MainWindow successfully loaded
+        # GROQ_API_KEY from the project environment.
+        # ------------------------------------------
+
+        if self.groq_stt_available:
+
+            print(
+                "Groq STT Environment : READY"
+            )
+
+            print(
+                f"Groq STT Model : {self.groq_stt_model}"
+            )
+
+        else:
+
+            print(
+                "Groq STT Environment : NOT CONFIGURED"
+            )
+
+            print(
+                "Set GROQ_API_KEY in the project .env file."
+            )
+
+        # ------------------------------------------
         # Speech Recognition
         # ------------------------------------------
 
-        self.recognizer = WhisperRecognizer()
+        self.recognizer = SpeechRecognizer()
 
-        print("Whisper Recognizer Created.")
-
-        # Whisper model will be loaded inside
-        # InitializationWorker.
+        print("Vosk Speech Recognizer Created.")
+        print("Wake Engine : Vosk LOCAL / OFFLINE")
+        print("Faster-Whisper : DISABLED")
 
         # ------------------------------------------
         # Voice
@@ -1492,8 +1621,13 @@ class MainWindow(QMainWindow):
 
             self.mic_widget.show_listening()
 
+            # Start a clean visual meter for every recording session.
             self.mic_widget.set_listening(
                 True
+            )
+
+            self.mic_widget.update_audio_level(
+                0.0
             )
 
         except Exception:
@@ -2375,6 +2509,308 @@ class MainWindow(QMainWindow):
 
         return True
 
+    # --------------------------------------------------
+    # Microsoft Word V1 Clarification Helpers
+    # --------------------------------------------------
+
+    @staticmethod
+    def _word_clarification_prompt(missing_parameters):
+        """Return a natural prompt for missing Word parameters."""
+
+        missing = [
+            str(value).strip().lower()
+            for value in (missing_parameters or [])
+            if str(value).strip()
+        ]
+
+        if not missing:
+            return "I need a little more information to continue."
+
+        prompts = {
+            "rows": "How many rows should the table have?",
+            "columns": "How many columns should the table have?",
+            "path": "What file path should I use?",
+            "text": "What text would you like me to use?",
+            "name": "What font name should I use?",
+            "size": "What font size should I use?",
+            "r": "What red color value should I use?",
+            "g": "What green color value should I use?",
+            "b": "What blue color value should I use?",
+            "value": "What value should I use?",
+            "style_name": "Which document style should I use?",
+            "find_text": "What text should I find?",
+            "replace_text": "What should I replace it with?",
+            "url": "What URL should I use?",
+            "display_text": "What display text should I use?",
+        }
+
+        if "rows" in missing and "columns" in missing:
+            return "How many rows and columns should the table have?"
+
+        if len(missing) == 1:
+            key = missing[0]
+            return prompts.get(
+                key,
+                f"What {key.replace('_', ' ')} should I use?",
+            )
+
+        readable = ", ".join(
+            item.replace("_", " ") for item in missing
+        )
+        return f"Please provide these Word details: {readable}."
+
+    @staticmethod
+    def _extract_word_clarification_values(text, missing_parameters):
+        """Extract missing Word values from a natural-language answer."""
+
+        answer = str(text or "").strip()
+        missing = [
+            str(value).strip().lower()
+            for value in (missing_parameters or [])
+            if str(value).strip()
+        ]
+        values = {}
+
+        if not answer or not missing:
+            return values
+
+        # Table dimensions: "5 rows and 3 columns" / "rows 5 columns 3".
+        if "rows" in missing or "columns" in missing:
+            row_match = re.search(
+                r"(?:rows?|row\s*count)\s*(?:are|is|=|:)?\s*(\d+)",
+                answer,
+                flags=re.IGNORECASE,
+            )
+            col_match = re.search(
+                r"(?:columns?|cols?|column\s*count)\s*(?:are|is|=|:)?\s*(\d+)",
+                answer,
+                flags=re.IGNORECASE,
+            )
+
+            if row_match:
+                values["rows"] = int(row_match.group(1))
+            if col_match:
+                values["columns"] = int(col_match.group(1))
+
+            if "rows" in missing and "rows" not in values:
+                match = re.search(r"(\d+)\s*rows?", answer, re.IGNORECASE)
+                if match:
+                    values["rows"] = int(match.group(1))
+
+            if "columns" in missing and "columns" not in values:
+                match = re.search(r"(\d+)\s*columns?", answer, re.IGNORECASE)
+                if match:
+                    values["columns"] = int(match.group(1))
+
+            if len(missing) == 2 and not values:
+                numbers = re.findall(r"\d+", answer)
+                if len(numbers) >= 2:
+                    if "rows" in missing:
+                        values["rows"] = int(numbers[0])
+                    if "columns" in missing:
+                        values["columns"] = int(numbers[1])
+
+        # Numeric values such as font size / spacing / RGB.
+        numeric_keys = {"size", "value", "r", "g", "b"}
+        numeric_missing = [key for key in missing if key in numeric_keys]
+        if numeric_missing:
+            numbers = re.findall(r"-?\d+(?:\.\d+)?", answer)
+            for index, key in enumerate(numeric_missing):
+                if index < len(numbers):
+                    raw = numbers[index]
+                    values[key] = float(raw) if "." in raw else int(raw)
+
+        for key in missing:
+            if key in values:
+                continue
+
+            if key in {"path", "url"}:
+                cleaned = answer.strip().strip('"').strip("'")
+                prefixes = (
+                    "the path is ",
+                    "path is ",
+                    "the file is ",
+                    "file is ",
+                    "the url is ",
+                    "url is ",
+                    "link is ",
+                )
+                lowered = cleaned.lower()
+                for prefix in prefixes:
+                    if lowered.startswith(prefix):
+                        cleaned = cleaned[len(prefix):].strip()
+                        break
+                values[key] = cleaned
+                continue
+
+            if key in {
+                "text",
+                "name",
+                "style_name",
+                "find_text",
+                "replace_text",
+                "display_text",
+            }:
+                values[key] = answer
+
+        return values
+
+    def _begin_word_clarification(self, result, text, intent=None, entity=None):
+        """Store a Word clarification request and prepare the follow-up."""
+
+        missing = list(result.get("missing_parameters", []) or [])
+        action = result.get("word_action") or intent
+
+        base_entity = (
+            dict(entity)
+            if isinstance(entity, dict)
+            else ({"entity": entity} if entity is not None else {})
+        )
+
+        self._pending_word_clarification = {
+            "action": action,
+            "entity": base_entity,
+            "typed_text": result.get("typed_text"),
+            "user_text": text,
+            "missing_parameters": missing,
+        }
+
+        prompt = self._word_clarification_prompt(missing)
+
+        try:
+            self.mic_widget.update_ai_message(prompt)
+        except Exception:
+            pass
+
+        try:
+            self.conversation_panel.show_ai_response(prompt)
+        except Exception:
+            pass
+
+        self.status_label.setText(
+            "Status : Waiting for Word Information"
+        )
+
+        try:
+            self.left_panel.set_listening(
+                "Waiting for Word Information"
+            )
+            self._set_thinking_state(
+                "Waiting for Word Information",
+                avatar_state="thinking_laptop",
+            )
+            self.left_panel.set_speaking("Speaking")
+        except Exception:
+            pass
+
+        # CommandDispatcher already sends the clarification through TTS.
+        # MainWindow therefore only waits for that speech to finish.
+        self._unlock_after_speech(
+            restart_wake=True,
+            terminal_avatar_state="thinking_laptop",
+        )
+
+    def _handle_word_clarification_response(self, text):
+        """Resume the pending Word operation using the user's answer."""
+
+        pending = self._pending_word_clarification
+        if not pending:
+            return False
+
+        answer = str(text or "").strip()
+        if not answer:
+            return True
+
+        values = self._extract_word_clarification_values(
+            answer,
+            pending.get("missing_parameters", []),
+        )
+
+        missing = [
+            key
+            for key in pending.get("missing_parameters", [])
+            if key not in values or values[key] in (None, "")
+        ]
+
+        if missing:
+            pending["entity"].update(values)
+            pending["missing_parameters"] = missing
+
+            prompt = self._word_clarification_prompt(missing)
+
+            try:
+                self.mic_widget.update_ai_message(prompt)
+                self.conversation_panel.show_ai_response(prompt)
+            except Exception:
+                pass
+
+            self.status_label.setText(
+                "Status : Waiting for Word Information"
+            )
+
+            try:
+                self.tts.speak(prompt)
+            except Exception:
+                pass
+
+            self._unlock_after_speech(
+                restart_wake=True,
+                terminal_avatar_state="thinking_laptop",
+            )
+            return True
+
+        entity = dict(pending.get("entity") or {})
+        entity.update(values)
+        action = pending.get("action")
+        original_command = pending.get("user_text") or action or "Word operation"
+
+        self._pending_word_clarification = None
+        self.lock_microphone()
+
+        self.status_label.setText(
+            "Status : Executing Word Operation..."
+        )
+
+        try:
+            self.mic_widget.show_conversation(answer, "Executing...")
+            self.conversation_panel.show_ai_response(
+                "Got it. Continuing with the Word operation..."
+            )
+        except Exception:
+            pass
+
+        try:
+            self._set_thinking_state(
+                "Executing",
+                avatar_state="thinking_laptop",
+            )
+            self.left_panel.set_speaking("Silent")
+        except Exception:
+            pass
+
+        try:
+            result = self.dispatcher.dispatch(
+                intent=action,
+                entity=entity,
+                typed_text=pending.get("typed_text"),
+                user_text=original_command,
+            )
+        except Exception as error:
+            print(f"Word Clarification Dispatch Error : {error}")
+            result = {
+                "success": False,
+                "status": "Status : Word Operation Failed",
+                "message": "I could not complete the Word operation.",
+            }
+
+        self._handle_dispatch_result(
+            result,
+            original_command,
+            action,
+            entity,
+        )
+        return True
+
     def _handle_dispatch_result(
         self,
         result,
@@ -2391,6 +2827,23 @@ class MainWindow(QMainWindow):
         """
 
         result = result or {}
+
+        # ---------------------------------
+        # Word Information Required
+        # ---------------------------------
+        if result.get("requires_information") or (
+            result.get("requires_clarification")
+            and result.get("word_action")
+        ):
+
+            self._begin_word_clarification(
+                result,
+                text,
+                intent,
+                entity,
+            )
+
+            return
 
         # ---------------------------------
         # Confirmation Required
@@ -2767,6 +3220,17 @@ class MainWindow(QMainWindow):
         # ------------------------------------------
 
         self.lock_microphone()
+
+        # ------------------------------------------
+        # Pending Word clarification
+        # ------------------------------------------
+        if self._pending_word_clarification:
+
+            if not text:
+                return
+
+            if self._handle_word_clarification_response(text):
+                return
 
         # ------------------------------------------
         # Pending YES/NO confirmation
@@ -4736,46 +5200,74 @@ class MainWindow(QMainWindow):
 
     def enable_main_ui(self):
         """
-        Enable ASTRA after loading.
+        Enable ASTRA after loading and start the startup greeting.
+
+        IMPORTANT: the startup greeting owns the microphone from the
+        moment this method starts.  No later UI initialization code may
+        re-enable the microphone until the greeting completion path calls
+        ``unlock_microphone()``.
         """
 
-        self.microphone_button.setEnabled(True)
+        # ==================================================
+        # STARTUP MIC LOCK — SET THE GATE FIRST
+        # ==================================================
+        self._startup_greeting_token += 1
+        self._startup_greeting_active = True
+        self._startup_greeting_finished = False
+        self._startup_sequence_complete = False
+        self._startup_tts_observed_speaking = False
+        self._startup_greeting_started_at = None
+        self._startup_tts_request_id = None
+
+        try:
+            self.lock_microphone()
+            print(
+                "[STARTUP] MIC LOCKED | enable_main_ui | "
+                f"button_enabled={self.microphone_button.isEnabled()} | "
+                f"processing_voice={self.processing_voice}"
+            )
+        except Exception as error:
+            print(
+                f"[STARTUP] MIC LOCK ERROR | enable_main_ui | {error}"
+            )
 
         self.status_label.setText(
             "Status : Ready"
         )
 
         self.conversation_label.setText(
-
             "Welcome to ASTRA-AI\n\n"
-
             "Click the microphone to start."
-
         )
 
+        # Keep the MicWidget disabled.  Do NOT call set_enabled(True) here.
         try:
+            self.microphone_button.setEnabled(False)
+            self.microphone_button.setCursor(Qt.ForbiddenCursor)
+            self.mic_widget.set_enabled(False)
+            self.mic_widget.set_listening(False)
+        except Exception as error:
+            print(
+                f"[STARTUP] MIC UI LOCK ERROR | {error}"
+            )
 
-            self.mic_widget.set_enabled(True)
-
+        try:
             self.left_panel.set_listening(
                 "Waiting for DHEEPTHI"
             )
-
             self._set_thinking_state(
                 "Inactive"
             )
-
             self.left_panel.set_speaking(
                 "Silent"
             )
-
         except Exception:
-
             pass
 
-        # --------------------------------------------------
-        # ASTRA STARTUP GREETING
-        # --------------------------------------------------
+        print(
+            "[STARTUP] Microphone is now LOCKED. "
+            "Waiting for opening greeting."
+        )
 
         QTimer.singleShot(
             300,
@@ -4785,19 +5277,12 @@ class MainWindow(QMainWindow):
         # ----------------------------------
         # Start Live File Monitor
         # ----------------------------------
-
         self.start_file_monitor()
 
         # ----------------------------------
-        # Start DHEEPTHI Wake Word Mode
+        # DHEEPTHI is NOT started here.
+        # _finish_startup_greeting() is the ONLY startup release point.
         # ----------------------------------
-
-        if self.wake_word_enabled:
-
-            QTimer.singleShot(
-                500,
-                self.start_wake_word_worker
-            )
 
     def _set_thinking_state(
         self,
@@ -5033,58 +5518,78 @@ class MainWindow(QMainWindow):
         return "thinking_laptop"
 
     def _play_startup_greeting(self):
-
         """
-        Play ASTRA startup greeting.
+        Play exactly one random opening greeting while the microphone
+        is locked.
 
-        Flow:
+        Strict lifecycle:
 
-            Show HELLO avatar
-                    ↓
-            Speak startup greeting
-                    ↓
-            Wait until TTS finishes
-                    ↓
-            Switch to IDLE PRIMARY
-                    ↓
-            AvatarWidget starts random idle slideshow
+            MIC LOCK
+                ↓
+            HELLO avatar
+                ↓
+            TTS speech
+                ↓
+            TTS COMPLETE
+                ↓
+            HELLO -> IDLE
+                ↓
+            MIC UNLOCK
+                ↓
+            DHEEPTHI wake listener
         """
+
+        if getattr(self, "_closing", False):
+            return
+
+        self._startup_greeting_token += 1
+
+        self._startup_greeting_active = True
+        self._startup_greeting_finished = False
+        self._startup_sequence_complete = False
+        self._startup_tts_observed_speaking = False
+        self._startup_greeting_started_at = __import__("time").monotonic()
+        self._startup_tts_request_id = None
 
         try:
+            self.lock_microphone()
 
             print(
-                "\n========== ASTRA STARTUP GREETING =========="
+                "[STARTUP] MIC LOCKED | greeting started | "
+                f"button_enabled={self.microphone_button.isEnabled()} | "
+                f"processing_voice={self.processing_voice}"
             )
+
+        except Exception as error:
+            print(
+                f"[STARTUP] MIC LOCK ERROR | {error}"
+            )
+
+        # --------------------------------------------------
+        # HELLO avatar
+        # --------------------------------------------------
+        try:
+            print("\n========== ASTRA STARTUP GREETING ==========")
 
             center_panel = getattr(
                 self,
                 "center_panel",
-                None
+                None,
             )
 
-            if center_panel is None:
-
-                print(
-                    "Startup Avatar Error : "
-                    "CenterPanel not found."
-                )
-
-            else:
+            if center_panel is not None:
 
                 center_panel.show()
 
-                # Keep microphone in front.
                 mic_widget = getattr(
                     self,
                     "mic_widget",
-                    None
+                    None,
                 )
 
                 if mic_widget is not None:
-
                     mic_widget.raise_()
 
-                # Show ONLY the HELLO image.
                 center_panel.set_avatar_state(
                     "hello"
                 )
@@ -5093,210 +5598,892 @@ class MainWindow(QMainWindow):
                     "[STARTUP] HELLO avatar displayed."
                 )
 
-        except Exception as error:
+            else:
+                print(
+                    "[STARTUP] CenterPanel not found."
+                )
 
+        except Exception as error:
             print(
-                f"Startup Avatar Error : {error}"
+                f"[STARTUP] Avatar error | {error}"
             )
 
         # --------------------------------------------------
-        # Speak Startup Greeting
+        # TTS
         # --------------------------------------------------
+        tts = getattr(
+            self,
+            "tts",
+            None,
+        )
 
-        try:
-
-            if self.tts is not None:
-
-                # Select exactly one opening greeting for this launch.
-                # The HELLO avatar is already visible and remains active
-                # until _wait_for_startup_greeting detects full TTS completion.
-                startup_greeting = random.choice(OPEN_GREETINGS)
-
-                print(
-                    f"[STARTUP] Selected greeting : {startup_greeting}"
-                )
-
-                self.tts.speak(
-                    startup_greeting
-                )
-
-                print(
-                    "[STARTUP] Greeting TTS started."
-                )
-
-                # Wait until speech finishes.
-                QTimer.singleShot(
-                    100,
-                    self._wait_for_startup_greeting
-                )
-
-            else:
-
-                # No TTS available.
-                # Remove avatar immediately.
-                self._finish_startup_greeting()
-
-        except Exception as error:
+        if tts is None:
 
             print(
-                f"Startup Greeting Error : {error}"
+                "[STARTUP] TTS unavailable. "
+                "Finishing greeting safely."
             )
 
             self._finish_startup_greeting()
+            return
 
-    def _wait_for_startup_greeting(self):
+        startup_greeting = random.choice(
+            OPEN_GREETINGS
+        )
 
+        print(
+            f"[STARTUP] Selected greeting : {startup_greeting}"
+        )
+
+        # --------------------------------------------------
+        # Connect speech_started.
+        # --------------------------------------------------
+        speech_started_signal = getattr(
+            tts,
+            "speech_started",
+            None,
+        )
+
+        if (
+            speech_started_signal is not None
+            and hasattr(
+                speech_started_signal,
+                "connect",
+            )
+            and not self._startup_tts_started_signal_connected
+        ):
+
+            try:
+
+                speech_started_signal.connect(
+                    self._on_startup_tts_started
+                )
+
+                self._startup_tts_started_signal_connected = True
+
+                print(
+                    "[STARTUP] TTS speech_started signal CONNECTED."
+                )
+
+            except Exception as error:
+
+                print(
+                    "[STARTUP] TTS speech_started connection FAILED | "
+                    f"{error}"
+                )
+
+                self._startup_tts_started_signal_connected = False
+
+        # --------------------------------------------------
+        # Connect speech_finished.
+        # --------------------------------------------------
+        speech_finished_signal = getattr(
+            tts,
+            "speech_finished",
+            None,
+        )
+
+        if (
+            speech_finished_signal is not None
+            and hasattr(
+                speech_finished_signal,
+                "connect",
+            )
+            and not self._startup_tts_signal_connected
+        ):
+
+            try:
+
+                speech_finished_signal.connect(
+                    self._on_startup_tts_finished
+                )
+
+                self._startup_tts_signal_connected = True
+
+                print(
+                    "[STARTUP] TTS speech_finished signal CONNECTED."
+                )
+
+            except Exception as error:
+
+                print(
+                    "[STARTUP] TTS speech_finished connection FAILED | "
+                    f"{error}"
+                )
+
+                self._startup_tts_signal_connected = False
+
+        # --------------------------------------------------
+        # Start exactly one greeting.
+        # --------------------------------------------------
+        try:
+
+            result = tts.speak(
+                startup_greeting
+            )
+
+            try:
+                self._startup_tts_request_id = getattr(
+                    tts,
+                    "_request_id",
+                    None,
+                )
+            except Exception:
+                self._startup_tts_request_id = None
+
+            print(
+                "[STARTUP] Greeting TTS STARTED | "
+                f"result={'started' if result is not None else 'accepted'} | "
+                f"tts_request_id={self._startup_tts_request_id}"
+            )
+
+        except Exception as error:
+
+            print(
+                f"[STARTUP] Greeting TTS ERROR | {error}"
+            )
+
+            self._finish_startup_greeting()
+            return
+
+        # --------------------------------------------------
+        # Poll actual speaking state as a backup.
+        # --------------------------------------------------
+        old_timer = getattr(
+            self,
+            "_startup_poll_timer",
+            None,
+        )
+
+        if old_timer is not None:
+
+            try:
+                old_timer.stop()
+                old_timer.deleteLater()
+            except Exception:
+                pass
+
+        self._startup_poll_timer = QTimer(
+            self
+        )
+
+        self._startup_poll_timer.setInterval(
+            75
+        )
+
+        self._startup_poll_timer.timeout.connect(
+            self._wait_for_startup_greeting
+        )
+
+        self._startup_poll_timer.start()
+
+        # --------------------------------------------------
+        # Last-resort watchdog.
+        # --------------------------------------------------
+        old_watchdog = getattr(
+            self,
+            "_startup_unlock_watchdog",
+            None,
+        )
+
+        if old_watchdog is not None:
+
+            try:
+                old_watchdog.stop()
+                old_watchdog.deleteLater()
+            except Exception:
+                pass
+
+        self._startup_unlock_watchdog = QTimer(
+            self
+        )
+
+        self._startup_unlock_watchdog.setSingleShot(
+            True
+        )
+
+        self._startup_unlock_watchdog.timeout.connect(
+            self._startup_unlock_watchdog_timeout
+        )
+
+        self._startup_unlock_watchdog.start(
+            self._startup_unlock_watchdog_ms
+        )
+
+        print(
+            "[STARTUP] MIC LOCK ACTIVE | "
+            "waiting for actual greeting completion."
+        )
+
+    @Slot(str)
+    def _on_startup_tts_started(
+        self,
+        text,
+    ):
         """
-        Wait until startup TTS has completely finished.
+        Mark the startup TTS request as actually started.
 
-        The GUI thread is never blocked.
+        This never unlocks the microphone.
         """
 
         if getattr(
             self,
             "_closing",
-            False
+            False,
         ):
+            return
 
+        if not getattr(
+            self,
+            "_startup_greeting_active",
+            False,
+        ):
+            return
+
+        if getattr(
+            self,
+            "_startup_greeting_finished",
+            False,
+        ):
+            return
+
+        self._startup_tts_observed_speaking = True
+
+        print(
+            "[STARTUP] TTS speech_started RECEIVED."
+        )
+
+    def _on_startup_tts_finished(
+        self,
+        success=True,
+    ):
+        """
+        Handle the startup TTS completion signal.
+
+        A completion signal never unlocks the mic while the TTS manager
+        still reports active speech.
+        """
+
+        if getattr(
+            self,
+            "_closing",
+            False,
+        ):
+            return
+
+        if not getattr(
+            self,
+            "_startup_greeting_active",
+            False,
+        ):
+            return
+
+        if getattr(
+            self,
+            "_startup_greeting_finished",
+            False,
+        ):
+            return
+
+        print(
+            "[STARTUP] TTS speech_finished RECEIVED | "
+            f"success={bool(success)}"
+        )
+
+        try:
+
+            if (
+                self.tts is not None
+                and self.tts.speaking()
+            ):
+
+                self._startup_tts_observed_speaking = True
+
+                print(
+                    "[STARTUP] Completion signal received, but TTS "
+                    "still reports speaking=True. Waiting."
+                )
+
+                return
+
+        except Exception:
+            pass
+
+        self._finish_startup_greeting()
+
+    def _wait_for_startup_greeting(self):
+        """
+        Poll the real TTS state.
+
+        This is the fallback path when a provider does not emit
+        ``speech_finished`` reliably.
+        """
+
+        if getattr(
+            self,
+            "_closing",
+            False,
+        ):
+            return
+
+        if not getattr(
+            self,
+            "_startup_greeting_active",
+            False,
+        ):
+            return
+
+        if getattr(
+            self,
+            "_startup_greeting_finished",
+            False,
+        ):
+            return
+
+        tts = getattr(
+            self,
+            "tts",
+            None,
+        )
+
+        if tts is None:
+
+            self._finish_startup_greeting()
             return
 
         try:
 
-            speaking = (
-
-                self.tts is not None
-
-                and
-
-                self.tts.speaking()
-
+            speaking_method = getattr(
+                tts,
+                "speaking",
+                None,
             )
 
-        except Exception:
+            if not callable(
+                speaking_method
+            ):
+                return
 
-            speaking = False
+            speaking = bool(
+                speaking_method()
+            )
 
-        # --------------------------------------------------
-        # Still Speaking
-        # --------------------------------------------------
+        except Exception as error:
 
-        if speaking:
-
-            QTimer.singleShot(
-                100,
-                self._wait_for_startup_greeting
+            print(
+                "[STARTUP] TTS speaking-state check ERROR | "
+                f"{error}"
             )
 
             return
 
+        if speaking:
+
+            if not self._startup_tts_observed_speaking:
+
+                print(
+                    "[STARTUP] TTS speaking=True | "
+                    "greeting is ACTIVE."
+                )
+
+            self._startup_tts_observed_speaking = True
+            return
+
         # --------------------------------------------------
-        # Greeting Finished
+        # speaking=False after actual speech was observed.
         # --------------------------------------------------
+        if self._startup_tts_observed_speaking:
+
+            print(
+                "[STARTUP] TTS speaking=False | "
+                "greeting COMPLETED."
+            )
+
+            self._finish_startup_greeting()
+            return
+
+        # --------------------------------------------------
+        # Provider did not expose speaking=True.
+        # Do not unlock immediately; wait through the startup
+        # race window first.
+        # --------------------------------------------------
+        started_at = (
+            self._startup_greeting_started_at
+        )
+
+        if started_at is not None:
+
+            elapsed_ms = (
+                __import__("time").monotonic()
+                - started_at
+            ) * 1000.0
+
+            if (
+                elapsed_ms
+                >= self._startup_min_fallback_wait_ms
+            ):
+
+                print(
+                    "[STARTUP] TTS never exposed speaking=True after "
+                    f"{int(elapsed_ms)} ms. "
+                    "Using safe fallback completion."
+                )
+
+                self._finish_startup_greeting()
+
+    def _startup_unlock_watchdog_timeout(self):
+        """
+        Last-resort recovery if the TTS provider never reports completion.
+        """
+
+        if not getattr(
+            self,
+            "_startup_greeting_active",
+            False,
+        ):
+            return
+
+        print(
+            "[STARTUP] TTS watchdog TIMEOUT | "
+            "forcing startup microphone unlock."
+        )
 
         self._finish_startup_greeting()
 
     def _finish_startup_greeting(self):
-
         """
-        Startup greeting is complete.
+        Single authoritative startup completion point.
 
-        HELLO state is finished.
-
-        Keep the avatar widget alive and immediately
-        switch to idle_primary.
-
-        After 3 seconds AvatarWidget automatically
-        starts the random idle slideshow.
+        The microphone is unlocked HERE and nowhere else in the startup
+        sequence.
         """
+
+        if getattr(
+            self,
+            "_shutdown_goodbye_started",
+            False,
+        ):
+            return
+
+        if getattr(
+            self,
+            "_startup_greeting_finished",
+            False,
+        ):
+            return
+
+        # Never unlock while TTS is still active.
+        try:
+
+            if (
+                self.tts is not None
+                and self.tts.speaking()
+            ):
+
+                self._startup_tts_observed_speaking = True
+
+                QTimer.singleShot(
+                    75,
+                    self._wait_for_startup_greeting
+                )
+
+                return
+
+        except Exception:
+            pass
+
+        self._startup_greeting_finished = True
+        self._startup_greeting_active = False
+        self._startup_sequence_complete = True
+
+        # Stop startup timers.
+        for timer_name in (
+            "_startup_poll_timer",
+            "_startup_unlock_watchdog",
+        ):
+
+            timer = getattr(
+                self,
+                timer_name,
+                None,
+            )
+
+            if timer is not None:
+
+                try:
+                    timer.stop()
+                    timer.deleteLater()
+                except Exception:
+                    pass
+
+                setattr(
+                    self,
+                    timer_name,
+                    None,
+                )
 
         print(
             "\n========== STARTUP COMPLETE =========="
         )
 
+        # --------------------------------------------------
+        # HELLO -> IDLE
+        # --------------------------------------------------
         center_panel = getattr(
             self,
             "center_panel",
-            None
+            None,
         )
-
-        if center_panel is None:
-
-            print(
-                "[STARTUP] CenterPanel not available."
-            )
-
-            return
 
         try:
 
-            # --------------------------------------------------
-            # IMPORTANT
-            #
-            # Do NOT hide the center panel.
-            # Do NOT remove it from the layout.
-            # Do NOT delete the avatar widget.
-            #
-            # UI must never become empty.
-            # --------------------------------------------------
+            if center_panel is not None:
 
-            center_panel.show()
+                center_panel.show()
 
-            # --------------------------------------------------
-            # HELLO finished
-            #
-            # Immediately show idle_primary.png.
-            #
-            # AvatarWidget handles:
-            #
-            # idle_primary
-            #       ↓
-            # wait 3 seconds
-            #       ↓
-            # random idle_01 ... idle_09
-            #       ↓
-            # every 3 seconds
-            # --------------------------------------------------
+                center_panel.set_avatar_state(
+                    "idle"
+                )
 
-            center_panel.set_avatar_state(
-                "idle"
-            )
+                print(
+                    "[STARTUP] HELLO state finished."
+                )
 
-            # --------------------------------------------------
-            # Keep microphone above avatar
-            # --------------------------------------------------
+                print(
+                    "[STARTUP] idle_primary started."
+                )
 
-            mic_widget = getattr(
-                self,
-                "mic_widget",
-                None
-            )
+                print(
+                    "[STARTUP] Idle slideshow is active."
+                )
 
-            if mic_widget is not None:
+                mic_widget = getattr(
+                    self,
+                    "mic_widget",
+                    None,
+                )
 
-                mic_widget.raise_()
+                if mic_widget is not None:
+                    mic_widget.raise_()
+
+            else:
+
+                print(
+                    "[STARTUP] CenterPanel not available."
+                )
+
+        except Exception as error:
 
             print(
-                "[STARTUP] HELLO state finished."
+                f"[STARTUP] Avatar transition ERROR | {error}"
             )
 
-            print(
-                "[STARTUP] idle_primary started."
-            )
+        if getattr(
+            self,
+            "_closing",
+            False,
+        ):
 
             print(
-                "[STARTUP] Idle slideshow is active."
+                "[STARTUP] Closing requested; "
+                "microphone remains LOCKED."
             )
 
             print(
                 "======================================\n"
             )
 
+            return
+
+        # --------------------------------------------------
+        # AUTHORITATIVE MICROPHONE UNLOCK
+        # --------------------------------------------------
+        try:
+
+            self.processing_voice = False
+            self.manual_listening_requested = False
+
+            self.microphone_button.setEnabled(
+                True
+            )
+
+            self.microphone_button.setCursor(
+                Qt.PointingHandCursor
+            )
+
+            mic_widget = getattr(
+                self,
+                "mic_widget",
+                None,
+            )
+
+            if mic_widget is not None:
+
+                custom_enable = getattr(
+                    mic_widget,
+                    "set_enabled",
+                    None,
+                )
+
+                if callable(
+                    custom_enable
+                ):
+
+                    custom_enable(
+                        True
+                    )
+
+                else:
+
+                    mic_widget.setEnabled(
+                        True
+                    )
+
+                set_listening = getattr(
+                    mic_widget,
+                    "set_listening",
+                    None,
+                )
+
+                if callable(
+                    set_listening
+                ):
+
+                    set_listening(
+                        False
+                    )
+
+                mic_widget.update()
+
+            QApplication.processEvents()
+
+            print(
+                "[MIC] UNLOCKED AFTER GREETING | "
+                f"button_enabled={self.microphone_button.isEnabled()} | "
+                f"mic_widget_enabled={mic_widget.isEnabled() if mic_widget is not None else 'N/A'} | "
+                f"processing_voice={self.processing_voice} | "
+                f"startup_active={self._startup_greeting_active}"
+            )
+
         except Exception as error:
 
             print(
-                f"Startup Avatar Transition Error : "
-                f"{error}"
+                f"[MIC] UNLOCK ERROR AFTER GREETING | {error}"
             )
+
+        # Verify after the current Qt event-loop turn.
+        QTimer.singleShot(
+            0,
+            self._verify_startup_microphone_unlocked
+        )
+
+        # Start DHEEPTHI only after the mic is explicitly enabled.
+        if (
+            getattr(
+                self,
+                "wake_word_enabled",
+                False,
+            )
+            and not getattr(
+                self,
+                "manual_listening_requested",
+                False,
+            )
+            and not getattr(
+                self,
+                "processing_voice",
+                False,
+            )
+            and not getattr(
+                self,
+                "wake_word_running",
+                False,
+            )
+            and not getattr(
+                self,
+                "_closing",
+                False,
+            )
+        ):
+
+            QTimer.singleShot(
+                250,
+                self._start_wake_word_after_startup
+            )
+
+            print(
+                "[STARTUP] DHEEPTHI wake listener scheduled "
+                "AFTER MIC UNLOCK."
+            )
+
+        else:
+
+            print(
+                "[STARTUP] DHEEPTHI not started: "
+                "another voice mode or shutdown is active."
+            )
+
+        print(
+            "======================================\n"
+        )
+
+    def _verify_startup_microphone_unlocked(self):
+        """
+        Verify and repair the microphone UI after startup greeting.
+
+        This catches a stale QWidget/MicWidget enabled state without
+        changing the normal command lifecycle.
+        """
+
+        if getattr(
+            self,
+            "_closing",
+            False,
+        ):
+            return
+
+        if not getattr(
+            self,
+            "_startup_sequence_complete",
+            False,
+        ):
+            return
+
+        if getattr(
+            self,
+            "_startup_greeting_active",
+            False,
+        ):
+            return
+
+        if getattr(
+            self,
+            "processing_voice",
+            False,
+        ):
+            return
+
+        try:
+            button_enabled = bool(
+                self.microphone_button.isEnabled()
+            )
+        except Exception:
+            button_enabled = False
+
+        try:
+            mic_enabled = bool(
+                self.mic_widget.isEnabled()
+            )
+        except Exception:
+            mic_enabled = False
+
+        print(
+            "[STARTUP] MIC STATE VERIFY | "
+            f"button_enabled={button_enabled} | "
+            f"mic_widget_enabled={mic_enabled} | "
+            f"processing_voice={self.processing_voice} | "
+            f"startup_active={self._startup_greeting_active}"
+        )
+
+        if not button_enabled or not mic_enabled:
+
+            print(
+                "[STARTUP] MIC STATE VERIFY | "
+                "repairing stale disabled microphone state."
+            )
+
+            try:
+                self.unlock_microphone()
+            except Exception as error:
+                print(
+                    f"[STARTUP] MIC VERIFY REPAIR ERROR | {error}"
+                )
+
+    def _start_wake_word_after_startup(self):
+        """
+        Start DHEEPTHI only after the startup greeting has completely
+        finished AND the microphone UI has been explicitly released.
+        """
+
+        if getattr(
+            self,
+            "_closing",
+            False,
+        ):
+            return
+
+        if getattr(
+            self,
+            "_startup_greeting_active",
+            False,
+        ):
+
+            print(
+                "[STARTUP] Wake start BLOCKED: "
+                "greeting still active."
+            )
+
+            return
+
+        if not getattr(
+            self,
+            "_startup_sequence_complete",
+            False,
+        ):
+
+            print(
+                "[STARTUP] Wake start BLOCKED: "
+                "startup sequence not complete."
+            )
+
+            return
+
+        if not getattr(
+            self,
+            "wake_word_enabled",
+            False,
+        ):
+            return
+
+        if getattr(
+            self,
+            "manual_listening_requested",
+            False,
+        ):
+            return
+
+        if getattr(
+            self,
+            "processing_voice",
+            False,
+        ):
+            return
+
+        try:
+
+            if not self.microphone_button.isEnabled():
+
+                print(
+                    "[STARTUP] Wake start BLOCKED: "
+                    "microphone button is still disabled."
+                )
+
+                QTimer.singleShot(
+                    100,
+                    self._start_wake_word_after_startup
+                )
+
+                return
+
+        except Exception:
+            pass
+
+        print(
+            "[STARTUP] Startup gate OPEN | "
+            "MIC is unlocked | starting DHEEPTHI."
+        )
+
+        self.start_wake_word_worker()
 
     # --------------------------------------------------
     # Initialization Failed
@@ -5380,15 +6567,48 @@ class MainWindow(QMainWindow):
 
         try:
 
-            self.mic_widget.setEnabled(
+            custom_disable = getattr(
+                self.mic_widget,
+                "set_enabled",
+                None,
+            )
+
+            if callable(
+                custom_disable
+            ):
+
+                custom_disable(
+                    False
+                )
+
+            else:
+
+                self.mic_widget.setEnabled(
+                    False
+                )
+
+            self.mic_widget.set_listening(
                 False
             )
 
         except Exception:
 
-            pass
+            try:
+                self.mic_widget.setEnabled(False)
+            except Exception:
+                pass
 
         QApplication.processEvents()
+
+        try:
+            print(
+                "[MIC] LOCKED | "
+                f"button_enabled={self.microphone_button.isEnabled()} | "
+                f"mic_widget_enabled={self.mic_widget.isEnabled()} | "
+                f"processing_voice={self.processing_voice}"
+            )
+        except Exception:
+            print("[MIC] LOCKED")
 
 
     # --------------------------------------------------
@@ -5399,47 +6619,105 @@ class MainWindow(QMainWindow):
         self
     ):
         """
-        Unlock the microphone button after the
-        current voice operation is completely finished.
+        Unlock the microphone UI.
+
+        Both the actual QPushButton and MicWidget's custom enabled state
+        are updated so they can never disagree.
         """
+
+        if getattr(
+            self,
+            "_closing",
+            False,
+        ):
+            return
 
         self.processing_voice = False
 
-        # ---------------------------------
-        # Enable button
-        # ---------------------------------
-
-        self.microphone_button.setEnabled(
-            True
-        )
-
-        # ---------------------------------
-        # Normal cursor
-        # ---------------------------------
-
-        self.microphone_button.setCursor(
-            Qt.PointingHandCursor
-        )
-
-        # ---------------------------------
-        # Restore MicWidget state
-        # ---------------------------------
-
         try:
 
-            self.mic_widget.setEnabled(
+            self.microphone_button.setEnabled(
                 True
             )
 
-            self.mic_widget._listening = False
+            self.microphone_button.setCursor(
+                Qt.PointingHandCursor
+            )
 
-            self.mic_widget.update()
+        except Exception as error:
+
+            print(
+                f"[MIC] Button unlock error | {error}"
+            )
+
+        try:
+
+            mic_widget = getattr(
+                self,
+                "mic_widget",
+                None,
+            )
+
+            if mic_widget is not None:
+
+                custom_enable = getattr(
+                    mic_widget,
+                    "set_enabled",
+                    None,
+                )
+
+                if callable(
+                    custom_enable
+                ):
+
+                    custom_enable(
+                        True
+                    )
+
+                else:
+
+                    mic_widget.setEnabled(
+                        True
+                    )
+
+                set_listening = getattr(
+                    mic_widget,
+                    "set_listening",
+                    None,
+                )
+
+                if callable(
+                    set_listening
+                ):
+
+                    set_listening(
+                        False
+                    )
+
+                mic_widget.update()
+
+        except Exception as error:
+
+            print(
+                f"[MIC] MicWidget unlock error | {error}"
+            )
+
+        QApplication.processEvents()
+
+        try:
+
+            print(
+                "[MIC] UNLOCKED | "
+                f"button_enabled={self.microphone_button.isEnabled()} | "
+                f"mic_widget_enabled={self.mic_widget.isEnabled()} | "
+                f"processing_voice={self.processing_voice}"
+            )
 
         except Exception:
 
-            pass
-
-        QApplication.processEvents()
+            print(
+                "[MIC] UNLOCKED"
+            )
 
     # --------------------------------------------------
     # Start Listening
@@ -5476,6 +6754,22 @@ class MainWindow(QMainWindow):
         """
 
         if self._closing:
+            return
+
+        # ---------------------------------
+        # Startup greeting owns the microphone
+        # ---------------------------------
+
+        if getattr(
+            self,
+            "_startup_greeting_active",
+            False
+        ):
+
+            print(
+                "[MIC] Click ignored: startup greeting is active."
+            )
+
             return
 
         # ---------------------------------
@@ -5798,8 +7092,13 @@ class MainWindow(QMainWindow):
 
             self.mic_widget.show_listening()
 
+            # Start a clean visual meter for every recording session.
             self.mic_widget.set_listening(
                 True
+            )
+
+            self.mic_widget.update_audio_level(
+                0.0
             )
 
             self.left_panel.set_listening(
@@ -5861,9 +7160,9 @@ class MainWindow(QMainWindow):
                 0.0
             )
 
-            self.mic_widget._listening = False
-
-            self.mic_widget.update()
+            # Use the widget's public state API instead of touching
+            # the private _listening attribute directly.
+            self.mic_widget.set_listening(False)
 
         except Exception:
             pass
@@ -6133,14 +7432,50 @@ class MainWindow(QMainWindow):
         """
 
         # ---------------------------------
+        # Startup Greeting Safety Gate
+        # ---------------------------------
+        # No wake/manual voice worker may start while the opening greeting
+        # owns the microphone.  This blocks stale QTimer callbacks and any
+        # initialization race from stealing the microphone.
+
+        if getattr(
+            self,
+            "_startup_greeting_active",
+            False,
+        ):
+
+            print(
+                "[VOICE] Startup greeting active. "
+                "Voice worker start blocked."
+            )
+
+            return
+
+        if not getattr(
+            self,
+            "_startup_sequence_complete",
+            False,
+        ):
+
+            print(
+                "[VOICE] Startup sequence incomplete. "
+                "Voice worker start blocked."
+            )
+
+            return
+
+        # ---------------------------------
         # Existing worker check
         # ---------------------------------
 
         if self.voice_worker is not None:
 
-            if self.voice_worker.isRunning():
-
-                return
+            try:
+                if self.voice_worker.isRunning():
+                    return
+            except RuntimeError:
+                # The previous QThread object may already have been deleted.
+                self.voice_worker = None
 
         # ---------------------------------
         # Set Worker Mode
@@ -6159,13 +7494,9 @@ class MainWindow(QMainWindow):
         # ---------------------------------
 
         self.voice_worker = VoiceWorker(
-
             self.recognizer,
-
             self.tts,
-
-            wake_word_mode=wake_word_mode
-
+            wake_word_mode=wake_word_mode,
         )
 
         # ---------------------------------
@@ -6209,6 +7540,39 @@ class MainWindow(QMainWindow):
     # --------------------------------------------------
 
     def start_wake_word_worker(self):
+
+        # ----------------------------------
+        # Startup Greeting Safety Gate
+        # ----------------------------------
+        # Any stale timer/signal must be ignored until the opening TTS has
+        # completely finished and _finish_startup_greeting() has explicitly
+        # released the microphone.
+
+        if getattr(
+            self,
+            "_startup_greeting_active",
+            False,
+        ):
+
+            print(
+                "[WAKE] Startup greeting active. "
+                "DHEEPTHI start request ignored."
+            )
+
+            return
+
+        if not getattr(
+            self,
+            "_startup_sequence_complete",
+            False,
+        ):
+
+            print(
+                "[WAKE] Startup sequence incomplete. "
+                "DHEEPTHI start request ignored."
+            )
+
+            return
 
         if not self.wake_word_enabled:
 
@@ -6371,7 +7735,18 @@ class MainWindow(QMainWindow):
             return
 
         # =================================================
-        # 3. PENDING CONFIRMATION
+        # 3. PENDING WORD CLARIFICATION
+        # =================================================
+        if self._pending_word_clarification:
+
+            self._handle_word_clarification_response(
+                original_text
+            )
+
+            return
+
+        # =================================================
+        # 4. PENDING CONFIRMATION
         # =================================================
         #
         # Example:
@@ -6397,7 +7772,7 @@ class MainWindow(QMainWindow):
             return
 
         # =================================================
-        # 4. PENDING FILE SELECTION
+        # 5. PENDING FILE SELECTION
         # =================================================
         #
         # Example:
@@ -6424,7 +7799,7 @@ class MainWindow(QMainWindow):
             return
 
         # =================================================
-        # 5. COMMAND NORMALIZATION
+        # 6. COMMAND NORMALIZATION
         # =================================================
 
         normalized_text = original_text
@@ -6471,7 +7846,7 @@ class MainWindow(QMainWindow):
         )
 
         # =================================================
-        # 6. MULTI-COMMAND DETECTION
+        # 7. MULTI-COMMAND DETECTION
         # =================================================
         #
         # THIS MUST COME BEFORE IntentDetector.
@@ -6509,7 +7884,7 @@ class MainWindow(QMainWindow):
                 is_multi_command = False
 
         # =================================================
-        # 7. MULTI-COMMAND FLOW
+        # 8. MULTI-COMMAND FLOW
         # =================================================
 
         if (
@@ -7690,6 +9065,23 @@ class MainWindow(QMainWindow):
         result = result or {}
 
         # =================================================
+        # Word Information Required - FIRST
+        # =================================================
+        if result.get("requires_information") or (
+            result.get("requires_clarification")
+            and result.get("word_action")
+        ):
+
+            self._begin_word_clarification(
+                result,
+                text,
+                intent,
+                entity,
+            )
+
+            return
+
+        # =================================================
         # File Selection - MUST BE FIRST
         # =================================================
 
@@ -8250,16 +9642,19 @@ class MainWindow(QMainWindow):
         reply: str
     ) -> str:
         """
-        Convert Gemini's plain/markdown response into safe QLabel HTML
-        while making website URLs clickable.
+        Convert Gemini website references into safe clickable HTML.
 
         Supported forms:
             https://example.com
             http://example.com
+            www.example.com
+            example.com
             [Official Website](https://example.com)
+            [Official Website](www.example.com)
 
-        The visible response text is preserved; only detected website
-        targets are converted into <a href="...">...</a> elements.
+        Gemini is allowed to return a website either as a complete URL or
+        as a normal domain name.  Both forms must work in the conversation
+        panel without changing the existing ConversationPanel API.
         """
 
         text = str(reply or "").strip()
@@ -8267,18 +9662,27 @@ class MainWindow(QMainWindow):
         if not text:
             return ""
 
-        # Escape everything first so Gemini output can never inject
-        # arbitrary HTML into the Qt label.
+        # Escape Gemini output first.  Only the anchors created below are
+        # allowed to introduce HTML.
         escaped = html.escape(text)
 
-        # Markdown links: [label](https://...)
+        # --------------------------------------------------------------
+        # 1. Markdown links
+        # --------------------------------------------------------------
+
         markdown_pattern = re.compile(
-            r"\[([^\]]+)\]\((https?://[^\s)<>]+)\)"
+            r"\[([^\]]+)\]\((https?://[^\s)<>]+|www\.[^\s)<>]+|(?:[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\.)+[a-z]{2,}(?:[/?:#][^\s)]*)?)\)",
+            flags=re.IGNORECASE,
         )
 
         def replace_markdown(match):
             label = match.group(1)
-            url = match.group(2)
+            raw_url = match.group(2)
+            url = raw_url.strip()
+
+            if not re.match(r"^https?://", url, flags=re.IGNORECASE):
+                url = "https://" + url
+
             return (
                 f'<a href="{html.escape(url, quote=True)}">'
                 f'{label}</a>'
@@ -8289,31 +9693,67 @@ class MainWindow(QMainWindow):
             escaped,
         )
 
-        # Bare URLs that were not already converted into an anchor.
-        url_pattern = re.compile(
-            r'(?<!["=])(https?://[^\s<]+)'
+        # --------------------------------------------------------------
+        # 2. Bare URLs / domains
+        # --------------------------------------------------------------
+        #
+        # This is intentionally broader than an http(s) URL matcher.
+        # Gemini frequently answers with a domain such as
+        # "sonatech.ac.in" or "www.sonatech.ac.in".
+        #
+        # The negative look-behinds prevent matching domains inside an
+        # existing href attribute or email address.
+        # --------------------------------------------------------------
+
+        website_pattern = re.compile(
+            r"(?<![\w@/=\"'])"
+            r"(?:https?://|www\.)?"
+            r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
+            r"[a-z]{2,63}"
+            r"(?:[/:?#][^\s<>]*)?",
+            flags=re.IGNORECASE,
         )
 
-        def replace_url(match):
-            url = match.group(1)
+        def replace_website(match):
+            raw = match.group(0)
 
-            # Strip punctuation that commonly follows a URL in prose.
+            # Do not touch an already-generated anchor.
+            if raw.lower().startswith((
+                "http://",
+                "https://",
+                "www.",
+            )):
+                url = raw
+            else:
+                url = raw
+
             trailing = ""
-            while url and url[-1] in ".,!?;:":
+
+            # Punctuation commonly follows a URL in normal prose.
+            while url and url[-1] in ".,!?;:)]}\"'":
                 trailing = url[-1] + trailing
                 url = url[:-1]
 
             if not url:
-                return match.group(1)
+                return raw
+
+            href = url
+
+            if not re.match(
+                r"^https?://",
+                href,
+                flags=re.IGNORECASE,
+            ):
+                href = "https://" + href
 
             return (
-                f'<a href="{html.escape(url, quote=True)}">'
-                f'{url}</a>'
+                f'<a href="{html.escape(href, quote=True)}">'
+                f'{html.escape(url)}</a>'
                 f'{trailing}'
             )
 
-        escaped = url_pattern.sub(
-            replace_url,
+        escaped = website_pattern.sub(
+            replace_website,
             escaped,
         )
 
@@ -8328,9 +9768,12 @@ class MainWindow(QMainWindow):
         url: str
     ):
         """
-        Open a website clicked inside a Gemini response using ASTRA's
-        existing BrowserController instead of launching an unrelated
-        browser session.
+        Open a website clicked inside a Gemini response.
+
+        ASTRA first uses its existing BrowserController so the link opens
+        through the same browser automation path as other website commands.
+        If that controller is unavailable or cannot open the URL, Qt's
+        desktop URL handler is used as a safe compatibility fallback.
         """
 
         if self._closing:
@@ -8338,18 +9781,32 @@ class MainWindow(QMainWindow):
 
         url = str(url or "").strip()
 
+        if not url:
+            return
+
         if not re.match(
             r"^https?://",
             url,
             flags=re.IGNORECASE,
         ):
-            return
+            if re.match(
+                r"^(?:www\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}(?:[/:?#].*)?$",
+                url,
+                flags=re.IGNORECASE,
+            ):
+                url = "https://" + url
+            else:
+                return
 
         print(
             f"Gemini Website Link Clicked : {url}"
         )
 
         success = False
+
+        # --------------------------------------------------------------
+        # Existing ASTRA browser automation path
+        # --------------------------------------------------------------
 
         try:
             browser_controller = getattr(
@@ -8359,41 +9816,79 @@ class MainWindow(QMainWindow):
             )
 
             if browser_controller is not None:
-                success = bool(
-                    browser_controller.open_url_current_tab(
-                        url
-                    )
+
+                open_current_tab = getattr(
+                    browser_controller,
+                    "open_url_current_tab",
+                    None,
                 )
 
-                # If the current ASTRA browser tab is not available,
-                # fall back to the controller's normal website opener.
-                if not success:
+                if callable(open_current_tab):
                     success = bool(
-                        browser_controller.open_website(
-                            url,
-                            browser="chrome",
-                        )
+                        open_current_tab(url)
                     )
+
+                if not success:
+
+                    open_website = getattr(
+                        browser_controller,
+                        "open_website",
+                        None,
+                    )
+
+                    if callable(open_website):
+                        success = bool(
+                            open_website(
+                                url,
+                                browser="chrome",
+                            )
+                        )
 
         except Exception as error:
             print(
-                f"Gemini Website Open Error : {error}"
+                f"Gemini Website BrowserController Error : {error}"
             )
 
+        # --------------------------------------------------------------
+        # OS/browser fallback
+        # --------------------------------------------------------------
+        #
+        # A Gemini answer must remain useful even when the ASTRA browser
+        # controller has not finished initializing.
+        # --------------------------------------------------------------
+
+        if not success:
+
+            try:
+                success = bool(
+                    QDesktopServices.openUrl(
+                        QUrl(url)
+                    )
+                )
+            except Exception as error:
+                print(
+                    f"Gemini Website Desktop Open Error : {error}"
+                )
+
         if success:
+
             self.status_label.setText(
                 "Status : Website Opened"
             )
+
             try:
                 self.mic_widget.update_ai_message(
                     f"Opening website: {url}"
                 )
             except Exception:
                 pass
+
         else:
+
             self.status_label.setText(
                 "Status : Website Open Failed"
             )
+
             try:
                 self.conversation_panel.show_error(
                     f"I couldn't open the website:\n{url}"
@@ -8431,12 +9926,30 @@ class MainWindow(QMainWindow):
             if not message_widgets:
                 return
 
-            latest_bubble = message_widgets[-1]
+            # The list normally ends with the assistant bubble, but keep
+            # this lookup defensive so a temporary/welcome widget can never
+            # prevent Gemini links from becoming clickable.
+            text_label = None
 
-            text_label = latest_bubble.findChild(
-                QLabel,
-                "MessageText",
-            )
+            for bubble in reversed(message_widgets):
+
+                if bubble is None:
+                    continue
+
+                try:
+                    if bubble.objectName() != "AssistantMessage":
+                        continue
+                except Exception:
+                    pass
+
+                candidate = bubble.findChild(
+                    QLabel,
+                    "MessageText",
+                )
+
+                if candidate is not None:
+                    text_label = candidate
+                    break
 
             if text_label is None:
                 return
@@ -8542,6 +10055,16 @@ class MainWindow(QMainWindow):
             # as a markdown link. Make that link clickable in ASTRA.
             self._make_latest_gemini_response_clickable(
                 reply
+            )
+
+            QTimer.singleShot(
+                0,
+                lambda: self._make_latest_gemini_response_clickable(reply),
+            )
+
+            QTimer.singleShot(
+                80,
+                lambda: self._make_latest_gemini_response_clickable(reply),
             )
 
         except Exception as error:
@@ -9330,6 +10853,10 @@ class MainWindow(QMainWindow):
     def initialize_application(self):
         """
         Initialize ASTRA.
+
+        Environment variables are loaded at module startup so the
+        backend objects created by MainWindow inherit the same
+        project-level configuration.
         """
 
         self.enable_premium_background()
@@ -9519,6 +11046,25 @@ class MainWindow(QMainWindow):
         self._closing = True
         self._goodbye_tts_finished = False
 
+        # ----------------------------------------------
+        # Lock microphone for the entire goodbye lifecycle.
+        # It stays locked while the goodbye avatar and TTS run.
+        # ----------------------------------------------
+
+        try:
+
+            self.lock_microphone()
+
+            print(
+                "[ASTRA SHUTDOWN] Microphone locked for goodbye."
+            )
+
+        except Exception as error:
+
+            print(
+                f"[ASTRA SHUTDOWN] Microphone lock error: {error}"
+            )
+
         # Select exactly one closing greeting for this shutdown.
         # The goodbye avatar is shown before TTS starts and remains visible
         # until speech_finished triggers the final close path.
@@ -9684,19 +11230,25 @@ class MainWindow(QMainWindow):
         """
         Safely shut down all background workers and backend resources.
 
-        First native-X close request:
-            X -> goodbye.png -> goodbye TTS completes -> final cleanup -> close
+        First close request:
+            X
+              ↓
+            Goodbye avatar + TTS
+              ↓
+            final shutdown
+              ↓
+            close application
 
-        Second/internal close request after goodbye:
-            normal resource cleanup -> application exits
+        If VoiceWorker is still running:
+            close event is temporarily ignored
+            VoiceWorker finishes
+            shutdown continuation is triggered
+            self.close() starts the final close pass
         """
 
-        # --------------------------------------------------
+        # ==================================================
         # FIRST CLOSE REQUEST
-        # --------------------------------------------------
-        # Do not allow Qt to destroy the window yet. The goodbye avatar
-        # must remain visible for the complete 4-second interval.
-        # --------------------------------------------------
+        # ==================================================
 
         if not self._shutdown_finalizing:
 
@@ -9704,11 +11256,16 @@ class MainWindow(QMainWindow):
                 event
             )
 
+            # IMPORTANT:
+            # Do not let Qt destroy the window while
+            # goodbye avatar/TTS is still running.
+            event.ignore()
+
             return
 
-        # --------------------------------------------------
+        # ==================================================
         # FINAL CLOSE PASS
-        # --------------------------------------------------
+        # ==================================================
 
         self._closing = True
 
@@ -9716,20 +11273,17 @@ class MainWindow(QMainWindow):
             "\n========== ASTRA SHUTDOWN =========="
         )
 
-        # ---------------------------------
-        # Disable future wake-word restarts
-        # ---------------------------------
+        # ==================================================
+        # DISABLE FUTURE VOICE RESTARTS
+        # ==================================================
 
         self.manual_listening_requested = False
-
         self.wake_word_enabled = False
-
         self.wake_word_running = False
 
-        # ---------------------------------
-        # Stop pending Qt timers from
-        # starting another voice worker
-        # ---------------------------------
+        # ==================================================
+        # PROCESS PENDING QT EVENTS
+        # ==================================================
 
         try:
 
@@ -9740,10 +11294,14 @@ class MainWindow(QMainWindow):
             pass
 
         # ==================================================
-        # Gemini Conversation Worker
+        # GEMINI CHAT WORKER
         # ==================================================
 
-        chat_worker = self.chat_worker
+        chat_worker = getattr(
+            self,
+            "chat_worker",
+            None
+        )
 
         if chat_worker is not None:
 
@@ -9757,9 +11315,7 @@ class MainWindow(QMainWindow):
 
                     chat_worker.requestInterruption()
 
-                    if chat_worker.wait(
-                        1500
-                    ):
+                    if chat_worker.wait(1500):
 
                         print(
                             "ChatWorker stopped successfully."
@@ -9782,10 +11338,14 @@ class MainWindow(QMainWindow):
             self.chat_processing = False
 
         # ==================================================
-        # Voice Worker
+        # VOICE WORKER
         # ==================================================
 
-        voice_worker = self.voice_worker
+        voice_worker = getattr(
+            self,
+            "voice_worker",
+            None
+        )
 
         if voice_worker is not None:
 
@@ -9797,23 +11357,74 @@ class MainWindow(QMainWindow):
                         "Stopping VoiceWorker..."
                     )
 
+                    # --------------------------------------------------
+                    # Ask recognizer / worker to stop.
+                    # --------------------------------------------------
+
                     voice_worker.stop()
 
-                    if not voice_worker.wait(
-                        8000
-                    ):
+                    # --------------------------------------------------
+                    # Give it a short opportunity to finish.
+                    # --------------------------------------------------
 
-                        print(
-                            "VoiceWorker did not stop within 8 seconds."
-                        )
-
-                    else:
+                    if voice_worker.wait(250):
 
                         print(
                             "VoiceWorker stopped successfully."
                         )
 
-                self.voice_worker = None
+                        self.voice_worker = None
+
+                    else:
+
+                        # --------------------------------------------------
+                        # IMPORTANT:
+                        #
+                        # DO NOT destroy the QThread here.
+                        #
+                        # Wake-word recording may still be inside
+                        # sounddevice / Faster-Whisper.
+                        # --------------------------------------------------
+
+                        print(
+                            "VoiceWorker is still stopping; "
+                            "waiting for finished signal."
+                        )
+
+                        try:
+
+                            voice_worker.finished.connect(
+                                self._on_voice_worker_shutdown_finished,
+                                Qt.QueuedConnection
+                            )
+
+                        except (
+                            TypeError,
+                            RuntimeError
+                        ):
+
+                            try:
+
+                                voice_worker.finished.connect(
+                                    self._on_voice_worker_shutdown_finished
+                                )
+
+                            except Exception:
+
+                                pass
+
+                        # --------------------------------------------------
+                        # Keep the close event alive.
+                        # Qt must NOT destroy the window/thread yet.
+                        # --------------------------------------------------
+
+                        event.ignore()
+
+                        return
+
+                else:
+
+                    self.voice_worker = None
 
             except Exception as error:
 
@@ -9822,10 +11433,14 @@ class MainWindow(QMainWindow):
                 )
 
         # ==================================================
-        # Initialization Worker
+        # INITIALIZATION WORKER
         # ==================================================
 
-        initialization_worker = self.worker
+        initialization_worker = getattr(
+            self,
+            "worker",
+            None
+        )
 
         if initialization_worker is not None:
 
@@ -9846,7 +11461,8 @@ class MainWindow(QMainWindow):
                     ):
 
                         print(
-                            "InitializationWorker did not stop within 5 seconds."
+                            "InitializationWorker did not stop "
+                            "within 5 seconds."
                         )
 
                     else:
@@ -9864,10 +11480,14 @@ class MainWindow(QMainWindow):
                 )
 
         # ==================================================
-        # File Monitor
+        # LIVE FILE MONITOR
         # ==================================================
 
-        file_monitor = self.file_monitor
+        file_monitor = getattr(
+            self,
+            "file_monitor",
+            None
+        )
 
         if file_monitor is not None:
 
@@ -9892,14 +11512,20 @@ class MainWindow(QMainWindow):
                 )
 
         # ==================================================
-        # Gemini
+        # GEMINI
         # ==================================================
 
         try:
 
-            if self.gemini:
+            gemini = getattr(
+                self,
+                "gemini",
+                None
+            )
 
-                self.gemini.close()
+            if gemini:
+
+                gemini.close()
 
         except Exception as error:
 
@@ -9908,14 +11534,20 @@ class MainWindow(QMainWindow):
             )
 
         # ==================================================
-        # Text To Speech
+        # TEXT TO SPEECH
         # ==================================================
 
         try:
 
-            if self.tts:
+            tts = getattr(
+                self,
+                "tts",
+                None
+            )
 
-                self.tts.close()
+            if tts:
+
+                tts.close()
 
         except Exception as error:
 
@@ -9924,14 +11556,20 @@ class MainWindow(QMainWindow):
             )
 
         # ==================================================
-        # Browser
+        # BROWSER
         # ==================================================
 
         try:
 
-            if self.browser_controller:
+            browser_controller = getattr(
+                self,
+                "browser_controller",
+                None
+            )
 
-                self.browser_controller.close()
+            if browser_controller:
+
+                browser_controller.close()
 
         except Exception as error:
 
@@ -9939,17 +11577,85 @@ class MainWindow(QMainWindow):
                 f"Browser Cleanup Error : {error}"
             )
 
+        # ==================================================
+        # FINAL SHUTDOWN
+        # ==================================================
+
         print(
             "========== ASTRA SHUTDOWN COMPLETE ==========\n"
         )
 
-        # ---------------------------------
-        # Destroy Main Window only after
-        # worker cleanup
-        # ---------------------------------
+        # --------------------------------------------------
+        # IMPORTANT:
+        #
+        # event is ONLY accepted here, after every worker
+        # that must be stopped has finished.
+        # --------------------------------------------------
 
         event.accept()
 
         super().closeEvent(
             event
         )
+
+    # ==================================================
+    # VOICE WORKER SHUTDOWN CONTINUATION
+    # ==================================================
+
+    def _on_voice_worker_shutdown_finished(
+        self
+    ):
+        """
+        Continue final application shutdown after the
+        VoiceWorker QThread has completely finished.
+        """
+
+        if not getattr(
+            self,
+            "_shutdown_finalizing",
+            False
+        ):
+
+            return
+
+        voice_worker = getattr(
+            self,
+            "voice_worker",
+            None
+        )
+
+        if voice_worker is not None:
+
+            try:
+
+                if voice_worker.isRunning():
+
+                    return
+
+            except RuntimeError:
+
+                pass
+
+        # --------------------------------------------------
+        # QThread has finished.
+        # It is now safe to release our reference.
+        # --------------------------------------------------
+
+        self.voice_worker = None
+
+        print(
+            "VoiceWorker stopped asynchronously; "
+            "continuing final shutdown."
+        )
+
+        # --------------------------------------------------
+        # Re-enter closeEvent().
+        # This time _shutdown_finalizing is already True,
+        # so the FINAL CLOSE PASS will execute.
+        # --------------------------------------------------
+
+        QTimer.singleShot(
+            0,
+            self.close
+        )
+
