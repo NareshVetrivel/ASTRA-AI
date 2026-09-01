@@ -12,6 +12,7 @@ ASTRA-AI V1
 """
 
 import re
+from pathlib import Path
 
 from rapidfuzz import process, fuzz
 
@@ -183,6 +184,13 @@ class EntityExtractor:
 
             "settings": "SystemSettings.exe",
             "settings app": "SystemSettings.exe",
+
+            # Microsoft Word / Word V1
+            "word": "WINWORD.EXE",
+            "microsoft word": "WINWORD.EXE",
+            "ms word": "WINWORD.EXE",
+            "word application": "WINWORD.EXE",
+            "word app": "WINWORD.EXE",
 
         }
 
@@ -3134,6 +3142,271 @@ class EntityExtractor:
             return None
 
         return None
+
+
+    # --------------------------------------------------
+    # Word V1 Entity Extraction
+    # --------------------------------------------------
+
+    def extract_word_text(self, text):
+        """Extract text/content for a Word command.
+
+        Quoted text is preferred so commands such as
+        ``type text "Hello World"`` preserve the complete value.
+        Common command/filler words are removed only when they occur
+        as a command prefix.
+        """
+        if not text:
+            return None
+
+        value = str(text).strip()
+        quoted = re.findall(r'"([^"]*)"|\'([^\']*)\'', value)
+        if quoted:
+            for first, second in quoted:
+                candidate = first if first else second
+                if candidate.strip():
+                    return candidate.strip()
+
+        value = self.normalize_text(value)
+        value = re.sub(
+            r"^\s*(?:please\s+)?(?:type|write|enter|add|insert|put)\s+"
+            r"(?:text|the\s+text|a\s+text|this\s+text)?\s*",
+            "",
+            value,
+            flags=re.IGNORECASE,
+        )
+        return value.strip() or None
+
+    def extract_word_path(self, text):
+        """Extract a filesystem path from a Word command."""
+        if not text:
+            return None
+
+        value = str(text).strip()
+
+        quoted = re.findall(r'"([^"]+)"|\'([^\']+)\'', value)
+        if quoted:
+            for first, second in quoted:
+                candidate = first or second
+                if candidate.strip():
+                    return str(Path(candidate.strip()).expanduser())
+
+        # Windows paths, including paths containing spaces.
+        match = re.search(
+            r'([A-Za-z]:[\\/][^,;!?]+|\\\\[^,;!?]+)',
+            value,
+            flags=re.IGNORECASE,
+        )
+        if match:
+            return match.group(1).strip().strip('"\'').rstrip(".!?,")
+
+        value = self.normalize_text(value)
+        value = re.sub(
+            r"^\s*(?:please\s+)?(?:open|save|save\s+as|export|read|create)"
+            r"(?:\s+(?:the|a|an|this|that|word|document|docx|pdf))?"
+            r"\s*",
+            "",
+            value,
+            flags=re.IGNORECASE,
+        )
+        return value.strip() or None
+
+    def extract_word_filename(self, text):
+        """Extract a Word filename/path while preserving spaces and extension."""
+        path = self.extract_word_path(text)
+        if not path:
+            return None
+        return path
+
+    def extract_word_rows_columns(self, text):
+        """Extract table row/column counts from Word commands."""
+        if not text:
+            return None
+
+        value = self.normalize_text(str(text))
+        rows = None
+        columns = None
+
+        row_match = re.search(r'\b(?:rows?|row)\s*(?:to|:|=)?\s*(\d+)\b', value)
+        col_match = re.search(
+            r'\b(?:columns?|cols?|column)\s*(?:to|:|=)?\s*(\d+)\b',
+            value,
+        )
+
+        if row_match:
+            rows = int(row_match.group(1))
+        if col_match:
+            columns = int(col_match.group(1))
+
+        # Also support "3 by 4" / "3 x 4" table wording.
+        if rows is None or columns is None:
+            size_match = re.search(r'\b(\d+)\s*(?:by|x|×)\s*(\d+)\b', value)
+            if size_match:
+                rows = rows if rows is not None else int(size_match.group(1))
+                columns = columns if columns is not None else int(size_match.group(2))
+
+        return {
+            "rows": rows,
+            "columns": columns,
+        }
+
+    def extract_word_numeric(self, text, parameter):
+        """Extract a numeric Word parameter such as font size or spacing."""
+        if not text:
+            return None
+
+        value = self.normalize_text(str(text))
+        pattern = {
+            "font_size": r'\b(?:font\s*size|size)\s*(?:to|:|=)?\s*(\d+(?:\.\d+)?)\b',
+            "line_spacing": r'\b(?:line\s*spacing|spacing)\s*(?:to|:|=)?\s*(\d+(?:\.\d+)?)\b',
+            "paragraph_spacing": r'\b(?:paragraph\s*spacing)\s*(?:to|:|=)?\s*(\d+(?:\.\d+)?)\b',
+            "left": r'\bleft\s*(?:indent)?\s*(?:to|:|=)?\s*(-?\d+(?:\.\d+)?)\b',
+            "right": r'\bright\s*(?:indent)?\s*(?:to|:|=)?\s*(-?\d+(?:\.\d+)?)\b',
+            "first_line": r'\b(?:first\s*line|first)\s*(?:indent)?\s*(?:to|:|=)?\s*(-?\d+(?:\.\d+)?)\b',
+        }.get(parameter)
+
+        if not pattern:
+            return None
+
+        match = re.search(pattern, value, flags=re.IGNORECASE)
+        if not match:
+            return None
+
+        number = float(match.group(1))
+        return int(number) if number.is_integer() else number
+
+    def extract_word_find_replace(self, text):
+        """Extract find/replace values from a Word command."""
+        if not text:
+            return None
+
+        value = str(text).strip()
+        quoted = [
+            first or second
+            for first, second in re.findall(r'"([^"]*)"|\'([^\']*)\'', value)
+        ]
+        if len(quoted) >= 2:
+            return {
+                "find_text": quoted[0].strip(),
+                "replace_with": quoted[1].strip(),
+            }
+
+        normalized = self.normalize_text(value)
+        match = re.search(
+            r'\bfind\s+(.+?)\s+(?:with|to|as)\s+(.+)$',
+            normalized,
+            flags=re.IGNORECASE,
+        )
+        if not match:
+            return None
+
+        find_value = match.group(1).strip().strip('"\'')
+        replace_value = match.group(2).strip().strip('"\'')
+        if not find_value or not replace_value:
+            return None
+
+        return {
+            "find_text": find_value,
+            "replace_with": replace_value,
+        }
+
+    def extract_word_hyperlink(self, text):
+        """Extract URL and optional display text."""
+        if not text:
+            return None
+
+        value = str(text).strip()
+        urls = re.findall(r'https?://[^\s,;]+|www\.[^\s,;]+', value, flags=re.IGNORECASE)
+        if not urls:
+            return None
+
+        url = urls[0].rstrip(".,!?;")
+        display_text = None
+
+        quoted = [
+            first or second
+            for first, second in re.findall(r'"([^"]*)"|\'([^\']*)\'', value)
+        ]
+        if quoted:
+            display_text = quoted[-1].strip() or None
+
+        return {
+            "url": url,
+            "display_text": display_text,
+        }
+
+    def extract_word_parameters(self, action, text):
+        """Return parameters for a Word V1 action.
+
+        This method is intentionally independent of the dispatcher so the
+        future WordAgent/CommandDispatcher integration can choose its own
+        calling convention without changing existing file/folder extractors.
+        """
+        if not action:
+            return {}
+
+        action = str(action).strip().lower()
+
+        if action in {
+            "type_text", "add_text_at_cursor", "replace_content",
+            "header", "footer",
+        }:
+            value = self.extract_word_text(text)
+            return {"text": value} if value is not None else {}
+
+        if action in {
+            "open_existing_document", "open_docx", "save_as",
+            "save_docx", "save_pdf", "create_specified_filename",
+            "read_existing_document", "image",
+        }:
+            value = self.extract_word_path(text)
+            key = "image_path" if action == "image" else "path"
+            return {key: value} if value else {}
+
+        if action == "create_table":
+            values = self.extract_word_rows_columns(text) or {}
+            return {k: v for k, v in values.items() if v is not None}
+
+        if action == "font":
+            value = self.normalize_text(text or "")
+            value = re.sub(r'^\s*(?:set\s+)?(?:the\s+)?font\s*(?:to|as)?\s*', '', value)
+            return {"name": value.strip()} if value.strip() else {}
+
+        if action == "font_size":
+            value = self.extract_word_numeric(text, "font_size")
+            return {"size": value} if value is not None else {}
+
+        if action in {"line_spacing", "paragraph_spacing"}:
+            value = self.extract_word_numeric(text, action)
+            return {"value": value} if value is not None else {}
+
+        if action == "indentation":
+            return {
+                key: value
+                for key in ("left", "right", "first_line")
+                if (value := self.extract_word_numeric(text, key)) is not None
+            }
+
+        if action == "find":
+            value = self.extract_word_text(text)
+            return {"text": value} if value else {}
+
+        if action == "replace":
+            return self.extract_word_find_replace(text) or {}
+
+        if action == "hyperlink":
+            return self.extract_word_hyperlink(text) or {}
+
+        if action in {"text_color", "highlight"}:
+            value = self.normalize_text(text or "")
+            return {"color": value} if value else {}
+
+        if action == "document_style":
+            value = self.normalize_text(text or "")
+            value = re.sub(r'^\s*(?:change\s+)?(?:document\s+)?style\s*(?:to|as)?\s*', '', value)
+            return {"style_name": value.strip()} if value.strip() else {}
+
+        return {}
 
     # --------------------------------------------------
     # Close

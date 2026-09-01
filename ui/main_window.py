@@ -4278,23 +4278,39 @@ class MainWindow(QMainWindow):
             print("===========================\n")
 
         # ---------------------------------
-        # Future Compound Commands
+        # Compound Command Detection
         # ---------------------------------
 
-        if (
+        is_compound_command = (
 
             intent == "launch_application"
 
             and
 
-            typed_text
+            bool(typed_text)
 
-        ):
+        )
+
+        if is_compound_command:
 
             print(
+                "\n========== COMPOUND COMMAND =========="
+            )
 
-                "Compound Command Detected."
+            print(
+                f"Application : {entity}"
+            )
 
+            print(
+                f"Typed Text  : {typed_text}"
+            )
+
+            print(
+                f"User Text   : {text}"
+            )
+
+            print(
+                "=======================================\n"
             )
 
         self.status_label.setText(
@@ -4340,9 +4356,12 @@ class MainWindow(QMainWindow):
 
             profile=profile,
 
-            user_text=text
+            user_text=text,
+
+            multi_command=is_compound_command
 
         )
+        
         # ---------------------------------
         # Handle Dispatcher Result
         # ---------------------------------

@@ -168,6 +168,24 @@ class MultiCommandExecutor:
 
         "right_click":
             "right_click",
+
+        # -----------------------------------------------------
+        # Word V1 Actions
+        # -----------------------------------------------------
+        #
+        # Word already has its own V1 command registry and
+        # WordAgent implementation.
+        #
+        # create_blank_document is intentionally kept separate
+        # from create_file.
+        #
+        # create_file  -> filesystem file creation
+        # create_blank_document -> Microsoft Word document
+        #
+        # -----------------------------------------------------
+
+        "create_blank_document":
+            "create_blank_document",
     }
 
     # =========================================================
@@ -500,6 +518,27 @@ class MultiCommandExecutor:
         )
 
         action = step.action
+
+        # -----------------------------------------------------
+        # Word V1 - Create Blank Document
+        # -----------------------------------------------------
+        #
+        # IMPORTANT:
+        #
+        # This MUST NOT be routed through create_file.
+        #
+        # WordAgent handles:
+        #
+        #     create_blank_document
+        #
+        # without requiring a file name/path.
+        #
+        # Therefore we intentionally send only the Word intent.
+        # -----------------------------------------------------
+
+        if action == "create_blank_document":
+
+            return {}
 
         # -----------------------------------------------------
         # Launch Application

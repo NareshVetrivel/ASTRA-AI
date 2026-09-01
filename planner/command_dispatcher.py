@@ -11,6 +11,8 @@ from ai.gemini_client import GeminiClient
 from automation.screen_recorder import ScreenRecorder
 from automation.file_system_agent import FileSystemAgent
 from ff_agent import FileFolderAgent
+from productivity_agent.word.agent import WordAgent, WordAgentStatus
+from productivity_agent.word import commands as word_commands
 
 # --------------------------------------------------
 # Persistent Context Manager
@@ -61,6 +63,13 @@ class CommandDispatcher:
         self.whisper = whisper
 
         self.gemini = gemini_client
+
+        # --------------------------------------------------
+        # Microsoft Word V1 Agent
+        # --------------------------------------------------
+        # WordAgent is the dispatcher-facing orchestration layer.
+        # Actual Word COM work remains inside WordAutomation.
+        self.word_agent = WordAgent(visible=True)
 
         # --------------------------------------------------
         # Context-Aware Memory
@@ -1610,6 +1619,309 @@ class CommandDispatcher:
 
         return ""
 
+    # ==================================================
+    # MICROSOFT WORD V1 AGENT
+    # ==================================================
+
+    @staticmethod
+    def _word_parameters(
+        intent,
+        entity=None,
+        typed_text=None,
+        user_text=None,
+    ):
+        """
+        Adapt ASTRA's current entity payload to WordAgent parameters.
+
+        This deliberately keeps IntentDetector/EntityExtractor unchanged.
+        Both dictionary entities and scalar entities are supported.
+        """
+        params = dict(entity) if isinstance(entity, dict) else {}
+        scalar = entity if not isinstance(entity, dict) else None
+
+        if intent in {
+            word_commands.TYPE_TEXT,
+            word_commands.ADD_TEXT_AT_CURSOR,
+            word_commands.REPLACE_CONTENT,
+        }:
+            text = (
+                params.get("text")
+                or params.get("typed_text")
+                or typed_text
+            )
+            if text is None and scalar is not None:
+                text = str(scalar)
+            if text is not None:
+                params["text"] = text
+
+        if intent in {
+            word_commands.OPEN_EXISTING_DOCUMENT,
+            word_commands.OPEN_DOCX,
+            word_commands.SAVE_AS,
+            word_commands.SAVE_DOCX,
+            word_commands.SAVE_PDF,
+            word_commands.CREATE_SPECIFIED_FILENAME,
+            word_commands.IMAGE,
+        }:
+            path = (
+                params.get("path")
+                or params.get("file_path")
+                or params.get("document_path")
+                or params.get("filename")
+                or params.get("file")
+            )
+            if path is None and scalar is not None:
+                path = str(scalar)
+            if path is not None:
+                params["path"] = path
+
+        if intent == word_commands.FONT:
+            name = (
+                params.get("name")
+                or params.get("font_name")
+                or params.get("font")
+            )
+            if name is None and scalar is not None:
+                name = str(scalar)
+            if name is not None:
+                params["name"] = name
+
+        if intent == word_commands.FONT_SIZE:
+            size = params.get("size") or params.get("font_size")
+            if size is None and scalar is not None:
+                size = scalar
+            if size is not None:
+                params["size"] = size
+
+        if intent == word_commands.TEXT_COLOR:
+            color = params.get("color")
+            if color is not None and not all(
+                key in params for key in ("r", "g", "b")
+            ):
+                if isinstance(color, (list, tuple)) and len(color) >= 3:
+                    params["r"], params["g"], params["b"] = color[:3]
+
+        if intent in {
+            word_commands.LINE_SPACING,
+            word_commands.PARAGRAPH_SPACING,
+            word_commands.INDENTATION,
+        }:
+            value = params.get("value")
+            if value is None:
+                value = params.get("amount")
+            if value is None and scalar is not None:
+                value = scalar
+            if value is not None:
+                params["value"] = value
+
+        if intent == word_commands.DOCUMENT_STYLE:
+            style_name = (
+                params.get("style_name")
+                or params.get("style")
+                or params.get("name")
+            )
+            if style_name is None and scalar is not None:
+                style_name = str(scalar)
+            if style_name is not None:
+                params["style_name"] = style_name
+
+        if intent == word_commands.CREATE_TABLE:
+            rows = params.get("rows")
+            columns = params.get("columns")
+            if rows is None:
+                rows = params.get("row_count")
+            if columns is None:
+                columns = params.get("column_count")
+            if rows is not None:
+                params["rows"] = rows
+            if columns is not None:
+                params["columns"] = columns
+
+        if intent == word_commands.FIND:
+            search_text = (
+                params.get("text")
+                or params.get("search_text")
+                or params.get("find_text")
+            )
+            if search_text is None and scalar is not None:
+                search_text = str(scalar)
+            if search_text is not None:
+                params["text"] = search_text
+
+        if intent == word_commands.REPLACE:
+            find_text = (
+                params.get("find_text")
+                or params.get("search_text")
+                or params.get("find")
+            )
+            replace_text = (
+                params.get("replace_text")
+                or params.get("replacement")
+                or params.get("replace")
+            )
+            if find_text is not None:
+                params["find_text"] = find_text
+            if replace_text is not None:
+                params["replace_text"] = replace_text
+
+        if intent == word_commands.IMAGE:
+            path = params.get("path")
+            if path is not None:
+                params["path"] = path
+
+        if intent == word_commands.HYPERLINK:
+            url = (
+                params.get("url")
+                or params.get("link")
+                or params.get("href")
+            )
+            display_text = (
+                params.get("display_text")
+                or params.get("text")
+                or params.get("label")
+            )
+            if url is None and scalar is not None:
+                url = str(scalar)
+            if url is not None:
+                params["url"] = url
+            if display_text is not None:
+                params["display_text"] = display_text
+
+        if intent in {word_commands.HEADER, word_commands.FOOTER}:
+            text = params.get("text") or params.get("value")
+            if text is None and scalar is not None:
+                text = str(scalar)
+            if text is not None:
+                params["text"] = text
+
+        return params
+
+    def _word_context_is_active(self):
+        """
+        Check whether WordAgent currently owns a Word document context.
+
+        Shared actions such as copy/paste/type_text keep the old keyboard
+        behaviour when no Word document is active.
+        """
+        try:
+            automation = getattr(self.word_agent, "_automation", None)
+            return bool(
+                automation is not None
+                and getattr(automation, "_word", None) is not None
+                and getattr(automation, "_document", None) is not None
+            )
+        except Exception:
+            return False
+
+    def process_word_agent(
+        self,
+        intent,
+        entity=None,
+        typed_text=None,
+        user_text=None,
+        context=None,
+    ):
+        """
+        Route supported Word V1 intents through WordAgent.
+
+        Returns None when the intent should continue through an existing
+        dispatcher branch.
+        """
+        word_actions = set(word_commands.ALL_COMMANDS)
+        if intent not in word_actions:
+            return None
+
+        # These names are also used by ASTRA's generic keyboard controller.
+        # Preserve that existing behaviour unless a Word document is active.
+        shared_actions = {
+            word_commands.TYPE_TEXT,
+            word_commands.SELECT_ALL,
+            word_commands.COPY,
+            word_commands.CUT,
+            word_commands.PASTE,
+        }
+        if intent in shared_actions and not self._word_context_is_active():
+            return None
+
+        params = self._word_parameters(
+            intent=intent,
+            entity=entity,
+            typed_text=typed_text,
+            user_text=user_text,
+        )
+
+        result = self.word_agent.execute(
+            action=intent,
+            parameters=params,
+            command=user_text or typed_text,
+            context=context,
+        )
+
+        if result.status == WordAgentStatus.UNSUPPORTED:
+            return self.response(
+                False,
+                "",
+                "Status : Word Operation Unsupported",
+                result.message or f"Unsupported Word operation: {intent}.",
+                word_action=intent,
+                agent_status=result.status.value,
+                agent_data=result.data,
+                error=result.error,
+            )
+
+        if result.status == WordAgentStatus.CLARIFICATION_REQUIRED:
+            message = result.message or "More information is required."
+            try:
+                self.tts.speak(message)
+            except Exception:
+                pass
+            return self.response(
+                False,
+                "",
+                "Status : Word Information Required",
+                message,
+                requires_information=True,
+                requires_clarification=True,
+                missing_parameters=list(result.missing_parameters),
+                word_action=intent,
+                agent_status=result.status.value,
+                agent_data=result.data,
+            )
+
+        if not result.success:
+            message = result.message or "Word operation failed."
+            try:
+                self.tts.speak(message)
+            except Exception:
+                pass
+            return self.response(
+                False,
+                "",
+                "Status : Word Operation Failed",
+                message,
+                word_action=intent,
+                agent_status=result.status.value,
+                agent_data=result.data,
+                error=result.error,
+            )
+
+        message = result.message or "Word operation completed successfully."
+        try:
+            self.tts.speak(message)
+        except Exception:
+            pass
+
+        return self.response(
+            True,
+            f"Status : Word {intent.replace('_', ' ').title()}",
+            "Status : Word Operation Failed",
+            message,
+            word_action=intent,
+            agent_status=result.status.value,
+            agent_data=result.data,
+            data=result.data,
+        )
+
     # --------------------------------------------------
     # Dispatcher
     # --------------------------------------------------
@@ -1768,6 +2080,20 @@ class CommandDispatcher:
                     multi_command=multi_command,
                 )
             )
+
+            # ==================================================
+            # MICROSOFT WORD V1 AGENT
+            # ==================================================
+            word_result = self.process_word_agent(
+                intent=intent,
+                entity=entity,
+                typed_text=typed_text,
+                user_text=user_text,
+                context=self._active_context_payload,
+            )
+
+            if word_result is not None:
+                return word_result
 
             # ==================================================
             # INTELLIGENT FILE & FOLDER AGENT

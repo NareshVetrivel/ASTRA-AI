@@ -2027,6 +2027,427 @@ class IntentDetector:
 
             return "compress_file"
 
+        # ==================================================
+        # MICROSOFT WORD V1 INTENT DETECTION
+        # ==================================================
+        #
+        # WordAgent owns the actual Word automation. IntentDetector
+        # only converts natural-language commands into the operation
+        # identifiers defined in productivity_agent.word.commands.
+        #
+        # IMPORTANT:
+        # - Word-specific phrases are checked before generic commands.
+        # - Generic "type", "copy", "paste", etc. are NOT hijacked unless
+        #   the user clearly refers to a Word document/content operation.
+        # - "open word" remains a WordAgent operation.
+        # ==================================================
+
+        word_context = any(
+            token in text
+            for token in (
+                "word",
+                "ms word",
+                "microsoft word",
+                "word document",
+                "word file",
+                "document",
+                "docx",
+            )
+        )
+
+        # --------------------------------------------------
+        # Word application lifecycle
+        # --------------------------------------------------
+
+        if word_context:
+            if (
+                text in {
+                    "word",
+                    "ms word",
+                    "microsoft word",
+                    "open word",
+                    "open ms word",
+                    "open microsoft word",
+                    "launch word",
+                    "launch ms word",
+                    "launch microsoft word",
+                    "start word",
+                    "start ms word",
+                    "start microsoft word",
+                }
+            ):
+                return "open_word"
+
+            if any(
+                phrase in text
+                for phrase in (
+                    "close word",
+                    "close ms word",
+                    "close microsoft word",
+                    "exit word",
+                    "quit word",
+                    "terminate word",
+                )
+            ):
+                return "close_word"
+
+        # --------------------------------------------------
+        # Create / open / save / close document
+        # --------------------------------------------------
+
+        if (
+            word_context
+            and
+            (
+                "new document" in text
+                or "create document" in text
+                or "create a document" in text
+                or "create the document" in text
+                or "blank document" in text
+                or "new word document" in text
+                or "create word document" in text
+                or "create a word document" in text
+            )
+        ):
+            return "create_blank_document"
+
+        if (
+            word_context
+            and
+            (
+                "open existing document" in text
+                or "open existing word document" in text
+                or "open document" in text
+                or "open a document" in text
+                or "open the document" in text
+                or "open docx" in text
+            )
+        ):
+            return "open_existing_document"
+
+        if word_context:
+            if (
+                text in {"save", "save document", "save the document",
+                         "save word document", "save this document"}
+                or "save current document" in text
+            ):
+                return "save"
+
+            if (
+                "save as" in text
+                or "save document as" in text
+                or "save the document as" in text
+            ):
+                return "save_as"
+
+            if (
+                "save docx" in text
+                or "save as docx" in text
+                or "save document as docx" in text
+                or "save word document as docx" in text
+            ):
+                return "save_docx"
+
+            if (
+                "save pdf" in text
+                or "save as pdf" in text
+                or "save document as pdf" in text
+                or "export document to pdf" in text
+                or "export as pdf" in text
+            ):
+                return "save_pdf"
+
+            if (
+                "close current document" in text
+                or "close the current document" in text
+                or "close document" in text
+                or "close the document" in text
+            ):
+                return "close_current_document"
+
+            if (
+                "create document named" in text
+                or "create document called" in text
+                or "create word file named" in text
+                or "create word file called" in text
+                or "create specified filename" in text
+            ):
+                return "create_specified_filename"
+
+            if (
+                "read existing document" in text
+                or "read the existing document" in text
+                or "read existing word document" in text
+            ):
+                return "read_existing_document"
+
+        # --------------------------------------------------
+        # Word content operations
+        # --------------------------------------------------
+
+        if word_context:
+            if (
+                "add text at cursor" in text
+                or "add text to cursor" in text
+                or "insert text at cursor" in text
+                or "type at cursor" in text
+            ):
+                return "add_text_at_cursor"
+
+            if (
+                "replace content" in text
+                or "replace the content" in text
+                or "replace document content" in text
+                or "replace all content" in text
+            ):
+                return "replace_content"
+
+            if (
+                "read document" in text
+                or "read the document" in text
+                or "read word document" in text
+                or "read this document" in text
+            ):
+                return "read_document"
+
+            if (
+                "clear document" in text
+                or "clear the document" in text
+                or "clear document content" in text
+                or "clear all document content" in text
+            ):
+                return "clear_document"
+
+            if (
+                "select all in word" in text
+                or "select all text in word" in text
+                or "select all document text" in text
+                or "select all in document" in text
+            ):
+                return "select_all"
+
+            if "copy text from document" in text or "copy selected text in word" in text:
+                return "copy"
+
+            if "cut text from document" in text or "cut selected text in word" in text:
+                return "cut"
+
+            if "paste into document" in text or "paste into word" in text:
+                return "paste"
+
+            if (
+                text.startswith("type ")
+                and word_context
+            ):
+                return "type_text"
+
+            if (
+                text.startswith("write ")
+                and word_context
+            ):
+                return "type_text"
+
+        # --------------------------------------------------
+        # Word formatting
+        # --------------------------------------------------
+
+        if word_context:
+            if "strikethrough" in text or "strike through" in text:
+                return "strikethrough"
+
+            if "underline" in text or "underlined" in text:
+                return "underline"
+
+            if "italic" in text or "italics" in text:
+                return "italic"
+
+            if (
+                "bold" in text
+                or "make it bold" in text
+                or "make this bold" in text
+            ):
+                return "bold"
+
+            if "font size" in text or "text size" in text:
+                return "font_size"
+
+            if (
+                "font " in f" {text} "
+                or "change font" in text
+                or "set font" in text
+            ):
+                return "font"
+
+            if (
+                "text color" in text
+                or "font color" in text
+                or "change text colour" in text
+                or "font colour" in text
+            ):
+                return "text_color"
+
+            if "highlight" in text or "highlight text" in text:
+                return "highlight"
+
+            if "align left" in text or "left align" in text:
+                return "align_left"
+
+            if "align center" in text or "align centre" in text or "center align" in text:
+                return "align_center"
+
+            if "align right" in text or "right align" in text:
+                return "align_right"
+
+            if "justify" in text or "justify text" in text:
+                return "justify"
+
+            if "line spacing" in text:
+                return "line_spacing"
+
+            if "paragraph spacing" in text:
+                return "paragraph_spacing"
+
+            if (
+                "indentation" in text
+                or "indent paragraph" in text
+                or "indent the paragraph" in text
+            ):
+                return "indentation"
+
+            if "bullets" in text or "bullet list" in text or "make bullets" in text:
+                return "bullets"
+
+            if "numbering" in text or "numbered list" in text or "make numbered list" in text:
+                return "numbering"
+
+        # --------------------------------------------------
+        # Word styles
+        # --------------------------------------------------
+
+        if word_context:
+            if (
+                text == "title"
+                or "apply title style" in text
+                or "make it title" in text
+                or "make this title" in text
+            ):
+                return "title"
+
+            if (
+                "heading 1" in text
+                or "heading one" in text
+                or "apply heading 1" in text
+                or "make it heading 1" in text
+            ):
+                return "heading_1"
+
+            if (
+                text == "normal"
+                or "normal style" in text
+                or "apply normal style" in text
+            ):
+                return "normal"
+
+            if "document style" in text or "change document style" in text:
+                return "document_style"
+
+        # --------------------------------------------------
+        # Word tables
+        # --------------------------------------------------
+
+        if word_context:
+            if (
+                "read table data" in text
+                or "read the table" in text
+                or "read table" in text
+            ):
+                return "read_table_data"
+
+            if (
+                "create table" in text
+                or "insert table" in text
+                or "make a table" in text
+                or "make table" in text
+            ):
+                return "create_table"
+
+            if re.search(r"\brows?\b", text) and re.search(r"\bcolumns?\b", text):
+                if "table" in text:
+                    return "create_table"
+
+        # --------------------------------------------------
+        # Word find / replace
+        # --------------------------------------------------
+
+        if word_context:
+            if (
+                "find and replace" in text
+                or "find replace" in text
+                or "replace text" in text
+                or "replace word" in text
+            ):
+                return "replace"
+
+            if (
+                "find text" in text
+                or "find in document" in text
+                or "find in word" in text
+                or "search document" in text
+            ):
+                return "find"
+
+        # --------------------------------------------------
+        # Word insert operations
+        # --------------------------------------------------
+
+        if word_context:
+            if (
+                "insert image" in text
+                or "add image" in text
+                or "insert picture" in text
+                or "add picture" in text
+            ):
+                return "image"
+
+            if (
+                "insert hyperlink" in text
+                or "add hyperlink" in text
+                or "insert link" in text
+                or "add link to document" in text
+            ):
+                return "hyperlink"
+
+        # --------------------------------------------------
+        # Word document structure
+        # --------------------------------------------------
+
+        if word_context:
+            if "page break" in text or "insert page break" in text:
+                return "page_break"
+
+            if "new page" in text or "insert new page" in text:
+                return "new_page"
+
+            if "header" in text or "insert header" in text:
+                return "header"
+
+            if "footer" in text or "insert footer" in text:
+                return "footer"
+
+            if (
+                "page number" in text
+                or "insert page number" in text
+                or "add page number" in text
+            ):
+                return "page_number"
+
+            if "margin" in text or "margins" in text or "set margins" in text:
+                return "margins"
+
+        # ==================================================
+        # END MICROSOFT WORD V1 INTENT DETECTION
+        # ==================================================
+
         # ---------------------------------
         # MS Office Automation (Intent Only)
         # ---------------------------------
