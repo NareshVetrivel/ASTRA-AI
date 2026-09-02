@@ -972,6 +972,12 @@ class CommandDispatcher:
         # multiple-file candidates for the UI.
         result.update(extra)
 
+        # Expose AI planner metadata for diagnostics/UI without changing the
+        # legacy response contract.
+        metadata = getattr(self, "_active_planner_metadata", None)
+        if metadata:
+            result.setdefault("planner_metadata", dict(metadata))
+
         # Persist only successful completed commands.
         if success:
 
@@ -1923,6 +1929,156 @@ class CommandDispatcher:
         )
 
     # --------------------------------------------------
+    # Helper : Normalize AI Intent / Entity Payload
+    # --------------------------------------------------
+
+    @staticmethod
+    def _first_entity_value(entities, *keys):
+        """Return the first non-empty entity value for the requested keys."""
+        if not isinstance(entities, dict):
+            return None
+
+        for key in keys:
+            value = entities.get(key)
+            if value is None:
+                continue
+            if isinstance(value, str):
+                value = value.strip()
+                if not value:
+                    continue
+            return value
+
+        return None
+
+    @classmethod
+    def _normalize_ai_payload(cls, intent, entity=None, typed_text=None,
+                              browser=None, website=None, search_query=None,
+                              profile=None):
+        """
+        Normalize the structured output produced by the AI-aware planner.
+
+        The dispatcher historically accepted a scalar ``entity``.  The
+        updated planner can return a structured dictionary such as::
+
+            {
+                "application": "chrome",
+                "filename": "report.docx",
+                "destination": "Downloads",
+                "text": "hello",
+                "search_query": "python tutorials",
+                "volume": 50,
+                ...
+            }
+
+        This adapter keeps the existing controllers unchanged and makes the
+        dispatcher backwards compatible with both scalar and dictionary
+        entities.
+        """
+        metadata = {}
+        entities = dict(entity) if isinstance(entity, dict) else {}
+
+        # Some planners wrap the result in an ``entities`` object.
+        nested = entities.get("entities")
+        if isinstance(nested, dict):
+            merged = dict(nested)
+            merged.update({k: v for k, v in entities.items() if k != "entities"})
+            entities = merged
+
+        if isinstance(intent, dict):
+            intent_payload = dict(intent)
+            resolved_intent = (
+                intent_payload.get("intent")
+                or intent_payload.get("name")
+                or intent_payload.get("action")
+            )
+            if not resolved_intent:
+                resolved_intent = "ai_chat"
+            metadata.update({
+                key: value for key, value in intent_payload.items()
+                if key not in {"intent", "name", "action"}
+            })
+            intent = resolved_intent
+
+        # Preserve planner confidence / reasoning metadata without making it
+        # part of the entity payload consumed by automation controllers.
+        for key in ("confidence", "source", "reason", "reasoning"):
+            if key in entities and key not in {
+                "source",  # source is a legitimate filesystem entity below
+            }:
+                metadata[key] = entities[key]
+
+        scalar = entity if not isinstance(entity, dict) else None
+
+        # Generic entity aliases used by different planner versions.
+        generic = cls._first_entity_value(
+            entities,
+            "value", "entity", "name", "target", "application",
+            "app", "file", "filename", "folder", "folder_name",
+            "foldername", "path", "file_path", "document_path",
+            "text", "query", "search_query", "url", "website",
+            "profile", "volume", "brightness", "days", "index",
+            "result_index",
+        )
+        if generic is None:
+            generic = scalar
+
+        if typed_text is None:
+            typed_text = cls._first_entity_value(
+                entities, "typed_text", "text", "content", "value"
+            )
+
+        if browser is None:
+            browser = cls._first_entity_value(
+                entities, "browser", "browser_name"
+            )
+
+        if website is None:
+            website = cls._first_entity_value(
+                entities, "website", "url", "site"
+            )
+
+        if search_query is None:
+            search_query = cls._first_entity_value(
+                entities, "search_query", "query", "search_text", "video_query"
+            )
+
+        if profile is None:
+            profile = cls._first_entity_value(
+                entities, "profile", "profile_name", "chrome_profile"
+            )
+
+        # For scalar-only actions, expose the appropriate value while keeping
+        # the full dictionary intact for file and Word agents.
+        scalar_entity = generic
+        scalar_by_intent = {
+            "launch_application": ("application", "app", "name", "value", "entity"),
+            "close_application": ("application", "app", "name", "value", "entity"),
+            "type_text": ("text", "typed_text", "content", "value", "entity"),
+            "set_volume": ("volume", "percentage", "value", "entity"),
+            "set_brightness": ("brightness", "percentage", "value", "entity"),
+            "search_extension": ("extension", "file_extension", "value", "entity"),
+            "search_date": ("days", "days_ago", "date", "value", "entity"),
+            "search_size": ("size", "size_mb", "megabytes", "value", "entity"),
+            "click_search_result": ("result_index", "index", "result_number", "value", "entity"),
+            "play_youtube": ("search_query", "video_query", "query", "text", "value", "entity"),
+        }
+        if intent in scalar_by_intent:
+            value = cls._first_entity_value(entities, *scalar_by_intent[intent])
+            if value is not None:
+                scalar_entity = value
+
+        return (
+            intent,
+            entities if isinstance(entity, dict) else scalar_entity,
+            typed_text,
+            browser,
+            website,
+            search_query,
+            profile,
+            metadata,
+        )
+
+    # --------------------------------------------------
     # Dispatcher
     # --------------------------------------------------
 
@@ -1949,6 +2105,34 @@ class CommandDispatcher:
         """
 
         try:
+
+            # ==================================================
+            # AI PLANNER PAYLOAD NORMALIZATION
+            # ==================================================
+            # IntentDetector / EntityExtractor may now return structured
+            # dictionaries. Normalize those payloads here so every existing
+            # controller continues receiving the parameter type it expects.
+            (
+                intent,
+                normalized_entity,
+                typed_text,
+                browser,
+                website,
+                search_query,
+                profile,
+                planner_metadata,
+            ) = self._normalize_ai_payload(
+                intent=intent,
+                entity=entity,
+                typed_text=typed_text,
+                browser=browser,
+                website=website,
+                search_query=search_query,
+                profile=profile,
+            )
+
+            entity = normalized_entity
+            self._active_planner_metadata = planner_metadata or {}
 
             # ==================================================
             # CONTEXT-AWARE COMMAND RESOLUTION
@@ -2303,7 +2487,14 @@ class CommandDispatcher:
 
                     )
 
-                app_name = entity.replace(
+                app_entity = self._first_entity_value(
+                    entity if isinstance(entity, dict) else {},
+                    "application", "app", "name", "value", "entity"
+                )
+                if app_entity is None:
+                    app_entity = entity
+
+                app_name = str(app_entity).replace(
                     ".exe",
                     ""
                 )
@@ -2362,7 +2553,7 @@ class CommandDispatcher:
                     success = (
                         self.app_launcher
                         .launch_application(
-                            entity
+                            app_entity
                         )
                     )
 
@@ -2387,7 +2578,14 @@ class CommandDispatcher:
                 and entity
             ):
 
-                app_name = entity.replace(
+                app_entity = self._first_entity_value(
+                    entity if isinstance(entity, dict) else {},
+                    "application", "app", "name", "value", "entity"
+                )
+                if app_entity is None:
+                    app_entity = entity
+
+                app_name = str(app_entity).replace(
                     ".exe",
                     ""
                 ).strip()
@@ -2398,7 +2596,7 @@ class CommandDispatcher:
 
                 is_running = (
                     self.app_closer
-                    .is_running(entity)
+                    .is_running(app_entity)
                 )
 
                 if not is_running:
@@ -2433,7 +2631,7 @@ class CommandDispatcher:
 
                 success = (
                     self.app_closer
-                    .close_application(entity)
+                    .close_application(app_entity)
                 )
 
                 # ---------------------------------
@@ -3312,7 +3510,7 @@ class CommandDispatcher:
 
                 try:
 
-                    volume = int(entity)
+                    volume = int(self._first_entity_value(entity if isinstance(entity, dict) else {}, "volume", "percentage", "value", "entity") if isinstance(entity, dict) else entity)
 
                 except (TypeError, ValueError):
 
@@ -3516,7 +3714,7 @@ class CommandDispatcher:
 
                 try:
 
-                    brightness = int(entity)
+                    brightness = int(self._first_entity_value(entity if isinstance(entity, dict) else {}, "brightness", "percentage", "value", "entity") if isinstance(entity, dict) else entity)
 
                 except (TypeError, ValueError):
 
@@ -5759,23 +5957,32 @@ class CommandDispatcher:
                 and entity
             ):
 
+                extension_entity = (
+                    self._first_entity_value(
+                        entity,
+                        "extension", "file_extension", "value", "entity"
+                    )
+                    if isinstance(entity, dict)
+                    else entity
+                )
+
                 reply = self.speak(
-                    f"Searching for {entity} files."
+                    f"Searching for {extension_entity} files."
                 )
 
                 results = self.file_manager.search_by_extension(
-                    entity
+                    extension_entity
                 )
 
                 if results:
 
                     reply = self.speak(
-                        f"Showing {entity.upper()} files in File Explorer."
+                        f"Showing {str(extension_entity).upper()} files in File Explorer."
                     )
 
                     print("\n========== DISPATCH DEBUG ==========")
                     print("Calling show_search_results()")
-                    print("Entity :", entity)
+                    print("Entity :", extension_entity)
                     print("Results :", len(results))
                     print("====================================")
 
@@ -5783,7 +5990,7 @@ class CommandDispatcher:
 
                         results,
 
-                        f"*.{entity.lower().lstrip('.')}"
+                        f"*.{str(extension_entity).lower().lstrip('.')}"
                     )
 
                     # Give Explorer time to finish rendering
@@ -5824,12 +6031,21 @@ class CommandDispatcher:
                 and entity
             ):
 
+                date_entity = (
+                    self._first_entity_value(
+                        entity,
+                        "days", "days_ago", "date", "value", "entity"
+                    )
+                    if isinstance(entity, dict)
+                    else entity
+                )
+
                 reply = self.speak(
                     "Searching files."
                 )
 
                 results = self.file_manager.search_by_date(
-                    int(entity)
+                    int(date_entity)
                 )
 
                 if results:
@@ -5838,19 +6054,19 @@ class CommandDispatcher:
                         "Showing search results in File Explorer."
                     )
 
-                    if int(entity) == 0:
+                    if int(date_entity) == 0:
 
                         query = "datemodified:today"
 
-                    elif int(entity) == 1:
+                    elif int(date_entity) == 1:
 
                         query = "datemodified:yesterday"
 
-                    elif int(entity) <= 7:
+                    elif int(date_entity) <= 7:
 
                         query = "datemodified:this week"
 
-                    elif int(entity) <= 31:
+                    elif int(date_entity) <= 31:
 
                         query = "datemodified:this month"
 
@@ -6079,7 +6295,14 @@ class CommandDispatcher:
 
             elif intent == "play_youtube":
 
-                query = search_query or entity
+                query = search_query or (
+                    self._first_entity_value(
+                        entity,
+                        "search_query", "video_query", "query", "text", "value", "entity"
+                    )
+                    if isinstance(entity, dict)
+                    else entity
+                )
 
                 if not query:
 
@@ -6138,10 +6361,19 @@ class CommandDispatcher:
 
                 if entity is not None:
 
+                    result_entity = (
+                        self._first_entity_value(
+                            entity,
+                            "result_index", "index", "result_number", "value", "entity"
+                        )
+                        if isinstance(entity, dict)
+                        else entity
+                    )
+
                     try:
 
                         result_index = int(
-                            entity
+                            result_entity
                         )
 
                     except (
@@ -6552,12 +6784,21 @@ class CommandDispatcher:
                 and entity
             ):
 
+                size_entity = (
+                    self._first_entity_value(
+                        entity,
+                        "size", "size_mb", "megabytes", "value", "entity"
+                    )
+                    if isinstance(entity, dict)
+                    else entity
+                )
+
                 reply = self.speak(
-                    f"Searching files larger than {entity} megabytes."
+                    f"Searching files larger than {size_entity} megabytes."
                 )
 
                 results = self.file_manager.search_by_size(
-                    float(entity)
+                    float(size_entity)
                 )
 
                 if results:
@@ -6570,7 +6811,7 @@ class CommandDispatcher:
                         "Opening File Explorer."
                     )
 
-                    query = f"size:>{int(float(entity))}MB"
+                    query = f"size:>{int(float(size_entity))}MB"
 
                     self.file_manager.show_search_results(
 

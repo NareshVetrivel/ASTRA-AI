@@ -1,3420 +1,4481 @@
 """
-Entity Extraction Module
+ASTRA-AI
+DHEEPTHI Intent Detector
 
-This module identifies application names
-from the SQLite database using
-RapidFuzz matching.
+Responsibilities
+----------------
+- Local deterministic intent detection
+- Whisper/STT normalization
+- Tanglish command normalization
+- Application detection
+- File/folder detection
+- Browser detection
+- System automation detection
+- Microsoft Word V1 intent detection
+- Conversation routing
+- RapidFuzz fallback
+- Gemini semantic intent fallback
+- Safe Gemini intent validation
 
-It also extracts file search queries
-for File Finder.
+Design
+------
+Local detection always gets priority.
 
-ASTRA-AI V1
+Gemini is used only when the local detector cannot
+confidently determine an executable intent.
+
+Gemini is NEVER allowed to return arbitrary intents.
+Only intents explicitly supported by ASTRA-AI are accepted.
 """
 
+from __future__ import annotations
+
+import json
 import re
-from pathlib import Path
+from typing import Optional
 
 from rapidfuzz import process, fuzz
 
-from database.database_manager import DatabaseManager
 
-
-class EntityExtractor:
+class IntentDetector:
     """
-    Extract application names
-    and file names.
+    Detects user intent using a layered strategy.
+
+    Priority
+    --------
+    1. Normalization
+    2. Explicit conversation protection
+    3. Deterministic command detection
+    4. Word / productivity detection
+    5. Browser / system detection
+    6. Exact keyword matching
+    7. RapidFuzz matching
+    8. Gemini semantic fallback
+    9. ai_chat fallback
     """
 
-    def normalize_to_separator(
+    # ==========================================================
+    # INITIALIZATION
+    # ==========================================================
+
+    def __init__(
         self,
-        words
+        gemini_client=None,
+        enable_gemini_fallback: bool = True,
     ):
         """
-        Normalize common speech-to-text variations of the
-        command separator "to".
+        Parameters
+        ----------
+        gemini_client:
+            Existing GeminiClient instance.
 
-        ASTRA treats:
-            to
-            too
-            2
+            Passing the existing application-level client is
+            strongly recommended because it already contains
+            the four-key rotation/fallback mechanism.
 
-        as "to" while parsing commands.
-
-        A standalone STT result "2" is treated as the command
-        separator. If the user wants the literal number 2 in a
-        file or folder name, they should explicitly say "number 2".
+        enable_gemini_fallback:
+            Enables semantic Gemini fallback for ambiguous
+            commands.
         """
 
-        return [
-            "to"
-            if word.strip(".,!?;:").lower() in {
-                "to",
-                "too",
-                "2",
-            }
-            else word
-            for word in words
-        ]
-
-    def __init__(self):
-
-        self.database = DatabaseManager()
-
-        # ---------------------------------
-        # Special Folders
-        # ---------------------------------
-
-        self.special_folders = {
-
-            "desktop",
-
-            "documents",
-
-            "downloads",
-
-            "pictures",
-
-            "videos",
-
-            "music",
-
-            "this pc",
-
-            "my computer",
-
-            "computer",
-
-            "recycle bin",
-
-            "trash",
-
-            "c drive",
-
-            "d drive",
-
-            "e drive"
-
-        }
-
-        # ---------------------------------
-        # Common Websites
-        # ---------------------------------
-
-        self.websites = {
-
-            "google": "google.com",
-
-            "youtube": "youtube.com",
-
-            "gmail": "gmail.com",
-
-            "github": "github.com",
-
-            "stackoverflow": "stackoverflow.com",
-
-            "chatgpt": "chat.openai.com",
-
-            "wikipedia": "wikipedia.org",
-
-            "amazon": "amazon.in",
-
-            "flipkart": "flipkart.com",
-
-            "linkedin": "linkedin.com",
-
-            "instagram": "instagram.com",
-
-            "facebook": "facebook.com",
-
-            "twitter": "x.com"
-
-        }
-
-        # ---------------------------------
-        # Chrome Profiles
-        # ---------------------------------
-
-        self.chrome_profiles = {
-
-            "naresh": "Default",
-
-            "naresh s": "Default",
-
-            "nares": "Default",
-
-            "nareesh": "Default",
-
-            "naresh profile": "Default",
-
-            "naresh senthil": "Profile 1",
-
-            "college": "Profile 1",
-
-            "college profile": "Profile 1",
-
-            "ragxii": "Profile 12",
-
-            "ragxii profile": "Profile 12"
-        }
-
-        # ---------------------------------
-        # System Application Aliases
-        # ---------------------------------
-
-        self.system_applications = {
-
-            "camera": "WindowsCamera.exe",
-            "camera app": "WindowsCamera.exe",
-            "camera application": "WindowsCamera.exe",
-
-            "cmd": "cmd.exe",
-            "command prompt": "cmd.exe",
-            "command prompt application": "cmd.exe",
-
-            "powershell": "powershell.exe",
-            "power shell": "powershell.exe",
-            "windows powershell": "powershell.exe",
-
-            "task manager": "Taskmgr.exe",
-            "taskmanager": "Taskmgr.exe",
-
-            "file explorer": "explorer.exe",
-            "windows explorer": "explorer.exe",
-            "explorer": "explorer.exe",
-
-            "settings": "SystemSettings.exe",
-            "settings app": "SystemSettings.exe",
-
-            # Microsoft Word / Word V1
-            "word": "WINWORD.EXE",
-            "microsoft word": "WINWORD.EXE",
-            "ms word": "WINWORD.EXE",
-            "word application": "WINWORD.EXE",
-            "word app": "WINWORD.EXE",
-
-        }
-
-    def normalize_text(
-        self,
-        text
-    ):
-        """
-        Normalize common STT mistakes.
-        """
-
-        if not text:
-
-            return text
-
-        text = f" {text.lower().strip()} "
-
-        replacements = {
-
-            # ---------------------------------
-            # Numbers / STT
-            # ---------------------------------
-
-            # IMPORTANT:
-            # Do NOT globally convert numeric "2" to "to".
-            #
-            # "2" can be a real part of a filename/folder name:
-            # test 2
-            # project 2
-            # folder 2
-            #
-            # Rename/copy/move extractors handle STT "2" contextually.
-
-            " too ": " to ",
-            " tu ": " to ",
-
-            # ---------------------------------
-            # Common Whisper Mistakes
-            # ---------------------------------
-
-            "reach": "search",
-            "serch": "search",
-            "herch": "search",
-            "arch": "search",
-            "searchh": "search",
-
-            "fined": "find",
-            "finds": "find",
-
-            "fence": "files",
-            "filess": "files",
-
-            "jpd": "pdf",
-            "p d f": "pdf",
-
-            "doc x": "docx",
-
-            "power point": "powerpoint",
-
-            "node pad": "notepad",
-            "north pad": "notepad",
-            "note pad": "notepad",
-            "note that": "notepad",
-
-            "m s word": "word",
-            "ms word": "word",
-
-            "excel sheet": "excel",
-            "excel file": "excel",
-
-            "ppt file": "ppt",
-            "word file": "word",
-
-            "study": "today",
-            "estaday": "yesterday",
-            "yesterdaye": "yesterday",
-            "esther day": "yesterday",
-
-            "this weak": "this week",
-            "last v": "last week",
-
-            # ---------------------------------
-            # Browser
-            # ---------------------------------
-
-            "google chrome": "chrome",
-            "chrome browser": "chrome",
-            "edge browser": "edge",
-
-            # ---------------------------------
-            # Tanglish Browser
-            # ---------------------------------
-
-            "kurom": "chrome",
-            "krom": "chrome",
-            "kuroam": "chrome",
-
-            # ---------------------------------
-            # Tanglish Applications
-            # ---------------------------------
-
-            "note book": "notepad",
-            "note padu": "notepad",
-            "notepadu": "notepad",
-
-            "power pointu": "powerpoint",
-            "powerpointu": "powerpoint",
-
-            "excelu": "excel",
-            "excel ah": "excel",
-
-            "wordu": "word",
-            "word ah": "word",
-
-            "chromeu": "chrome",
-            "chromela": "chrome",
-
-            "edgeu": "edge",
-
-            "youtubeu": "youtube",
-
-            "googleu": "google",
-
-            # ---------------------------------
-            # Tanglish Commands
-            # ---------------------------------
-
-            "thorakka": "open",
-            "thorak": "open",
-            "thorakanum": "open",
-
-            "open pannu": "open",
-            "open panra": "open",
-            "open pannunga": "open",
-            "open pannu da": "open",
-
-            "moodu": "close",
-            "moodunga": "close",
-            "close pannu": "close",
-            "close pannu da": "close",
-
-            "thedu": "search",
-            "theda": "search",
-            "thedunga": "search",
-            "search pannu": "search",
-            "search pannu da": "search",
-            "search panni kudu": "search",
-            "thedi kudu": "search",
-            "thedi paaru": "search",
-
-            "kaatu": "show",
-            "kaamika": "show",
-            "kaaminga": "show",
-
-            "create pannu": "create",
-
-            "delete pannu": "delete",
-
-            "copy pannu": "copy",
-
-            "move pannu": "move",
-
-            "rename pannu": "rename",
-
-            "play pannu": "play",
-            "play pannu da": "play",
-
-            "download pannu": "download",
-
-            "install pannu": "install",
-
-            "launch pannu": "launch",
-
-            "start pannu": "start",
-
-            "stop pannu": "stop",
-
-            "poi open": "open",
-            "poi open pannu": "open",
-
-            "vechu open": "open",
-
-            "podu": "play",
-            "podunga": "play",
-
-            # ---------------------------------
-            # Tanglish File Words
-            # ---------------------------------
-
-            "pail": "file",
-            "payil": "file",
-
-            "foldera": "folder",
-            "folder ah": "folder",
-
-            # ---------------------------------
-            # Tanglish Websites
-            # ---------------------------------
-
-            "youtube la": "youtube",
-            "youtube le": "youtube",
-
-            "google la": "google",
-            "google le": "google",
-
-            "chrome la": "chrome",
-            "chrome le": "chrome",
-
-            "edge la": "edge",
-            "edge le": "edge",
-
-            "github la": "github",
-
-            "gmail la": "gmail",
-
-            "instagram la": "instagram",
-
-            "facebook la": "facebook",
-
-            # ---------------------------------
-            # Noise Words
-            # ---------------------------------
-
-            "please da": "",
-            "please dee": "",
-            "please di": "",
-            "please": "",
-
-            "machi": "",
-            "machi da": "",
-
-            "bro": "",
-            "nanba": "",
-
-            "appa": "",
-            "amma": "",
-
-            "konjam": "",
-
-            "venum": "",
-            "venum da": "",
-            "venum dee": "",
-
-            "iruku": "",
-            "irukka": "",
-        }
-
-        for old, new in replacements.items():
-
-            pattern = (
-                r"(?<!\w)"
-                + re.escape(old)
-                + r"(?!\w)"
-            )
-
-            text = re.sub(
-                pattern,
-                new,
-                text
-            )
-
-        text = " ".join(text.split()).strip()
-
-        # ---------------------------------
-        # Remove Common Tamil Particles
-        # ---------------------------------
-
-        particles = (
-            " la",
-            " le",
-            " oda",
-            " kitta",
-            " kuda",
-            " ah",
-            " va",
-            " da",
-            " di",
-            " pa",
-            " ma",
-            " nu",
-            " ku",
+        self.gemini_client = gemini_client
+        self.enable_gemini_fallback = bool(
+            enable_gemini_fallback
         )
 
-        for particle in particles:
+        self._gemini_initialized = (
+            gemini_client is not None
+        )
 
-            if text.endswith(particle):
+        # ------------------------------------------------------
+        # Application names
+        # ------------------------------------------------------
 
-                text = text[:-len(particle)].strip()
+        self.application_open_keywords = {
+            "chrome",
+            "google chrome",
+            "edge",
+            "microsoft edge",
+            "ms edge",
+            "firefox",
+            "notepad",
+            "note pad",
+            "node pad",
+            "paint",
+            "calculator",
+            "calc",
+            "cmd",
+            "command prompt",
+            "powershell",
+            "power shell",
+            "explorer",
+            "file explorer",
+            "word",
+            "ms word",
+            "m s word",
+            "microsoft word",
+            "excel",
+            "ms excel",
+            "m s excel",
+            "microsoft excel",
+            "powerpoint",
+            "power point",
+            "ppt",
+            "presentation",
+            "vscode",
+            "vs code",
+            "visual studio code",
+            "pycharm",
+            "internet",
+            "browser",
+        }
+
+        # ------------------------------------------------------
+        # Special folders
+        # ------------------------------------------------------
+
+        self.folder_open_keywords = {
+            "desktop",
+            "documents",
+            "downloads",
+            "pictures",
+            "videos",
+            "music",
+            "this pc",
+            "my computer",
+            "computer",
+            "recycle bin",
+            "trash",
+            "c drive",
+            "d drive",
+            "e drive",
+        }
+
+        # ------------------------------------------------------
+        # AI / conversational keywords
+        # ------------------------------------------------------
+
+        self.ai_keywords = {
+            "what",
+            "who",
+            "why",
+            "when",
+            "where",
+            "which",
+            "whose",
+            "whom",
+            "how",
+            "explain",
+            "describe",
+            "define",
+            "compare",
+            "difference",
+            "meaning",
+            "guide",
+            "teach",
+            "learn",
+            "study",
+            "example",
+            "examples",
+            "summary",
+            "summarize",
+            "tell me",
+            "tell",
+            "about",
+            "say",
+            "chat",
+            "talk",
+            "conversation",
+            "question",
+            "help",
+            "information",
+            "details",
+            "history",
+            "advantages",
+            "disadvantages",
+            "benefits",
+            "uses",
+            "purpose",
+            "python",
+            "java",
+            "c++",
+            "c#",
+            "javascript",
+            "html",
+            "css",
+            "sql",
+            "artificial intelligence",
+            "machine learning",
+            "deep learning",
+            "neural network",
+            "pathi",
+            "pati",
+            "enna",
+            "enna da",
+            "epdi",
+            "eppadi",
+            "yen",
+            "ethuku",
+            "etharku",
+            "sollu",
+            "solunga",
+            "sollunga",
+            "puriyala",
+            "puriya",
+            "purinjikanum",
+            "vilakkam",
+            "explain pannu",
+            "explain pannunga",
+            "detail ah",
+            "full detail",
+            "full explain",
+            "artham",
+            "future",
+            "use",
+        }
+
+        # ------------------------------------------------------
+        # Generic keyword -> intent
+        # ------------------------------------------------------
+
+        self.intent_keywords = {
+            # Application
+            "open": "launch_application",
+            "start": "launch_application",
+            "run": "launch_application",
+            "launch": "launch_application",
+            "execute": "launch_application",
+
+            "close": "close_application",
+            "exit": "close_application",
+            "stop": "close_application",
+            "quit": "close_application",
+            "terminate": "close_application",
+
+            # Typing
+            "type": "type_text",
+            "write": "type_text",
+
+            # Clipboard
+            "copy": "copy",
+            "paste": "paste",
+            "cut": "cut",
+            "undo": "undo",
+            "redo": "redo",
+
+            # Keyboard
+            "enter": "press_enter",
+            "tab": "press_tab",
+            "backspace": "backspace",
+            "delete": "delete",
+            "escape": "escape",
+            "esc": "escape",
+            "space": "space",
+            "up": "arrow_up",
+            "down": "arrow_down",
+            "left": "arrow_left",
+            "right": "arrow_right",
+            "home": "home",
+            "end": "end",
+            "page": "page_down",
+
+            # Mouse
+            "click": "left_click",
+            "double": "double_click",
+            "scroll": "scroll_down",
+
+            # Window
+            "minimize": "minimize_window",
+            "maximise": "maximize_window",
+            "maximize": "maximize_window",
+            "minimise": "minimize_window",
+            "restore": "restore_window",
+
+            # Audio
+            "mute": "mute",
+            "volume": "volume_up",
+            "volumeup": "volume_up",
+            "volumedown": "volume_down",
+
+            # Display
+            "brightness": "set_brightness",
+
+            # Power
+            "shutdown": "shutdown",
+            "restart": "restart",
+            "reboot": "restart",
+            "sleep": "sleep",
+            "logout": "sign_out",
+            "signout": "sign_out",
+
+            # Utilities
+            "settings": "open_settings",
+            "task": "open_task_manager",
+            "explorer": "open_file_explorer",
+            "cmd": "open_cmd",
+            "powershell": "open_powershell",
+            "control": "open_control_panel",
+
+            # Camera
+            "camera": "open_camera",
+            "photo": "capture_photo",
+            "screenshot": "take_screenshot",
+            "lock": "lock_screen",
+
+            # File
+            "select": "select_all",
+            "save": "save_file",
+            "print": "print_file",
+            "folder": "open_folder",
+            "file": "open_file",
+
+            # Recording
+            "record": "start_screen_recording",
+            "recording": "start_screen_recording",
+        }
+
+        # ------------------------------------------------------
+        # Tanglish command normalization
+        # ------------------------------------------------------
+
+        self.tanglish_command_map = {
+            "thorakka": "open",
+            "thorak": "open",
+            "thirakka": "open",
+            "thirak": "open",
+            "open pannu": "open",
+
+            "moodu": "close",
+            "mudu": "close",
+            "close pannu": "close",
+
+            "theda": "search",
+            "thedu": "search",
+            "thedi": "search",
+
+            "kaatu": "show",
+
+            "podu": "play",
+
+            "uruvakku": "create",
+            "uruvaku": "create",
+
+            "azhichidu": "delete",
+            "azhichu": "delete",
+
+            "maathu": "rename",
+            "mathu": "rename",
+
+            "nagarthu": "move",
+
+            "copy pannu": "copy",
+            "paste pannu": "paste",
+            "cut pannu": "cut",
+
+            "start pannu": "start",
+            "open pannu": "open",
+            "close pannu": "close",
+            "stop pannu": "stop",
+
+            "screenshot edu": "take screenshot",
+            "photo edu": "take photo",
+        }
+
+        # ------------------------------------------------------
+        # Supported intents
+        #
+        # Gemini output MUST belong to this set.
+        # ------------------------------------------------------
+
+        self.supported_intents = {
+            # Conversation
+            "ai_chat",
+
+            # Application
+            "launch_application",
+            "close_application",
+
+            # Generic keyboard
+            "type_text",
+            "copy",
+            "paste",
+            "cut",
+            "undo",
+            "redo",
+            "press_enter",
+            "press_tab",
+            "backspace",
+            "delete",
+            "escape",
+            "space",
+            "arrow_up",
+            "arrow_down",
+            "arrow_left",
+            "arrow_right",
+            "home",
+            "end",
+            "page_down",
+
+            # Mouse
+            "left_click",
+            "right_click",
+            "double_click",
+            "scroll_up",
+            "scroll_down",
+
+            # Window
+            "minimize_window",
+            "maximize_window",
+            "restore_window",
+            "close_window",
+
+            # System
+            "mute",
+            "volume_up",
+            "volume_down",
+            "set_volume",
+            "brightness_up",
+            "brightness_down",
+            "set_brightness",
+            "shutdown",
+            "restart",
+            "sleep",
+            "sign_out",
+            "open_settings",
+            "open_task_manager",
+            "open_cmd",
+            "open_powershell",
+            "open_control_panel",
+            "open_file_explorer",
+            "open_camera",
+            "capture_photo",
+            "take_screenshot",
+            "lock_screen",
+
+            # Files
+            "open_file",
+            "create_file",
+            "delete_file",
+            "rename_file",
+            "copy_file",
+            "move_file",
+
+            # Folders
+            "open_folder",
+            "create_folder",
+            "delete_folder",
+            "rename_folder",
+            "copy_folder",
+            "move_folder",
+            "empty_recycle_bin",
+
+            # Search
+            "search_extension",
+            "search_size",
+            "search_date",
+            "google_search",
+
+            # Archive
+            "compress_file",
+            "extract_zip",
+
+            # Browser
+            "open_website",
+            "open_google",
+            "open_youtube",
+            "new_tab",
+            "close_tab",
+            "next_tab",
+            "previous_tab",
+            "refresh",
+            "browser_history",
+            "browser_downloads",
+            "browser_bookmarks",
+            "bookmark_page",
+            "address_bar",
+            "browser_back",
+            "browser_forward",
+            "private_window",
+            "open_chrome_profile",
+            "youtube_search",
+            "play_youtube",
+
+            # Recording
+            "start_screen_recording",
+            "stop_screen_recording",
+
+            # File operations
+            "save_file",
+            "print_file",
+            "select_all",
+
+            # Word
+            "open_word",
+            "close_word",
+            "create_blank_document",
+            "open_existing_document",
+            "save",
+            "save_as",
+            "save_docx",
+            "save_pdf",
+            "close_current_document",
+            "create_specified_filename",
+            "read_existing_document",
+            "add_text_at_cursor",
+            "replace_content",
+            "read_document",
+            "clear_document",
+            "strikethrough",
+            "underline",
+            "italic",
+            "bold",
+            "font_size",
+            "font",
+            "text_color",
+            "highlight",
+            "align_left",
+            "align_center",
+            "align_right",
+            "justify",
+            "line_spacing",
+            "paragraph_spacing",
+            "indentation",
+            "bullets",
+            "numbering",
+            "title",
+            "heading_1",
+            "normal",
+            "document_style",
+            "read_table_data",
+            "create_table",
+            "replace",
+            "find",
+            "image",
+            "hyperlink",
+            "page_break",
+            "new_page",
+            "header",
+            "footer",
+            "page_number",
+            "margins",
+
+            # Legacy Office
+            "create_word_document",
+            "create_excel_workbook",
+            "create_powerpoint_presentation",
+        }
+
+    # ==========================================================
+    # GEMINI CLIENT
+    # ==========================================================
+
+    def set_gemini_client(self, gemini_client):
+        """
+        Inject an already-created GeminiClient.
+
+        This avoids creating multiple Gemini clients and
+        preserves the existing four-key rotation system.
+        """
+
+        self.gemini_client = gemini_client
+        self._gemini_initialized = (
+            gemini_client is not None
+        )
+
+    def _get_gemini_client(self):
+        """
+        Return the configured Gemini client.
+
+        Lazy import is used so the detector can still operate
+        completely offline/local when Gemini is unavailable.
+        """
+
+        if not self.enable_gemini_fallback:
+            return None
+
+        if self.gemini_client is not None:
+            return self.gemini_client
+
+        if self._gemini_initialized:
+            return None
+
+        self._gemini_initialized = True
+
+        try:
+            from ai.gemini_client import GeminiClient
+
+            self.gemini_client = GeminiClient()
+
+            print(
+                "IntentDetector : Gemini semantic fallback ready."
+            )
+
+            return self.gemini_client
+
+        except Exception as error:
+            print(
+                "IntentDetector : Gemini fallback unavailable:",
+                error,
+            )
+
+            self.gemini_client = None
+
+            return None
+
+    # ==========================================================
+    # NORMALIZATION
+    # ==========================================================
+
+    @staticmethod
+    def _basic_normalize(text: str) -> str:
+        """
+        Basic text normalization.
+        """
+
+        if text is None:
+            return ""
+
+        text = str(text).lower().strip()
+
+        if not text:
+            return ""
+
+        # Common punctuation from speech recognition.
+        text = re.sub(
+            r"[,\.;:!?]+",
+            " ",
+            text,
+        )
+
+        text = re.sub(
+            r"\s+",
+            " ",
+            text,
+        )
+
+        return text.strip()
+
+    def _normalize_text(self, text: str) -> str:
+        """
+        Normalize recognized speech.
+
+        Includes common Whisper/STT mistakes and Tanglish
+        command normalization.
+        """
+
+        text = self._basic_normalize(text)
+
+        if not text:
+            return ""
+
+        # --------------------------------------------------
+        # Filler removal
+        # --------------------------------------------------
+
+        fillers = {
+            "uh",
+            "um",
+            "hmm",
+            "mmm",
+            "ah",
+            "oh",
+        }
+
+        words = [
+            word
+            for word in text.split()
+            if word not in fillers
+        ]
+
+        text = " ".join(words)
+
+        # --------------------------------------------------
+        # Common Whisper corrections
+        # --------------------------------------------------
+
+        replacements = (
+            ("bdf", "pdf"),
+            ("estaday", "yesterday"),
+            ("yester day", "yesterday"),
+
+            ("you tube", "youtube"),
+            ("you to", "youtube"),
+            ("u tube", "youtube"),
+            ("you too", "youtube"),
+
+            ("g mail", "gmail"),
+
+            ("power point presentation", "powerpoint"),
+            ("power point", "powerpoint"),
+
+            ("note pad", "notepad"),
+            ("node pad", "notepad"),
+
+            ("command promt", "command prompt"),
+            ("command promt", "command prompt"),
+
+            ("vs code", "vscode"),
+            ("visual studio code", "vscode"),
+
+            ("chrome browser", "chrome"),
+            ("google chrome browser", "chrome"),
+
+            ("excel sheet", "excel"),
+
+            ("c plus plus", "c++"),
+            ("c sharp", "c#"),
+
+            ("artificial intelligent", "artificial intelligence"),
+
+            # Common Word/STT confusion.
+            ("ms word", "word"),
+            ("m s word", "word"),
+            ("microsoft word", "word"),
+
+            # Common browser pronunciation variants.
+            ("fire fox", "firefox"),
+
+            # Common PowerShell pronunciation.
+            ("power shell", "powershell"),
+        )
+
+        for old, new in replacements:
+            text = text.replace(old, new)
+
+        text = self._basic_normalize(text)
+
+        # --------------------------------------------------
+        # Tanglish command normalization
+        # --------------------------------------------------
+
+        # Longest phrases first so that:
+        #
+        # "open pannu"
+        #
+        # is handled before individual words.
+        for old, new in sorted(
+            self.tanglish_command_map.items(),
+            key=lambda item: len(item[0]),
+            reverse=True,
+        ):
+            text = text.replace(old, new)
+
+        text = self._basic_normalize(text)
 
         return text
 
-    # --------------------------------------------------
-    # Load Applications
-    # --------------------------------------------------
+    # ==========================================================
+    # CONVERSATION PROTECTION
+    # ==========================================================
 
-    def load_applications(self):
-        """
-        Load all stored applications.
-        """
-
-        applications = {}
-
-        rows = self.database.get_all_applications()
-
-        for name, exe_name, _ in rows:
-
-            applications[name] = exe_name
-
-        return applications
-
-    # --------------------------------------------------
-    # Extract Application
-    # --------------------------------------------------
-
-    def extract_application(
+    def _is_explicit_automation_command(
         self,
-        text
-    ):
+        text: str,
+    ) -> bool:
         """
-        Extract application name.
+        Return True only when the message clearly asks
+        ASTRA-AI to perform an action.
 
-        Supports both database applications
-        and Windows system applications.
+        This prevents normal questions such as:
+
+            "Why should I open Chrome?"
+
+        from becoming launch_application.
         """
 
         if not text:
+            return False
 
-            return None
+        text = self._basic_normalize(text)
 
-        # ==============================================================
-        # IMPORTANT FILE/FOLDER OPERATION GUARD
-        # ==============================================================
-        #
-        # File-management commands must NEVER be fuzzy-matched against
-        # installed applications.
-        #
-        # Example:
-        #     create file demo
-        #
-        # If the application database contains an application whose
-        # name happens to be similar to "demo" (for example V8), the
-        # old fuzzy matcher could incorrectly return that application.
-        # The dispatcher could then treat the command as an application
-        # operation and attempt to open it.
-        #
-        # For create-file/create-folder commands, application extraction
-        # must therefore return None. The dedicated file/folder extractor
-        # will handle the actual entity.
-        # ==============================================================
+        explicit_patterns = (
+            r"^(open|start|run|launch)\b",
+            r"^(close|exit|quit|terminate)\b",
+            r"^(type|write|copy|paste|cut|undo|redo)\b",
+            r"^(click|double click|right click|scroll)\b",
+            r"^(minimize|maximize|restore)\b",
 
-        raw_text = str(text).lower().strip()
+            r"^(mute|lock|shutdown|restart|reboot|sleep|logout|signout)\b",
 
-        normalized_for_guard = self.normalize_text(raw_text)
+            r"^(take )?screenshot\b",
 
-        file_folder_operation_patterns = (
+            r"^(set|increase|decrease|turn)\s+"
+            r"(the\s+)?(volume|brightness)\b",
 
-            # File creation
-            r"\\bcreate\\s+(?:a|an|the|my|your|new\\s+)?file\\b",
-            r"\\bmake\\s+(?:a|an|the|my|your|new\\s+)?file\\b",
-            r"\\bnew\\s+file\\b",
+            r"^(create|make|new|delete|remove|rename|move|copy|"
+            r"compress|extract)\b",
 
-            # Folder creation
-            r"\\bcreate\\s+(?:a|an|the|my|your|new\\s+)?folder\\b",
-            r"\\bmake\\s+(?:a|an|the|my|your|new\\s+)?folder\\b",
-            r"\\bnew\\s+folder\\b",
+            r"^(search|google|youtube|play)\b",
 
-            # Directory creation
-            r"\\bcreate\\s+(?:a|an|the|my|your|new\\s+)?directory\\b",
-            r"\\bmake\\s+(?:a|an|the|my|your|new\\s+)?directory\\b",
+            r"^(new tab|close tab|next tab|previous tab|"
+            r"refresh|reload|go back|go forward)\b",
 
+            r"^(press )?"
+            r"(enter|tab|backspace|delete|escape|esc|space|home|end)\b",
+
+            r"^(open )?"
+            r"(settings|task manager|file explorer|camera|"
+            r"control panel|cmd|powershell)\b",
+
+            r"^(start|stop)\s+(screen )?recording\b",
+
+            # Word formatting/action commands.
+            r"^(make|set|apply|change|turn|add|insert|create|"
+            r"remove|delete|clear|select|save|read|open|close)\b",
         )
 
-        for pattern in file_folder_operation_patterns:
+        return any(
+            re.search(pattern, text)
+            for pattern in explicit_patterns
+        )
 
-            if re.search(
+    def _is_conversational_message(
+        self,
+        text: str,
+    ) -> bool:
+        """
+        Detect natural conversation and questions.
+
+        Explicit automation commands are excluded by the caller.
+        """
+
+        if not text:
+            return False
+
+        text = self._basic_normalize(text)
+
+        question_patterns = (
+            r"^(what|who|why|when|where|which|whose|whom|how)\b",
+
+            r"^(enna|enna da|ethu|edhu|yaaru|yaru|yen|en|"
+            r"epdi|eppadi|eppo|engae|enga|ethuku|etharku)\b",
+
+            r"\b(can|could|would|should|is|are|do|does|did|will)"
+            r"\s+(you|i|we|this|that|it)\b",
+
+            r"\b(meaning|difference|compare|explain|describe|"
+            r"define|teach|guide|summary|summarize)\b",
+        )
+
+        if any(
+            re.search(
                 pattern,
-                normalized_for_guard,
-                flags=re.IGNORECASE
-            ):
+                text,
+            )
+            for pattern in question_patterns
+        ):
+            return True
 
-                print(
-                    "Application Extraction Skipped : "
-                    "file/folder creation command detected."
+        temporal_terms = (
+            "time",
+            "date",
+            "day",
+            "today",
+            "tomorrow",
+            "yesterday",
+            "kannum",
+            "innaiku",
+            "innikku",
+            "naalai",
+            "netru",
+        )
+
+        if any(
+            term in text
+            for term in temporal_terms
+        ):
+            if any(
+                token in text
+                for token in (
+                    "what",
+                    "enna",
+                    "ethu",
+                    "edhu",
+                    "tell",
+                    "sollu",
+                    "solunga",
+                    "sollunga",
+                    "current",
+                    "now",
+                    "ippo",
+                    "ippa",
+                    "today",
+                    "innaiku",
                 )
+            ):
+                return True
 
-                return None
-
-        text = normalized_for_guard
-
-        # ---------------------------------
-        # System Application Aliases
-        # ---------------------------------
-
-        system_text = text
-
-        # Remove common command words
-        # before checking system aliases.
-
-        command_words = {
-
-            "open",
-            "close",
-            "launch",
-            "start",
-            "run",
-            "stop",
-            "kill",
-            "terminate",
-            "exit",
-
+        follow_ups = {
+            "why",
+            "how",
+            "then",
+            "continue",
+            "go on",
+            "tell me more",
+            "explain more",
+            "what about that",
+            "what about this",
+            "and then",
+            "after that",
+            "okay then",
+            "seri then",
+            "appo",
+            "aprm",
+            "apram",
+            "athuku apram",
+            "idhu enna",
+            "athu enna",
+            "adhula enna",
+            "idha explain pannu",
+            "atha explain pannu",
+            "continue da",
         }
 
-        words = [
+        if text in follow_ups:
+            return True
 
-            word
+        conversational_phrases = (
+            "who are you",
+            "your name",
+            "who created you",
+            "creator",
+            "astra-ai",
+            "dheepthi",
+            "hello",
+            "hi",
+            "thanks",
+            "thank you",
+            "nandri",
+            "pathi",
+            "pati",
+            "puriyala",
+            "puriya",
+            "sollu",
+            "solunga",
+            "sollunga",
+            "detail ah",
+            "full detail",
+            "example",
+            "examples",
+        )
 
-            for word in system_text.split()
+        return any(
+            phrase in text
+            for phrase in conversational_phrases
+        )
 
-            if word not in command_words
+    # ==========================================================
+    # HELPERS
+    # ==========================================================
 
-        ]
+    @staticmethod
+    def _has_any(
+        text: str,
+        values,
+    ) -> bool:
+        return any(
+            value in text
+            for value in values
+        )
 
-        system_text = " ".join(words).strip()
+    @staticmethod
+    def _has_transfer_connector(
+        text: str,
+    ) -> bool:
+        """
+        Detect file/folder transfer connectors.
 
-        # ---------------------------------
-        # Direct System Application Match
-        # ---------------------------------
+        Supports natural speech variations:
 
-        for alias, executable in (
-            self.system_applications.items()
-        ):
+            to
+            into
+            2
+            ku
+            kku
+        """
 
-            if (
-                system_text == alias
-                or alias in system_text
-            ):
+        padded = f" {text} "
 
-                print(
-                    f"System Application Match : "
-                    f"{alias} -> {executable}"
-                )
-
-                return executable
-
-        # ---------------------------------
-        # Remove Command Words
-        # ---------------------------------
-
-        words = [
-
-            word
-
-            for word in text.split()
-
-            if word not in {
-
-                "open",
-                "close",
-                "launch",
-                "start",
-                "run",
-                "search",
-                "show",
-                "find",
-                "create",
-                "delete",
-                "copy",
-                "move",
-                "rename",
-                "play",
-
-            }
-
-        ]
-
-        text = " ".join(words).strip()
-
-        # ---------------------------------
-        # Load Database Applications
-        # ---------------------------------
-
-        applications = self.load_applications()
-
-        if not applications:
-
-            return None
-
-        # ---------------------------------
-        # Exact Match
-        # ---------------------------------
-
-        for app_name in applications:
-
-            if app_name in text:
-
-                # Ignore file search commands
-
-                if any(
-
-                    word in text
-
-                    for word in (
-
-                        "find",
-                        "search",
-                        "show",
-                        "locate",
-                        "filter"
-
-                    )
-
-                ):
-
-                    continue
-
-                return applications[app_name]
-
-        # ---------------------------------
-        # Alias Match
-        # ---------------------------------
-
-        words = text.split()
-
-        for word in words:
-
-            alias = self.database.get_alias(
-                word
+        return any(
+            token in padded
+            for token in (
+                " to ",
+                " into ",
+                " 2 ",
+                " ku ",
+                " kku ",
             )
-
-            if alias:
-
-                application = (
-                    self.database.get_application(
-                        alias[0]
-                    )
-                )
-
-                if application:
-
-                    return application[1]
-
-        # ---------------------------------
-        # Fuzzy Match
-        # ---------------------------------
-
-        best_match = process.extractOne(
-
-            text,
-
-            applications.keys(),
-
-            scorer=fuzz.token_set_ratio
-
         )
 
-        if best_match:
+    # ==========================================================
+    # FOLDER INTENTS
+    # ==========================================================
 
-            app_name, score, _ = best_match
-
-            if score >= 75:
-
-                print(
-
-                    f"Application Match : "
-
-                    f"{app_name} ({score:.1f}%)"
-
-                )
-
-                return applications[app_name]
-
-        return None
-
-    # --------------------------------------------------
-    # Extract Folder
-    # --------------------------------------------------
-
-    def extract_folder(
+    def _detect_folder_intent(
         self,
-        text
-    ):
-        """
-        Extract folder name from voice command.
-
-        Supports:
-
-            create folder as Trot Test
-            create a folder as Trot Test
-            create the folder as Trot Test
-            create your folder as Trot Test
-
-            create folder named Trot Test
-            create a folder named Trot Test
-            create the folder named Trot Test
-
-            create folder called Trot Test
-            create a folder called Trot Test
-            create the folder called Trot Test
-
-            make folder Trot Test
-            make a folder Trot Test
-            make the folder Trot Test
-
-            new folder Trot Test
-            new a folder Trot Test
-            new the folder Trot Test
-
-        Also supports existing special folders:
-
-            open desktop
-            open documents
-            open downloads
-            open pictures
-            open videos
-            open music
-            open recycle bin
-            open this pc
-        """
-
-        if not text:
-
-            return None
-
-        # ---------------------------------
-        # Normalize STT text
-        # ---------------------------------
-
-        text = self.normalize_text(
-            text
-        )
-
-        if not text:
-
-            return None
-
-        # Remove trailing punctuation.
-        text = text.strip().rstrip(
-            ".,!?;:"
-        )
-
-        # ==================================================
-        # USER-CREATED FOLDER COMMANDS
-        # ==================================================
-
-        create_patterns = (
-
-            # create
-            "create the folder",
-            "create a folder",
-            "create your folder",
-            "create folder",
-
-            # make
-            "make the folder",
-            "make a folder",
-            "make your folder",
-            "make folder",
-
-            # new
-            "new the folder",
-            "new a folder",
-            "new your folder",
-            "new folder",
-
-            # directory
-            "create the directory",
-            "create a directory",
-            "create directory",
-
-            "make the directory",
-            "make a directory",
-            "make directory",
-
-        )
-
-        folder_name = text
-
-        # ---------------------------------
-        # Remove command phrase
-        #
-        # IMPORTANT:
-        # Longest phrases are checked first.
-        # ---------------------------------
-
-        for pattern in create_patterns:
-
-            if folder_name.startswith(
-                pattern
-            ):
-
-                folder_name = folder_name[
-                    len(pattern):
-                ].strip()
-
-                break
-
-        # ==================================================
-        # REMOVE NAMING CONNECTORS
-        # ==================================================
-        #
-        # Examples:
-        #
-        # create folder as Trot Test
-        # create folder named Trot Test
-        # create folder called Trot Test
-        # create folder with name Trot Test
-        #
-        # ==================================================
-
-        naming_connectors = (
-
-            "as ",
-            "named ",
-            "called ",
-            "with name ",
-            "with the name ",
-            "name ",
-
-        )
-
-        for connector in naming_connectors:
-
-            if folder_name.startswith(
-                connector
-            ):
-
-                folder_name = folder_name[
-                    len(connector):
-                ].strip()
-
-                break
-
-        # ==================================================
-        # REMOVE FILLER WORDS
-        # ==================================================
-        #
-        # Handles:
-        #
-        # create the folder
-        # create a folder
-        # create my folder
-        #
-        # ==================================================
-
-        filler_prefixes = (
-
-            "the ",
-            "a ",
-            "an ",
-            "my ",
-            "your ",
-
-        )
-
-        changed = True
-
-        while changed:
-
-            changed = False
-
-            for prefix in filler_prefixes:
-
-                if folder_name.startswith(
-                    prefix
-                ):
-
-                    folder_name = folder_name[
-                        len(prefix):
-                    ].strip()
-
-                    changed = True
-
-                    break
-
-        # ==================================================
-        # CLEAN FOLDER NAME
-        # ==================================================
-
-        folder_name = (
-            folder_name
-            .strip()
-            .strip("\"'")
-            .rstrip(".,!?;:")
-            .strip()
-        )
-
-        # ==================================================
-        # REMOVE TRAILING FILLER WORDS
-        # ==================================================
-
-        trailing_words = (
-
-            "please",
-            "please da",
-            "please dee",
-            "please di",
-
-        )
-
-        for word in trailing_words:
-
-            if folder_name.lower().endswith(
-                " " + word
-            ):
-
-                folder_name = (
-                    folder_name[
-                        :-(len(word) + 1)
-                    ]
-                    .strip()
-                )
-
-        # ==================================================
-        # RETURN USER-CREATED FOLDER NAME
-        # ==================================================
-
-        if folder_name:
-
-            invalid_names = {
-
-                "folder",
-                "directory",
-                "new",
-                "create",
-                "make",
-                "the",
-                "a",
-                "an",
-                "my",
-                "your",
-
-            }
-
-            if folder_name.lower() not in (
-                invalid_names
-            ):
-
-                return folder_name
-
-        # ==================================================
-        # SPECIAL FOLDER DETECTION
-        # ==================================================
-
-        for folder in self.special_folders:
+        text: str,
+    ) -> Optional[str]:
+
+        # ------------------------------------------------------
+        # Create
+        # ------------------------------------------------------
+
+        if (
+            (
+                text.startswith("create ")
+                or text.startswith("make ")
+                or text.startswith("new ")
+            )
+            and "folder" in text
+        ):
+            return "create_folder"
+
+        # ------------------------------------------------------
+        # Rename
+        # ------------------------------------------------------
+
+        if (
+            "rename" in text
+            and "folder" in text
+            and self._has_transfer_connector(text)
+        ):
+            return "rename_folder"
+
+        if any(
+            phrase in text
+            for phrase in (
+                "rename folder",
+                "rename a folder",
+                "rename the folder",
+                "rename your folder",
+            )
+        ):
+            return "rename_folder"
+
+        # ------------------------------------------------------
+        # Delete
+        # ------------------------------------------------------
+
+        if (
+            (
+                text.startswith("delete ")
+                or text.startswith("remove ")
+            )
+            and "folder" in text
+        ):
+            return "delete_folder"
+
+        if any(
+            phrase in text
+            for phrase in (
+                "delete folder",
+                "delete a folder",
+                "delete the folder",
+                "remove folder",
+                "remove a folder",
+                "remove the folder",
+            )
+        ):
+            return "delete_folder"
+
+        # ------------------------------------------------------
+        # Move
+        # ------------------------------------------------------
+
+        if (
+            text.startswith("move ")
+            and "folder" in text
+            and self._has_transfer_connector(text)
+        ):
+            return "move_folder"
+
+        if any(
+            phrase in text
+            for phrase in (
+                "move folder",
+                "move a folder",
+                "move the folder",
+            )
+        ):
+            return "move_folder"
+
+        # ------------------------------------------------------
+        # Copy
+        # ------------------------------------------------------
+
+        if (
+            text.startswith("copy ")
+            and "folder" in text
+            and self._has_transfer_connector(text)
+        ):
+            return "copy_folder"
+
+        if any(
+            phrase in text
+            for phrase in (
+                "copy folder",
+                "copy a folder",
+                "copy the folder",
+            )
+        ):
+            return "copy_folder"
+
+        # ------------------------------------------------------
+        # Recycle bin
+        # ------------------------------------------------------
+
+        if (
+            "empty recycle bin" in text
+            or "clear recycle bin" in text
+        ):
+            return "empty_recycle_bin"
+
+        # ------------------------------------------------------
+        # Generic open folder
+        # ------------------------------------------------------
+
+        if any(
+            phrase in text
+            for phrase in (
+                "open folder",
+                "open a folder",
+                "open the folder",
+                "open your folder",
+            )
+        ):
+            return "open_folder"
+
+        # ------------------------------------------------------
+        # Special folders
+        # ------------------------------------------------------
+
+        for folder in self.folder_open_keywords:
 
             if folder in text:
-
-                return folder
-
-        # ==================================================
-        # FUZZY MATCH FOR SPECIAL FOLDERS
-        # ==================================================
-
-        best_match = process.extractOne(
-
-            text,
-
-            self.special_folders,
-
-            scorer=fuzz.partial_ratio
-
-        )
-
-        if best_match:
-
-            folder, score, _ = best_match
-
-            if score >= 75:
-
-                print(
-                    f"Folder Match : "
-                    f"{folder} "
-                    f"({score:.1f}%)"
-                )
-
-                return folder
+                return "open_folder"
 
         return None
 
-    # --------------------------------------------------
-    # Extract Website
-    # --------------------------------------------------
+    # ==========================================================
+    # FILE INTENTS
+    # ==========================================================
 
-    def extract_website(
+    def _detect_file_intent(
         self,
-        text
-    ):
-        """
-        Extract website from command.
-        """
+        text: str,
+    ) -> Optional[str]:
 
-        if not text:
+        # ------------------------------------------------------
+        # Rename
+        # ------------------------------------------------------
 
-            return None
+        if (
+            text.startswith("rename ")
+            and self._has_transfer_connector(text)
+            and "folder" not in text
+        ):
+            return "rename_file"
 
-        text = self.normalize_text(text)
+        if any(
+            phrase in text
+            for phrase in (
+                "rename file",
+                "rename a file",
+                "rename the file",
+            )
+        ):
+            return "rename_file"
 
-        # Exact Match
+        # ------------------------------------------------------
+        # Copy
+        # ------------------------------------------------------
 
-        aliases = {
+        if (
+            text.startswith("copy ")
+            and self._has_transfer_connector(text)
+            and "folder" not in text
+        ):
+            return "copy_file"
 
-            "youtube": ("youtube", "youtube la", "youtube le"),
-            "google": ("google", "google la", "google le"),
-            "gmail": ("gmail", "gmail la"),
-            "github": ("github", "github la"),
-            "instagram": ("instagram", "instagram la"),
-            "facebook": ("facebook", "facebook la"),
-        }
+        if any(
+            phrase in text
+            for phrase in (
+                "copy file",
+                "copy a file",
+                "copy the file",
+                "copy this file",
+                "copy document",
+                "copy pdf",
+            )
+        ):
+            return "copy_file"
 
-        for key, values in aliases.items():
+        # ------------------------------------------------------
+        # Move
+        # ------------------------------------------------------
 
-            if any(v in text for v in values):
+        if (
+            text.startswith("move ")
+            and self._has_transfer_connector(text)
+            and "folder" not in text
+        ):
+            return "move_file"
 
-                return self.websites[key]
+        if any(
+            phrase in text
+            for phrase in (
+                "move file",
+                "move a file",
+                "move the file",
+                "move this file",
+                "move document",
+                "move pdf",
+            )
+        ):
+            return "move_file"
 
-            # Don't treat browser launch
-            # as website open.
+        # ------------------------------------------------------
+        # Create
+        # ------------------------------------------------------
 
-        for name, url in self.websites.items():
+        if (
+            text.startswith(
+                (
+                    "create ",
+                    "make ",
+                    "new ",
+                )
+            )
+            and "file" in text.split()
+            and "folder" not in text
+        ):
+            return "create_file"
 
-            if (
+        if "create file" in text:
+            return "create_file"
 
-                f"open {name}" in text
+        # ------------------------------------------------------
+        # Delete
+        # ------------------------------------------------------
 
-                and
+        if (
+            (
+                text.startswith("delete ")
+                or text.startswith("remove ")
+            )
+            and "file" in text
+            and "folder" not in text
+        ):
+            return "delete_file"
 
-                "chrome" not in text
+        if (
+            "delete file" in text
+            and "folder" not in text
+        ):
+            return "delete_file"
 
-                and
+        # ------------------------------------------------------
+        # Archive
+        # ------------------------------------------------------
 
-                "edge" not in text
+        if (
+            "extract zip" in text
+            or "extract archive" in text
+            or "unzip" in text
+            or "un zip" in text
+            or "open zip" in text
+        ):
+            return "extract_zip"
 
-                and
+        if (
+            "compress file" in text
+            or "compress " in text
+            or text == "compress"
+            or "zip file" in text
+            or "create zip" in text
+            or "zip this file" in text
+            or "make zip" in text
+            or "archive file" in text
+        ):
+            return "compress_file"
 
-                "browser" not in text
+        return None
 
-            ):
+    # ==========================================================
+    # SYSTEM INTENTS
+    # ==========================================================
 
-                return url
+    def _detect_system_intent(
+        self,
+        text: str,
+    ) -> Optional[str]:
 
-            if f"{name} website" in text:
+        # ------------------------------------------------------
+        # Volume
+        # ------------------------------------------------------
 
-                return url
+        if (
+            "set volume" in text
+            or "volume to" in text
+            or "volume at" in text
+            or "volume level" in text
+        ):
+            return "set_volume"
 
-            if text == name:
+        if (
+            "volume up" in text
+            or "increase volume" in text
+            or "raise volume" in text
+            or "turn up volume" in text
+        ):
+            return "volume_up"
 
-                return url
+        if (
+            "volume down" in text
+            or "decrease volume" in text
+            or "lower volume" in text
+            or "turn down volume" in text
+        ):
+            return "volume_down"
 
-        # URL Detection
+        if (
+            "mute" in text
+            or "mute audio" in text
+            or "turn off sound" in text
+        ):
+            return "mute"
 
-        words = text.split()
+        # ------------------------------------------------------
+        # Brightness
+        # ------------------------------------------------------
 
-        valid_domains = {
+        if (
+            "brightness up" in text
+            or "increase brightness" in text
+            or "raise brightness" in text
+            or "brighten screen" in text
+            or "brighten display" in text
+        ):
+            return "brightness_up"
 
-            "com",
+        if (
+            "brightness down" in text
+            or "decrease brightness" in text
+            or "lower brightness" in text
+            or "dim screen" in text
+            or "dim display" in text
+        ):
+            return "brightness_down"
 
-            "org",
+        if (
+            "set brightness" in text
+            or "brightness to" in text
+            or "brightness at" in text
+            or "brightness level" in text
+        ):
+            return "set_brightness"
 
-            "net",
+        # ------------------------------------------------------
+        # Power
+        # ------------------------------------------------------
 
-            "in",
+        if (
+            "shutdown" in text
+            or "shut down" in text
+            or "turn off computer" in text
+            or "turn off pc" in text
+            or "power off computer" in text
+            or "power off pc" in text
+        ):
+            return "shutdown"
 
-            "io",
+        if (
+            "restart computer" in text
+            or "restart pc" in text
+            or "restart system" in text
+            or "reboot computer" in text
+            or "reboot pc" in text
+            or "reboot system" in text
+        ):
+            return "restart"
 
-            "edu",
+        if (
+            "sleep computer" in text
+            or "sleep pc" in text
+            or "sleep system" in text
+            or "put computer to sleep" in text
+            or "put pc to sleep" in text
+            or "put my pc to sleep" in text
+        ):
+            return "sleep"
 
-            "gov"
+        if (
+            "sign out" in text
+            or "signout" in text
+            or "log out" in text
+            or "logout" in text
+        ):
+            return "sign_out"
 
-        }
+        # ------------------------------------------------------
+        # Utilities
+        # ------------------------------------------------------
 
-        for word in words:
+        if (
+            "open settings" in text
+            or "open windows settings" in text
+            or "windows settings" in text
+            or "system settings" in text
+        ):
+            return "open_settings"
 
-            word = word.strip(".,!?")
+        if "task manager" in text:
+            return "open_task_manager"
 
-            if "." not in word:
+        if (
+            "open cmd" in text
+            or "launch cmd" in text
+            or "start cmd" in text
+            or "open command prompt" in text
+            or "launch command prompt" in text
+            or "start command prompt" in text
+        ):
+            return "open_cmd"
 
+        if (
+            "open powershell" in text
+            or "launch powershell" in text
+            or "start powershell" in text
+        ):
+            return "open_powershell"
+
+        if (
+            "open control panel" in text
+            or "launch control panel" in text
+            or "start control panel" in text
+        ):
+            return "open_control_panel"
+
+        if (
+            "file explorer" in text
+            or text == "this pc"
+            or "open this pc" in text
+            or "my computer" in text
+        ):
+            return "open_file_explorer"
+
+        # ------------------------------------------------------
+        # Camera
+        # ------------------------------------------------------
+
+        if (
+            "open camera" in text
+            or "launch camera" in text
+            or "start camera" in text
+            or "open webcam" in text
+            or "launch webcam" in text
+        ):
+            return "open_camera"
+
+        if (
+            "take photo" in text
+            or "take a photo" in text
+            or "capture photo" in text
+            or "capture a photo" in text
+            or "take picture" in text
+            or "take a picture" in text
+            or "capture picture" in text
+            or "capture a picture" in text
+            or "take selfie" in text
+            or "capture selfie" in text
+        ):
+            return "capture_photo"
+
+        # ------------------------------------------------------
+        # Screenshot
+        # ------------------------------------------------------
+
+        if (
+            "take screenshot" in text
+            or "screen shot" in text
+            or "capture screen" in text
+            or "take screen shot" in text
+        ):
+            return "take_screenshot"
+
+        # ------------------------------------------------------
+        # Lock
+        # ------------------------------------------------------
+
+        if (
+            "lock screen" in text
+            or "lock computer" in text
+            or "lock my pc" in text
+            or "lock system" in text
+        ):
+            return "lock_screen"
+
+        # ------------------------------------------------------
+        # Recording
+        # ------------------------------------------------------
+
+        if (
+            "stop screen recording" in text
+            or "stop screen record" in text
+            or "end screen recording" in text
+            or "finish screen recording" in text
+            or "stop recording screen" in text
+            or "stop screen capture" in text
+        ):
+            return "stop_screen_recording"
+
+        if (
+            "start screen recording" in text
+            or "start screen record" in text
+            or "begin screen recording" in text
+            or "begin screen record" in text
+            or "record screen" in text
+            or "record my screen" in text
+            or "start recording screen" in text
+            or "start screen capture" in text
+        ):
+            return "start_screen_recording"
+
+        return None
+
+    # ==========================================================
+    # BROWSER INTENTS
+    # ==========================================================
+
+    def _detect_browser_intent(
+        self,
+        text: str,
+    ) -> Optional[str]:
+
+        if "new tab" in text:
+            return "new_tab"
+
+        if "close tab" in text:
+            return "close_tab"
+
+        if "next tab" in text:
+            return "next_tab"
+
+        if "previous tab" in text:
+            return "previous_tab"
+
+        if (
+            text == "refresh"
+            or "refresh page" in text
+            or "reload" in text
+            or "reload page" in text
+        ):
+            return "refresh"
+
+        if (
+            text == "history"
+            or "open history" in text
+            or "browser history" in text
+            or "show browser history" in text
+        ):
+            return "browser_history"
+
+        if (
+            text == "downloads"
+            or "open downloads" in text
+            or "browser downloads" in text
+        ):
+            return "browser_downloads"
+
+        if (
+            "bookmark page" in text
+            or "add bookmark" in text
+            or "bookmark this page" in text
+        ):
+            return "bookmark_page"
+
+        if "bookmark" in text:
+            return "browser_bookmarks"
+
+        if "address bar" in text:
+            return "address_bar"
+
+        if "go back" in text:
+            return "browser_back"
+
+        if "go forward" in text:
+            return "browser_forward"
+
+        if (
+            "private window" in text
+            or "incognito" in text
+            or "inprivate" in text
+        ):
+            return "private_window"
+
+        if (
+            "profile" in text
+            and any(
+                word in text
+                for word in (
+                    "open",
+                    "launch",
+                    "start",
+                    "switch",
+                )
+            )
+        ):
+            return "open_chrome_profile"
+
+        if (
+            "youtube" in text
+            and "search" in text
+        ):
+            return "youtube_search"
+
+        if (
+            text.startswith("play ")
+            or "play song" in text
+            or "play music" in text
+            or "play video" in text
+        ):
+            return "play_youtube"
+
+        if (
+            "open google" in text
+            or text == "google"
+        ):
+            return "open_google"
+
+        if (
+            "open youtube" in text
+            or text == "youtube"
+        ):
+            return "open_youtube"
+
+        if (
+            "google search" in text
+            or "search google" in text
+        ):
+            return "google_search"
+
+        if (
+            "open website" in text
+            or "visit website" in text
+            or "visit " in text
+            or "www." in text
+        ):
+            return "open_website"
+
+        # ------------------------------------------------------
+        # Generic web search
+        # ------------------------------------------------------
+
+        if (
+            text.startswith("search ")
+            and "file" not in text
+        ):
+            return "google_search"
+
+        return None
+
+    # ==========================================================
+    # APPLICATION INTENTS
+    # ==========================================================
+
+    def _detect_application_intent(
+        self,
+        text: str,
+    ) -> Optional[str]:
+
+        # ------------------------------------------------------
+        # Word lifecycle
+        # ------------------------------------------------------
+
+        if text in {
+            "word",
+            "open word",
+            "launch word",
+            "start word",
+        }:
+            return "open_word"
+
+        if any(
+            phrase in text
+            for phrase in (
+                "close word",
+                "close ms word",
+                "close microsoft word",
+                "exit word",
+                "quit word",
+                "terminate word",
+            )
+        ):
+            return "close_word"
+
+        # ------------------------------------------------------
+        # Explicit application close
+        # ------------------------------------------------------
+
+        for app in self.application_open_keywords:
+
+            if app not in text:
                 continue
 
-            extension = word.split(".")[-1]
-
-            if extension in valid_domains:
-
-                return word
-
-        # Fuzzy Match
-
-        best_match = process.extractOne(
-
-            text,
-
-            self.websites.keys(),
-
-            scorer=fuzz.partial_ratio
-
-        )
-
-        if best_match:
-
-            name, score, _ = best_match
-
-            if score >= 75:
-
-                print(
-
-                    f"Website Match : "
-
-                    f"{name} ({score:.1f}%)"
-
+            if any(
+                command in text
+                for command in (
+                    "close",
+                    "exit",
+                    "quit",
+                    "terminate",
+                    "stop",
                 )
-
-                return self.websites[name]
-
-        return None
-
-    # --------------------------------------------------
-    # Extract Google Search Query
-    # --------------------------------------------------
-
-    def extract_search_query(
-        self,
-        text
-    ):
-        """
-        Extract Google search query.
-        """
-
-        if not text:
-
-            return None
-
-        text = self.normalize_text(text)
-
-        remove_words = {
-
-            "search",
-
-            "searching",
-
-            "google",
-
-            "for",
-
-            "on",
-
-            "please",
-
-            "chrome",
-
-            "edge",
-
-            "find",
-
-            "show",
-
-            "open",
-
-            "look",
-
-            "lookup",
-
-            "website"
-
-        }
-
-        words = [
-
-            word
-
-            for word in text.split()
-
-            if word not in remove_words
-
-        ]
-
-        query = " ".join(words).strip()
-
-        return query if query else None
-
-    # --------------------------------------------------
-    # Extract YouTube Query
-    # --------------------------------------------------
-
-    def extract_youtube_query(
-        self,
-        text
-    ):
-        """
-        Extract YouTube search query.
-        """
-
-        if not text:
-
-            return None
-
-        text = self.normalize_text(text)
-
-        remove_words = {
-
-            "play",
-
-            "search",
-
-            "youtube",
-
-            "video",
-
-            "song",
-
-            "music",
-
-            "official",
-
-            "audio",
-
-            "lyrical",
-
-            "on",
-
-            "in",
-
-            "please"
-        }
-
-        words = [
-
-            word
-
-            for word in text.split()
-
-            if word not in remove_words
-
-        ]
-
-        query = " ".join(words).strip()
-
-        return query if query else None
-
-    # --------------------------------------------------
-    # Extract Browser
-    # --------------------------------------------------
-
-    def extract_browser(
-        self,
-        text
-    ):
-        """
-        Detect browser name.
-        """
-
-        if not text:
-
-            return "chrome"
-
-        text = self.normalize_text(text)
-
-        browser_aliases = {
-
-            "chrome": "chrome",
-            "chromela": "chrome",
-            "chromeu": "chrome",
-            "kurom": "chrome",
-            "krom": "chrome",
-
-            "edge": "edge",
-            "edgeu": "edge",
-        }
-
-        for alias, browser in browser_aliases.items():
-
-            if alias in text:
-
-                return browser
-
-        return "chrome"
-
-    # --------------------------------------------------
-    # Extract Chrome Profile
-    # --------------------------------------------------
-
-    def extract_profile(
-        self,
-        text
-    ):
-        """
-        Detect Chrome profile name.
-        """
-
-        if not text:
-
-            return None
-
-        text = self.normalize_text(text)
-
-        # Exact Match
-
-        for profile, chrome_profile in self.chrome_profiles.items():
-
-            if profile in text:
-
-                return chrome_profile
-
-        # Fuzzy Match
-
-        best_match = process.extractOne(
-
-            text,
-
-            self.chrome_profiles.keys(),
-
-            scorer=fuzz.partial_ratio
-
-        )
-
-        if best_match:
-
-            profile, score, _ = best_match
-
-            if score >= 75:
-
-                print(
-
-                    f"Profile Match : "
-
-                    f"{profile} ({score:.1f}%)"
-
-                )
-
-                return self.chrome_profiles[profile]
-
-        return None
-
-    # --------------------------------------------------
-    # Extract File Query
-    # --------------------------------------------------
-
-    def extract_file_query(
-        self,
-        text
-    ):
-        """
-        Extract filename from voice command.
-
-        Supports:
-
-            create file demo
-            create a file demo
-            create a test file demo
-            create a new file demo
-            make file sample
-            make a file sample
-            new file resume
-
-        Also supports existing file operations:
-
-            open file resume
-            delete file resume
-            rename file resume
-            copy file resume to desktop
-            move file resume to documents
-            compress file resume
-            extract zip demo
-        """
-
-        if not text:
-
-            return None
-
-        # ---------------------------------
-        # Normalize STT text
-        # ---------------------------------
-
-        text = self.normalize_text(
-            text
-        )
-
-        if not text:
-
-            return None
-
-        # ---------------------------------
-        # Remove punctuation
-        # ---------------------------------
-
-        text = (
-            text
-            .strip()
-            .strip("\"'")
-            .rstrip(".,!?;:")
-            .strip()
-        )
-
-        # ==================================================
-        # CREATE FILE COMMAND
-        # ==================================================
-        #
-        # CREATE HAS PRIORITY OVER APPLICATION NAME MATCHING.
-        #
-        # Whatever filename Whisper/entity extraction produces here
-        # belongs to the create-file operation. It must not be resolved
-        # as an existing application/file before this point.
-        #
-        # Examples:
-        #
-        # create file demo
-        # create a file demo
-        # create a test file demo
-        # create a new file demo
-        # make file sample
-        # make a file sample
-        # new file resume
-        #
-        # IMPORTANT:
-        # "test" is NOT removed because it may be
-        # part of the actual filename.
-        # ==================================================
-
-        create_prefixes = (
-
-            "create a ",
-            "create an ",
-            "create the ",
-            "create my ",
-            "create your ",
-            "create ",
-
-            "make a ",
-            "make an ",
-            "make the ",
-            "make my ",
-            "make your ",
-            "make ",
-
-            "new a ",
-            "new an ",
-            "new the ",
-            "new my ",
-            "new your ",
-            "new ",
-
-        )
-
-        create_text = text
-
-        for prefix in create_prefixes:
-
-            if create_text.startswith(prefix):
-
-                create_text = create_text[
-                    len(prefix):
-                ].strip()
-
-                break
-
-        # ---------------------------------
-        # Remove naming connectors
-        #
-        # Example:
-        #   create a file as demo test
-        #   create file named demo test
-        #   create file called demo test
-        # ---------------------------------
-
-        for connector in (
-            "as ",
-            "named ",
-            "called ",
-            "with name ",
-            "with the name ",
-            "name ",
+            ):
+                return "close_application"
+
+        # ------------------------------------------------------
+        # Explicit application open
+        # ------------------------------------------------------
+
+        for app in self.application_open_keywords:
+
+            if (
+                text == app
+                or f"open {app}" in text
+                or f"launch {app}" in text
+                or f"run {app}" in text
+                or f"start {app}" in text
+            ):
+                return "launch_application"
+
+        # ------------------------------------------------------
+        # Generic open/launch/run
+        # ------------------------------------------------------
+
+        if (
+            text.startswith("open ")
+            or text.startswith("launch ")
+            or text.startswith("run ")
+            or text.startswith("start ")
         ):
-            if create_text.startswith(connector):
-                create_text = create_text[len(connector):].strip()
-                break
-
-        # ---------------------------------
-        # Remove "file" from create command
-        # ---------------------------------
-
-        if "file" in create_text.split():
-
-            words = create_text.split()
-
-            file_index = words.index(
-                "file"
-            )
-
-            # Everything after "file" is
-            # considered the filename.
-            #
-            # Example:
-            # create a test file demo
-            #
-            # after removing prefix:
-            # test file demo
-            #
-            # filename:
-            # demo
-
-            if file_index < len(words) - 1:
-
-                query = " ".join(
-                    words[file_index + 1:]
-                )
-
-                query = (
-                    query
-                    .strip()
-                    .strip("\"'")
-                    .rstrip(".,!?;:")
-                    .strip()
-                )
-
-                if query:
-
-                    return query
-
-        # ==================================================
-        # GENERAL FILE COMMANDS
-        # ==================================================
-
-        remove_words = {
-
-            "open",
-
-            "file",
-
-            "files",
-
-            "document",
-
-            "documents",
-
-            "folder",
-
-            "create",
-
-            "make",
-
-            "new",
-
-            "rename",
-
-            "delete",
-
-            "move",
-
-            "copy",
-
-            "compress",
-
-            "zip",
-
-            "extract",
-
-            "archive",
-
-            "unzip",
-
-            "please",
-
-            "my",
-
-            "the",
-
-            "a",
-
-            "an",
-
-            "your",
-
-            "named",
-
-            "called",
-
-            "to",
-
-            "into",
-
-            "in",
-
-            "from",
-
-            "using",
-
-            "with",
-
-            "browser",
-
-            "chrome",
-
-            "edge",
-
-            "find",
-
-            "search",
-
-            "show",
-
-            "locate",
-
-            "by",
-
-            "name"
-
-        }
-
-        words = [
-
-            word
-
-            for word in text.split()
-
-            if word not in remove_words
-
-        ]
-
-        words = self.normalize_to_separator(words)
-
-        # ---------------------------------
-        # Build filename
-        # ---------------------------------
-
-        query = " ".join(
-            words
-        ).strip()
-
-        # ---------------------------------
-        # Remove punctuation
-        # ---------------------------------
-
-        query = (
-            query
-            .strip("\"'")
-            .rstrip(".,!?;:")
-            .strip()
-        )
-
-        if not query:
-
-            return None
-
-        return query
-
-    # --------------------------------------------------
-    # Extract Search Keyword
-    # --------------------------------------------------
-
-    def extract_search_keyword(
-        self,
-        text
-    ):
-        """
-        Extract keyword from
-        search command.
-
-        Examples
-        --------
-        search python tutorial
-
-        find resume
-
-        show invoice
-
-        Returns
-        -------
-        str | None
-        """
-
-        if not text:
-
-            return None
-
-        text = self.normalize_text(text)
-
-        remove_words = {
-
-            "find",
-
-            "search",
-
-            "searching",
-
-            "show",
-
-            "locate",
-
-            "where",
-
-            "is",
-
-            "open",
-
-            "file",
-
-            "files",
-
-            "please",
-
-            "the",
-
-            "my"
-
-        }
-
-        words = [
-
-            word
-
-            for word in text.split()
-
-            if word not in remove_words
-
-        ]
-
-        keyword = " ".join(words).strip()
-
-        if not keyword:
-
-            return None
-
-        return keyword
-
-    # --------------------------------------------------
-    # Extract Search Result Index
-    # --------------------------------------------------
-
-    def extract_result_index(
-        self,
-        text
-    ):
-        """
-        Extract file result number.
-
-        Example
-        -------
-        open first file
-
-        delete second file
-
-        copy third file
-        """
-
-        if not text:
-
-            return None
-
-        text = text.lower()
-
-        mapping = {
-
-            "first":0,
-
-            "1st":0,
-
-            "one":0,
-
-            "second":1,
-
-            "2nd":1,
-
-            "two":1,
-
-            "third":2,
-
-            "3rd":2,
-
-            "three":2,
-
-            "fourth":3,
-
-            "4th":3,
-
-            "fifth":4,
-
-            "5th":4,
-
-            "last":-1
-
-        }
-
-        for word, index in mapping.items():
-
-            if word in text:
-
-                return index
+            if (
+                "find " not in text
+                and "search " not in text
+            ):
+                if "file" in text:
+                    return "open_file"
+
+                # If website was not detected earlier, generic
+                # application launch remains the fallback.
+                return "launch_application"
 
         return None
 
-    # --------------------------------------------------
-    # Extract Rename File
-    # --------------------------------------------------
+    # ==========================================================
+    # SEARCH INTENTS
+    # ==========================================================
 
-    def extract_rename_file(
+    def _detect_search_intent(
         self,
-        text
-    ):
-        """
-        Extract old and new filename.
+        text: str,
+    ) -> Optional[str]:
 
-        Supports:
-            rename notes to project
-            rename notes 2 project
-            rename astra file 2 astra demo
-            rename astra file to astra demo
-            rename a file notes to project
-            rename the file notes into project
+        # ------------------------------------------------------
+        # Extension search
+        # ------------------------------------------------------
 
-        Returns
-        -------
-        dict | None
-        """
-
-        if not text:
-            return None
-
-        text = self.normalize_text(text)
-
-        text = (
-            text
-            .strip()
-            .strip("\"'")
-            .rstrip(".,!?;:")
-            .strip()
-        )
-
-        # Remove command/filler words without removing the actual
-        # filename words.
-        words = text.split()
-
-        removable_prefixes = (
-            "rename",
-        )
-
-        if words and words[0] in removable_prefixes:
-            words = words[1:]
-
-        while words and words[0] in {
-            "a",
-            "an",
-            "the",
-            "my",
-            "your",
-            "file",
-            "document",
-        }:
-            words.pop(0)
-
-        words = self.normalize_to_separator(words)
-
-        separator = None
-
-        if "to" in words:
-            separator = "to"
-        elif "into" in words:
-            separator = "into"
-
-        if separator is None:
-            return None
-
-        index = words.index(separator)
-
-        old_words = words[:index]
-        new_words = words[index + 1:]
-
-        # Remove "file/document" only when it is acting as a command
-        # connector, not as part of the actual filename.
-        old_words = [
-            word
-            for word in old_words
-            if word not in {"file", "document"}
-        ]
-
-        new_words = [
-            word
-            for word in new_words
-            if word not in {"file", "document"}
-        ]
-
-        old_name = " ".join(old_words).strip().rstrip(".,!?;:")
-        new_name = " ".join(new_words).strip().rstrip(".,!?;:")
-
-        if not old_name or not new_name:
-            return None
-
-        return {
-            "old_name": old_name,
-            "new_name": new_name
-        }
-
-    # --------------------------------------------------
-    # Extract Copy File
-    # --------------------------------------------------
-
-    def extract_copy_file(
-        self,
-        text
-    ):
-        """
-        Extract filename and destination.
-
-        Supports:
-            copy report to desktop
-            copy astra test to desktop
-            copy file resume to documents
-            copy resume into documents
-            copy report 2 desktop
-
-        Returns
-        -------
-        dict | None
-        """
-
-        if not text:
-            return None
-
-        text = self.normalize_text(text)
-
-        text = (
-            text
-            .strip()
-            .strip("\"'")
-            .rstrip(".,!?;:")
-            .strip()
-        )
-
-        words = text.split()
-
-        if words and words[0] == "copy":
-            words = words[1:]
-
-        while words and words[0] in {
-            "a",
-            "an",
-            "the",
-            "my",
-            "your",
-        }:
-            words.pop(0)
-
-        words = self.normalize_to_separator(words)
-
-        separator = None
-
-        if "to" in words:
-            separator = "to"
-        elif "into" in words:
-            separator = "into"
-
-        if separator is None:
-            return None
-
-        index = words.index(separator)
-
-        filename_words = words[:index]
-        destination_words = words[index + 1:]
-
-        if filename_words and filename_words[0] in {
-            "file",
-            "document",
-        }:
-            filename_words = filename_words[1:]
-
-        filename = " ".join(filename_words).strip()
-        destination = " ".join(destination_words).strip()
-
-        filename = filename.rstrip(".,!?;:")
-        destination = destination.rstrip(".,!?;:")
-
-        if not filename or not destination:
-            return None
-
-        return {
-            "filename": filename,
-            "destination": destination
-        }
-
-    # --------------------------------------------------
-    # Extract Move File
-    # --------------------------------------------------
-
-    def extract_move_file(
-        self,
-        text
-    ):
-        """
-        Extract filename and destination.
-
-        Supports:
-            move report to desktop
-            move astra test to desktop
-            move file resume to documents
-            move resume into documents
-            move report 2 desktop
-
-        Returns
-        -------
-        dict | None
-        """
-
-        if not text:
-            return None
-
-        text = self.normalize_text(text)
-
-        text = (
-            text
-            .strip()
-            .strip("\"'")
-            .rstrip(".,!?;:")
-            .strip()
-        )
-
-        words = text.split()
-
-        if words and words[0] == "move":
-            words = words[1:]
-
-        while words and words[0] in {
-            "a",
-            "an",
-            "the",
-            "my",
-            "your",
-        }:
-            words.pop(0)
-
-        words = self.normalize_to_separator(words)
-
-        separator = None
-
-        if "to" in words:
-            separator = "to"
-        elif "into" in words:
-            separator = "into"
-
-        if separator is None:
-            return None
-
-        index = words.index(separator)
-
-        filename_words = words[:index]
-        destination_words = words[index + 1:]
-
-        if filename_words and filename_words[0] in {
-            "file",
-            "document",
-        }:
-            filename_words = filename_words[1:]
-
-        filename = " ".join(filename_words).strip()
-        destination = " ".join(destination_words).strip()
-
-        filename = filename.rstrip(".,!?;:")
-        destination = destination.rstrip(".,!?;:")
-
-        if not filename or not destination:
-            return None
-
-        return {
-            "filename": filename,
-            "destination": destination
-        }
-
-    # --------------------------------------------------
-    # Extract Rename Folder
-    # --------------------------------------------------
-
-    def extract_rename_folder(
-        self,
-        text
-    ):
-        """
-        Extract old and new folder names.
-
-        Supports:
-            rename folder test to demo
-            rename folder test too demo
-            rename folder test 2 demo
-            rename folder test into demo
-
-        ASTRA normalizes:
-            to / too / 2 -> to
-
-        If the literal number is required in a folder name, the user
-        should explicitly say "number 2".
-        """
-
-        if not text:
-            return None
-
-        text = self.normalize_text(text)
-
-        text = (
-            text
-            .strip()
-            .strip("\"'")
-            .rstrip(".,!?;:")
-            .strip()
-        )
-
-        if not text:
-            return None
-
-        words = text.split()
-
-        if words and words[0] == "rename":
-            words = words[1:]
-
-        while words and words[0] in {
-            "a",
-            "an",
-            "the",
-            "my",
-            "your",
-            "folder",
-            "directory",
-        }:
-            words.pop(0)
-
-        if not words:
-            return None
-
-        # Normalize STT variations consistently with file/copy/move
-        # operations: to / too / 2 -> to.
-        words = self.normalize_to_separator(words)
-
-        separator = None
-
-        if "to" in words:
-            separator = "to"
-        elif "into" in words:
-            separator = "into"
-
-        if separator is None:
-            return None
-
-        index = words.index(separator)
-
-        old_words = words[:index]
-        new_words = words[index + 1:]
-
-        old_words = [
-            word
-            for word in old_words
-            if word not in {
-                "folder",
-                "directory",
-            }
-        ]
-
-        new_words = [
-            word
-            for word in new_words
-            if word not in {
-                "folder",
-                "directory",
-            }
-        ]
-
-        old_name = (
-            " ".join(old_words)
-            .strip()
-            .strip("\"'")
-            .rstrip(".,!?;:")
-            .strip()
-        )
-
-        new_name = (
-            " ".join(new_words)
-            .strip()
-            .strip("\"'")
-            .rstrip(".,!?;:")
-            .strip()
-        )
-
-        if not old_name or not new_name:
-            return None
-
-        print(
-            "\n========== FOLDER RENAME ENTITY =========="
-        )
-        print(f"Old Folder : {old_name}")
-        print(f"New Folder : {new_name}")
-        print(
-            "==========================================\n"
-        )
-
-        return {
-            "old_name": old_name,
-            "new_name": new_name,
-
-            # Compatibility keys
-            "source": old_name,
-            "folder": old_name,
-            "destination_name": new_name,
-        }
-
-
-    # --------------------------------------------------
-    # Extract Copy Folder
-    # --------------------------------------------------
-
-    def extract_copy_folder(
-        self,
-        text
-    ):
-        """
-        Extract folder name and destination.
-
-        Supports:
-
-            copy folder project to desktop
-            copy project folder to desktop
-            copy the project folder into documents
-
-            Whisper/STT fallback:
-
-            copy folder project 2 desktop
-            -> foldername = project
-            -> destination = desktop
-
-        Numeric folder names remain supported:
-
-            copy folder test 2 to downloads
-            -> foldername = test 2
-            -> destination = downloads
-        """
-
-        if not text:
-            return None
-
-        text = self.normalize_text(text)
-
-        text = (
-            text
-            .strip()
-            .strip("\"'")
-            .rstrip(".,!?;:")
-            .strip()
-        )
-
-        if not text:
-            return None
-
-        words = text.split()
-
-        # ---------------------------------------------
-        # Remove copy command
-        # ---------------------------------------------
-
-        if words and words[0] == "copy":
-            words = words[1:]
-
-        # ---------------------------------------------
-        # Remove leading filler words
-        # ---------------------------------------------
-
-        while words and words[0] in {
-            "a",
-            "an",
-            "the",
-            "my",
-            "your",
-        }:
-
-            words.pop(0)
-
-        if not words:
-            return None
-
-        # ---------------------------------------------
-        # Normalize STT variations:
-        #
-        # to / too / 2 -> to
-        # ---------------------------------------------
-
-        words = self.normalize_to_separator(words)
-
-        separator = None
-
-        if "to" in words:
-
-            separator = "to"
-
-        elif "into" in words:
-
-            separator = "into"
-
-        # ---------------------------------------------
-        # No separator found
-        # ---------------------------------------------
-
-        if separator is None:
-
-            return None
-
-        separator_index = words.index(
-            separator
-        )
-
-        folder_words = words[
-            :separator_index
-        ]
-
-        destination_words = words[
-            separator_index + 1:
-        ]
-
-        # ---------------------------------------------
-        # Remove folder/directory keyword
-        # ---------------------------------------------
-
-        folder_words = [
-
-            word
-
-            for word in folder_words
-
-            if word not in {
-                "folder",
-                "directory",
-            }
-
-        ]
-
-        destination_words = [
-
-            word
-
-            for word in destination_words
-
-            if word not in {
-                "folder",
-                "directory",
-            }
-
-        ]
-
-        # ---------------------------------------------
-        # Build values
-        # ---------------------------------------------
-
-        folder_name = " ".join(
-            folder_words
-        ).strip()
-
-        destination = " ".join(
-            destination_words
-        ).strip()
-
-        folder_name = (
-            folder_name
-            .strip("\"'")
-            .rstrip(".,!?;:")
-            .strip()
-        )
-
-        destination = (
-            destination
-            .strip("\"'")
-            .rstrip(".,!?;:")
-            .strip()
-        )
-
-        # ---------------------------------------------
-        # Validate
-        # ---------------------------------------------
-
-        if not folder_name:
-
-            return None
-
-        if not destination:
-
-            return None
-
-        # ---------------------------------------------
-        # Debug
-        # ---------------------------------------------
-
-        print(
-            "\n========== COPY FOLDER ENTITY =========="
-        )
-
-        print(
-            f"Folder Name : {folder_name}"
-        )
-
-        print(
-            f"Destination : {destination}"
-        )
-
-        print(
-            "========================================\n"
-        )
-
-        return {
-
-            "foldername": folder_name,
-
-            "destination": destination
-
-        }
-
-
-    # --------------------------------------------------
-    # Extract Move Folder
-    # --------------------------------------------------
-
-    def extract_move_folder(
-        self,
-        text
-    ):
-        """
-        Extract folder name and destination.
-
-        Supports:
-
-            move folder project to desktop
-            move project folder to documents
-            move folder project into downloads
-            move project folder 2 desktop
-        """
-
-        if not text:
-            return None
-
-        text = self.normalize_text(text)
-
-        text = (
-            text
-            .strip()
-            .strip("\"'")
-            .rstrip(".,!?;:")
-            .strip()
-        )
-
-        words = text.split()
-
-        # Remove move
-        if words and words[0] == "move":
-            words = words[1:]
-
-        # Remove leading fillers
-        while words and words[0] in {
-            "a",
-            "an",
-            "the",
-            "my",
-            "your",
-        }:
-            words.pop(0)
-
-        words = self.normalize_to_separator(words)
-
-        separator = None
-
-        if "to" in words:
-            separator = "to"
-
-        elif "into" in words:
-            separator = "into"
-
-        if separator is None:
-            return None
-
-        index = words.index(separator)
-
-        folder_words = words[:index]
-        destination_words = words[index + 1:]
-
-        # Remove folder/directory words
-        folder_words = [
-            word
-            for word in folder_words
-            if word not in {
-                "folder",
-                "directory",
-            }
-        ]
-
-        destination_words = [
-            word
-            for word in destination_words
-            if word not in {
-                "folder",
-                "directory",
-            }
-        ]
-
-        folder_name = " ".join(
-            folder_words
-        ).strip()
-
-        destination = " ".join(
-            destination_words
-        ).strip()
-
-        folder_name = folder_name.rstrip(
-            ".,!?;:"
-        )
-
-        destination = destination.rstrip(
-            ".,!?;:"
-        )
-
-        if not folder_name or not destination:
-            return None
-
-        return {
-            "foldername": folder_name,
-            "destination": destination
-        }
-
-
-    # --------------------------------------------------
-    # Extract Delete Folder
-    # --------------------------------------------------
-
-    def extract_delete_folder(
-        self,
-        text
-    ):
-        """
-        Extract folder name.
-
-        Supports:
-
-            delete folder project
-            delete the project folder
-            remove folder project
-            remove project folder
-        """
-
-        if not text:
-            return None
-
-        text = self.normalize_text(text)
-
-        text = (
-            text
-            .strip()
-            .strip("\"'")
-            .rstrip(".,!?;:")
-            .strip()
-        )
-
-        words = text.split()
-
-        # Remove command
-        if words and words[0] in {
-            "delete",
-            "remove",
-        }:
-            words = words[1:]
-
-        # Remove fillers
-        while words and words[0] in {
-            "a",
-            "an",
-            "the",
-            "my",
-            "your",
-        }:
-            words.pop(0)
-
-        # Remove folder/directory keyword
-        words = [
-            word
-            for word in words
-            if word not in {
-                "folder",
-                "directory",
-            }
-        ]
-
-        folder_name = " ".join(
-            words
-        ).strip()
-
-        folder_name = folder_name.rstrip(
-            ".,!?;:"
-        )
-
-        if not folder_name:
-            return None
-
-        return folder_name
-
-    # --------------------------------------------------
-    # Extract Compress File
-    # --------------------------------------------------
-
-    def extract_compress_file(
-        self,
-        text
-    ):
-        """
-        Extract filename for ZIP.
-        """
-
-        return self.extract_file_query(
-            text
-        )
-
-    # --------------------------------------------------
-    # Extract Extract ZIP
-    # --------------------------------------------------
-
-    def extract_extract_zip(
-        self,
-        text
-    ):
-        """
-        Extract ZIP filename.
-        """
-
-        return self.extract_file_query(
-            text
-        )
-
-    # --------------------------------------------------
-    # Extract Search Extension
-    # --------------------------------------------------
-
-    def extract_search_extension(
-        self,
-        text
-    ):
-        """
-        Extract file extension.
-
-        Example
-        -------
-        search pdf files
-        find txt files
-
-        Returns
-        -------
-        str | None
-        """
-
-        if not text:
-
-            return None
-
-        extensions = {
-
-            "txt",
-
-            "text",
-
+        extensions = (
             "pdf",
-
             "doc",
-
             "docx",
-
-            "word",
-
+            "txt",
             "ppt",
-
             "pptx",
-
-            "powerpoint",
-
             "xls",
-
             "xlsx",
-
-            "excel",
-
             "csv",
-
-            "png",
-
             "jpg",
-
             "jpeg",
-
-            "gif",
-
-            "zip",
-
+            "png",
             "mp3",
-
-            "wav",
-
             "mp4",
-
-            "avi",
-
-            "py",
-
-            "bmp",
-
-            "webp",
-
-            "mov",
-
-            "mkv",
-
-            "flac",
-
-            "aac",
-
-            "json",
-
-            "xml"
-
-        }
-
-        text = self.normalize_text(text)
-
-        words = text.split()
-
-        for word in words:
-
-            word = word.replace(".", "")
-
-            mapping = {
-
-                "text":"txt",
-
-                "texts":"txt",
-
-                "word":"docx",
-
-                "words":"docx",
-
-                "document":"docx",
-
-                "documents":"docx",
-
-                "excel":"xlsx",
-
-                "excels":"xlsx",
-
-                "spreadsheet":"xlsx",
-
-                "powerpoint":"pptx",
-
-                "presentation":"pptx",
-
-                "presentations":"pptx",
-
-                "image":"jpg",
-
-                "images":"jpg",
-
-                "photo":"jpg",
-
-                "photos":"jpg",
-
-                "video":"mp4",
-
-                "videos":"mp4",
-
-                "audio":"mp3",
-
-                "audios":"mp3",
-
-                "jpd":"pdf",
-
-                "pdf file":"pdf",
-
-                "pdf files":"pdf",
-
-                "word file":"docx",
-
-                "excel file":"xlsx",
-
-                "ppt":"pptx",
-
-                "ppt file":"pptx",
-
-                "zip file":"zip",
-
-                "text file":"txt",
-
-                "jpeg image":"jpg",
-
-                "png image":"png",
-
-                "python":"py",
-
-                "python file":"py",
-
-                "json file":"json",
-
-                "xml file":"xml",
-
-                "audio file":"mp3",
-
-                "video file":"mp4",
-
-                "document":"docx",
-
-                "documents":"docx",
-
-                "spreadsheet":"xlsx",
-
-                "presentation":"pptx",
-
-                "presentations":"pptx",
-
-                "movie":"mp4",
-
-                "movies":"mp4",
-
-                "songs":"mp3",
-
-                "music":"mp3",
-
-                "pictures":"jpg",
-
-                "photos":"jpg"
-
+            "zip",
+        )
+
+        semantic_file_types = (
+            "word",
+            "excel",
+            "powerpoint",
+            "ppt",
+            "text",
+            "image",
+            "images",
+            "photo",
+            "photos",
+            "video",
+            "videos",
+            "music",
+            "audio",
+        )
+
+        if any(
+            extension in text
+            for extension in extensions
+        ) or any(
+            value in text
+            for value in semantic_file_types
+        ):
+            if any(
+                keyword in text
+                for keyword in (
+                    "find",
+                    "search",
+                    "show",
+                    "list",
+                    "locate",
+                )
+            ):
+                return "search_extension"
+
+        # ------------------------------------------------------
+        # Search by size
+        # ------------------------------------------------------
+
+        if any(
+            keyword in text
+            for keyword in (
+                "larger than",
+                "bigger than",
+                "greater than",
+                "above",
+                "over",
+                "under",
+                "less than",
+                "smaller than",
+                "size",
+            )
+        ):
+            if any(
+                keyword in text
+                for keyword in (
+                    "file",
+                    "files",
+                    "find",
+                    "search",
+                    "show",
+                )
+            ):
+                return "search_size"
+
+        # ------------------------------------------------------
+        # Search by date
+        # ------------------------------------------------------
+
+        if any(
+            keyword in text
+            for keyword in (
+                "today",
+                "yesterday",
+                "last week",
+                "last month",
+                "recent",
+                "modified",
+                "created",
+            )
+        ):
+            if any(
+                keyword in text
+                for keyword in (
+                    "file",
+                    "files",
+                    "find",
+                    "search",
+                    "show",
+                )
+            ):
+                return "search_date"
+
+        return None
+
+    # ==========================================================
+    # WORD V1 INTENTS
+    # ==========================================================
+
+    def _is_word_context(
+        self,
+        text: str,
+    ) -> bool:
+        """
+        Determine whether the utterance clearly belongs
+        to Microsoft Word.
+
+        Important:
+        Generic words like "document" are treated as Word
+        context only when an actual document operation is
+        being requested.
+        """
+
+        word_terms = (
+            "word",
+            "ms word",
+            "microsoft word",
+            "word document",
+            "word file",
+            "docx",
+        )
+
+        if any(
+            term in text
+            for term in word_terms
+        ):
+            return True
+
+        # "document" becomes Word context for explicit
+        # document operations.
+        if "document" in text:
+            return any(
+                phrase in text
+                for phrase in (
+                    "create document",
+                    "new document",
+                    "blank document",
+                    "open document",
+                    "save document",
+                    "close document",
+                    "read document",
+                    "clear document",
+                    "document content",
+                    "document text",
+                    "document style",
+                    "document table",
+                    "document font",
+                )
+            )
+
+        return False
+
+    def _detect_word_intent(
+        self,
+        text: str,
+    ) -> Optional[str]:
+
+        word_context = self._is_word_context(text)
+
+        if not word_context:
+            return None
+
+        # ------------------------------------------------------
+        # Lifecycle
+        # ------------------------------------------------------
+
+        if text in {
+            "word",
+            "open word",
+            "open ms word",
+            "open microsoft word",
+            "launch word",
+            "launch ms word",
+            "launch microsoft word",
+            "start word",
+            "start ms word",
+            "start microsoft word",
+        }:
+            return "open_word"
+
+        if any(
+            phrase in text
+            for phrase in (
+                "close word",
+                "close ms word",
+                "close microsoft word",
+                "exit word",
+                "quit word",
+                "terminate word",
+            )
+        ):
+            return "close_word"
+
+        # ------------------------------------------------------
+        # Create blank document
+        # ------------------------------------------------------
+
+        if any(
+            phrase in text
+            for phrase in (
+                "new document",
+                "create document",
+                "create a document",
+                "create the document",
+                "blank document",
+                "new word document",
+                "create word document",
+                "create a word document",
+            )
+        ):
+            return "create_blank_document"
+
+        # ------------------------------------------------------
+        # Existing document
+        # ------------------------------------------------------
+
+        if any(
+            phrase in text
+            for phrase in (
+                "open existing document",
+                "open existing word document",
+                "open document",
+                "open a document",
+                "open the document",
+                "open docx",
+            )
+        ):
+            return "open_existing_document"
+
+        # ------------------------------------------------------
+        # Save
+        # ------------------------------------------------------
+
+        if (
+            text in {
+                "save",
+                "save document",
+                "save the document",
+                "save word document",
+                "save this document",
             }
+            or "save current document" in text
+        ):
+            return "save"
 
-            if word in mapping:
+        if (
+            "save as" in text
+            or "save document as" in text
+            or "save the document as" in text
+        ):
+            return "save_as"
 
-                return mapping[word]
+        if (
+            "save as docx" in text
+            or "save document as docx" in text
+            or "save word document as docx" in text
+        ):
+            return "save_docx"
 
-            if word in extensions:
+        if (
+            "save as pdf" in text
+            or "save document as pdf" in text
+            or "export document to pdf" in text
+            or "export as pdf" in text
+        ):
+            return "save_pdf"
 
-                return word
+        if (
+            "close current document" in text
+            or "close the current document" in text
+            or "close document" in text
+            or "close the document" in text
+        ):
+            return "close_current_document"
 
-        return None
-
-    # --------------------------------------------------
-    # Extract Search Size
-    # --------------------------------------------------
-
-    def extract_search_size(
-        self,
-        text
-    ):
-        """
-        Extract minimum file size in MB.
-
-        Example
-        -------
-        files larger than 100 mb
-
-        Returns
-        -------
-        int | None
-        """
-
-        if not text:
-
-            return None
-
-        words = text.lower().split()
-
-        for word in words:
-
-            if word.isdigit():
-
-                return int(word)
-
-        return None
-    
-    # --------------------------------------------------
-    # Extract Search Date
-    # --------------------------------------------------
-
-    def extract_search_date(
-        self,
-        text
-    ):
-        """
-        Extract search period.
-
-        Returns
-        -------
-        int
-        """
-
-        if not text:
-
-            return None
-
-        text = text.lower()
-
-        if "this week" in text:
-
-            return 7
-
-        if "this month" in text:
-
-            return 30
-
-        if "this year" in text:
-
-            return 365
-
-        if "today" in text:
-
-            return 0
-
-        if "yesterday" in text:
-
-            return 1
-
-        if "last week" in text:
-
-            return 7
-
-        if "last month" in text:
-
-            return 30
-
-        if "recent" in text:
-
-            return 7
-
-        words = text.split()
-
-        for word in words:
-
-            if word.isdigit():
-
-                return int(word)
-
-        return None
-
-    # --------------------------------------------------
-    # Extract Percentage
-    # --------------------------------------------------
-
-    def extract_percentage(
-        self,
-        text
-    ):
-        """
-        Extract volume or brightness percentage.
-
-        Supports commands such as:
-
-        set volume to 50
-        set volume 50
-        volume at 50
-        volume 50 percent
-        volume 50%
-
-        set brightness to 70
-        set brightness 70
-        brightness at 70
-        brightness 70 percent
-        brightness 70%
-
-        Returns
-        -------
-        int | None
-            Value from 0 to 100.
-        """
-
-        if not text:
-
-            return None
-
-        import re
-
-        text = self.normalize_text(text)
-
-        # ---------------------------------
-        # Explicit Percentage
-        # ---------------------------------
-
-        match = re.search(
-
-            r"\b(\d{1,3})\s*"
-            r"(?:%|percent|percentage)\b",
-
-            text
-
-        )
-
-        if match:
-
-            value = int(
-                match.group(1)
+        if any(
+            phrase in text
+            for phrase in (
+                "create document named",
+                "create document called",
+                "create word file named",
+                "create word file called",
+                "create specified filename",
             )
+        ):
+            return "create_specified_filename"
 
-            if 0 <= value <= 100:
-
-                return value
-
-            return None
-
-        # ---------------------------------
-        # "to 50"
-        # "at 50"
-        # "level 50"
-        # ---------------------------------
-
-        match = re.search(
-
-            r"\b(?:to|at|level)\s+"
-            r"(\d{1,3})\b",
-
-            text
-
-        )
-
-        if match:
-
-            value = int(
-                match.group(1)
+        if any(
+            phrase in text
+            for phrase in (
+                "read existing document",
+                "read the existing document",
+                "read existing word document",
             )
+        ):
+            return "read_existing_document"
 
-            if 0 <= value <= 100:
+        # ------------------------------------------------------
+        # Content
+        # ------------------------------------------------------
 
-                return value
+        if any(
+            phrase in text
+            for phrase in (
+                "add text at cursor",
+                "add text to cursor",
+                "insert text at cursor",
+                "type at cursor",
+            )
+        ):
+            return "add_text_at_cursor"
 
-            return None
+        if any(
+            phrase in text
+            for phrase in (
+                "replace content",
+                "replace the content",
+                "replace document content",
+                "replace all content",
+            )
+        ):
+            return "replace_content"
 
-        # ---------------------------------
-        # Direct Value
+        if any(
+            phrase in text
+            for phrase in (
+                "read document",
+                "read the document",
+                "read word document",
+                "read this document",
+            )
+        ):
+            return "read_document"
+
+        if any(
+            phrase in text
+            for phrase in (
+                "clear document",
+                "clear the document",
+                "clear document content",
+                "clear all document content",
+            )
+        ):
+            return "clear_document"
+
+        # ------------------------------------------------------
+        # Select/copy/cut/paste
+        # ------------------------------------------------------
+
+        if any(
+            phrase in text
+            for phrase in (
+                "select all in word",
+                "select all text in word",
+                "select all document text",
+                "select all in document",
+            )
+        ):
+            return "select_all"
+
+        if (
+            "copy text from document" in text
+            or "copy selected text in word" in text
+        ):
+            return "copy"
+
+        if (
+            "cut text from document" in text
+            or "cut selected text in word" in text
+        ):
+            return "cut"
+
+        if (
+            "paste into document" in text
+            or "paste into word" in text
+        ):
+            return "paste"
+
+        # ------------------------------------------------------
+        # Type/write in Word
+        # ------------------------------------------------------
+
+        if text.startswith("type "):
+            return "type_text"
+
+        if text.startswith("write "):
+            return "type_text"
+
+        # ------------------------------------------------------
+        # Formatting
+        # ------------------------------------------------------
+
+        if (
+            "strikethrough" in text
+            or "strike through" in text
+            or "strike-through" in text
+        ):
+            return "strikethrough"
+
+        if (
+            "underline" in text
+            or "underlined" in text
+        ):
+            return "underline"
+
+        if (
+            "italic" in text
+            or "italics" in text
+        ):
+            return "italic"
+
+        if (
+            "bold" in text
+            or "make it bold" in text
+            or "make this bold" in text
+            or "make text bold" in text
+            or "bold text" in text
+        ):
+            return "bold"
+
+        if (
+            "font size" in text
+            or "text size" in text
+        ):
+            return "font_size"
+
+        if (
+            "change font" in text
+            or "set font" in text
+            or re.search(r"\bfont\b", text)
+        ):
+            return "font"
+
+        if (
+            "text color" in text
+            or "font color" in text
+            or "change text colour" in text
+            or "font colour" in text
+        ):
+            return "text_color"
+
+        if (
+            "highlight" in text
+            or "highlight text" in text
+        ):
+            return "highlight"
+
+        if (
+            "align left" in text
+            or "left align" in text
+        ):
+            return "align_left"
+
+        if (
+            "align center" in text
+            or "align centre" in text
+            or "center align" in text
+            or "centre align" in text
+        ):
+            return "align_center"
+
+        if (
+            "align right" in text
+            or "right align" in text
+        ):
+            return "align_right"
+
+        if (
+            "justify" in text
+            or "justify text" in text
+        ):
+            return "justify"
+
+        if "line spacing" in text:
+            return "line_spacing"
+
+        if "paragraph spacing" in text:
+            return "paragraph_spacing"
+
+        if (
+            "indentation" in text
+            or "indent paragraph" in text
+            or "indent the paragraph" in text
+        ):
+            return "indentation"
+
+        if (
+            "bullets" in text
+            or "bullet list" in text
+            or "make bullets" in text
+        ):
+            return "bullets"
+
+        if (
+            "numbering" in text
+            or "numbered list" in text
+            or "make numbered list" in text
+        ):
+            return "numbering"
+
+        # ------------------------------------------------------
+        # Styles
+        # ------------------------------------------------------
+
+        if (
+            text == "title"
+            or "apply title style" in text
+            or "make it title" in text
+            or "make this title" in text
+        ):
+            return "title"
+
+        if (
+            "heading 1" in text
+            or "heading one" in text
+            or "apply heading 1" in text
+            or "make it heading 1" in text
+        ):
+            return "heading_1"
+
+        if (
+            text == "normal"
+            or "normal style" in text
+            or "apply normal style" in text
+        ):
+            return "normal"
+
+        if (
+            "document style" in text
+            or "change document style" in text
+        ):
+            return "document_style"
+
+        # ------------------------------------------------------
+        # Tables
+        # ------------------------------------------------------
+
+        if (
+            "read table data" in text
+            or "read the table" in text
+            or "read table" in text
+        ):
+            return "read_table_data"
+
+        if (
+            "create table" in text
+            or "insert table" in text
+            or "make a table" in text
+            or "make table" in text
+        ):
+            return "create_table"
+
+        if (
+            re.search(r"\brows?\b", text)
+            and re.search(r"\bcolumns?\b", text)
+            and "table" in text
+        ):
+            return "create_table"
+
+        # ------------------------------------------------------
+        # Find / replace
+        # ------------------------------------------------------
+
+        if (
+            "find and replace" in text
+            or "find replace" in text
+            or "replace text" in text
+            or "replace word" in text
+        ):
+            return "replace"
+
+        if (
+            "find text" in text
+            or "find in document" in text
+            or "find in word" in text
+            or "search document" in text
+        ):
+            return "find"
+
+        # ------------------------------------------------------
+        # Insert
+        # ------------------------------------------------------
+
+        if (
+            "insert image" in text
+            or "add image" in text
+            or "insert picture" in text
+            or "add picture" in text
+        ):
+            return "image"
+
+        if (
+            "insert hyperlink" in text
+            or "add hyperlink" in text
+            or "insert link" in text
+            or "add link to document" in text
+        ):
+            return "hyperlink"
+
+        # ------------------------------------------------------
+        # Document structure
+        # ------------------------------------------------------
+
+        if (
+            "page break" in text
+            or "insert page break" in text
+        ):
+            return "page_break"
+
+        if (
+            "new page" in text
+            or "insert new page" in text
+        ):
+            return "new_page"
+
+        if (
+            "page number" in text
+            or "insert page number" in text
+            or "add page number" in text
+        ):
+            return "page_number"
+
+        if (
+            "header" in text
+            or "insert header" in text
+        ):
+            return "header"
+
+        if (
+            "footer" in text
+            or "insert footer" in text
+        ):
+            return "footer"
+
+        if (
+            "margin" in text
+            or "margins" in text
+            or "set margins" in text
+        ):
+            return "margins"
+
+        return None
+
+    # ==========================================================
+    # LEGACY OFFICE INTENTS
+    # ==========================================================
+
+    def _detect_office_intent(
+        self,
+        text: str,
+    ) -> Optional[str]:
+
+        if (
+            "excel" in text
+            and any(
+                phrase in text
+                for phrase in (
+                    "new workbook",
+                    "create workbook",
+                    "blank workbook",
+                    "new sheet",
+                )
+            )
+        ):
+            return "create_excel_workbook"
+
+        if (
+            (
+                "powerpoint" in text
+                or "power point" in text
+                or "ppt" in text
+            )
+            and any(
+                phrase in text
+                for phrase in (
+                    "new presentation",
+                    "create presentation",
+                    "create ppt",
+                    "new ppt",
+                    "blank presentation",
+                )
+            )
+        ):
+            return "create_powerpoint_presentation"
+
+        return None
+
+    # ==========================================================
+    # KEYBOARD / MOUSE
+    # ==========================================================
+
+    def _detect_keyboard_mouse_intent(
+        self,
+        text: str,
+    ) -> Optional[str]:
+
+        if "select all" in text:
+            return "select_all"
+
+        if text.startswith("press "):
+
+            if "enter" in text:
+                return "press_enter"
+
+            if "tab" in text:
+                return "press_tab"
+
+            if "space" in text:
+                return "space"
+
+            if (
+                "escape" in text
+                or "esc" in text
+            ):
+                return "escape"
+
+            if "backspace" in text:
+                return "backspace"
+
+            if "delete" in text:
+                return "delete"
+
+            if "home" in text:
+                return "home"
+
+            if "end" in text:
+                return "end"
+
+        if (
+            "right click" in text
+            or "right-click" in text
+        ):
+            return "right_click"
+
+        if (
+            "double click" in text
+            or "double-click" in text
+        ):
+            return "double_click"
+
+        if "left click" in text:
+            return "left_click"
+
+        if "scroll up" in text:
+            return "scroll_up"
+
+        if "scroll down" in text:
+            return "scroll_down"
+
+        if (
+            "window" in text
+            and "minimize" in text
+        ):
+            return "minimize_window"
+
+        if (
+            "window" in text
+            and "maximize" in text
+        ):
+            return "maximize_window"
+
+        if (
+            "window" in text
+            and "restore" in text
+        ):
+            return "restore_window"
+
+        if (
+            "window" in text
+            and "close" in text
+        ):
+            return "close_window"
+
+        if "current window" in text:
+            return "close_window"
+
+        # ------------------------------------------------------
+        # Clipboard
+        # ------------------------------------------------------
+
+        if (
+            "copy selected" in text
+            or "copy the selected" in text
+            or "copy selected text" in text
+            or "copy text" in text
+            or "copy the text" in text
+            or text == "copy"
+            or text == "copy it"
+        ):
+            return "copy"
+
+        if (
+            "paste text" in text
+            or text == "paste"
+            or text == "paste it"
+        ):
+            return "paste"
+
+        if (
+            "cut text" in text
+            or text == "cut"
+            or text == "cut it"
+        ):
+            return "cut"
+
+        if text == "undo":
+            return "undo"
+
+        if text == "redo":
+            return "redo"
+
+        return None
+
+    # ==========================================================
+    # LOCAL INTENT DETECTION
+    # ==========================================================
+
+    def _detect_local_intent(
+        self,
+        text: str,
+    ) -> Optional[str]:
+
+        # ------------------------------------------------------
+        # IMPORTANT:
         #
-        # "set volume 50"
-        # "set brightness 10"
-        # "volume 70"
-        # "brightness 80"
-        # ---------------------------------
+        # Conversation protection happens BEFORE generic
+        # keyword detection.
+        # ------------------------------------------------------
 
-        match = re.search(
+        if not self._is_explicit_automation_command(text):
 
-            r"\b(?:volume|brightness)"
-            r"(?:\s+(?:to|at|level))?"
-            r"\s+(\d{1,3})\b",
+            if self._is_conversational_message(text):
+                return "ai_chat"
 
-            text
+        # ------------------------------------------------------
+        # Word FIRST
+        #
+        # Word-specific actions need priority over generic
+        # "type", "save", "copy", etc.
+        # ------------------------------------------------------
 
+        intent = self._detect_word_intent(text)
+
+        if intent:
+            return intent
+
+        # ------------------------------------------------------
+        # Office legacy
+        # ------------------------------------------------------
+
+        intent = self._detect_office_intent(text)
+
+        if intent:
+            return intent
+
+        # ------------------------------------------------------
+        # Folder operations BEFORE generic file operations
+        # ------------------------------------------------------
+
+        intent = self._detect_folder_intent(text)
+
+        if intent:
+            return intent
+
+        # ------------------------------------------------------
+        # File operations
+        # ------------------------------------------------------
+
+        intent = self._detect_file_intent(text)
+
+        if intent:
+            return intent
+
+        # ------------------------------------------------------
+        # Archive
+        # ------------------------------------------------------
+
+        # Already handled inside file detector.
+        # Kept here as an additional safeguard.
+        if (
+            "extract zip" in text
+            or "extract archive" in text
+            or "unzip" in text
+            or "un zip" in text
+        ):
+            return "extract_zip"
+
+        if (
+            "compress file" in text
+            or "create zip" in text
+            or "zip this file" in text
+            or "archive file" in text
+        ):
+            return "compress_file"
+
+        # ------------------------------------------------------
+        # System
+        # ------------------------------------------------------
+
+        intent = self._detect_system_intent(text)
+
+        if intent:
+            return intent
+
+        # ------------------------------------------------------
+        # Browser
+        # ------------------------------------------------------
+
+        intent = self._detect_browser_intent(text)
+
+        if intent:
+            return intent
+
+        # ------------------------------------------------------
+        # Search
+        # ------------------------------------------------------
+
+        intent = self._detect_search_intent(text)
+
+        if intent:
+            return intent
+
+        # ------------------------------------------------------
+        # Keyboard / mouse
+        # ------------------------------------------------------
+
+        intent = self._detect_keyboard_mouse_intent(text)
+
+        if intent:
+            return intent
+
+        # ------------------------------------------------------
+        # Application
+        # ------------------------------------------------------
+
+        intent = self._detect_application_intent(text)
+
+        if intent:
+            return intent
+
+        # ------------------------------------------------------
+        # Generic save / print
+        # ------------------------------------------------------
+
+        if "save file" in text:
+            return "save_file"
+
+        if "print file" in text:
+            return "print_file"
+
+        # ------------------------------------------------------
+        # Generic open file
+        # ------------------------------------------------------
+
+        if (
+            text.startswith("open ")
+            and "file" in text
+        ):
+            return "open_file"
+
+        # ------------------------------------------------------
+        # Explicit search
+        # ------------------------------------------------------
+
+        if (
+            text.startswith("google search")
+            or text.startswith("search google")
+        ):
+            return "google_search"
+
+        # ------------------------------------------------------
+        # Generic AI questions
+        # ------------------------------------------------------
+
+        question_patterns = (
+            "what is",
+            "who is",
+            "where is",
+            "when is",
+            "why is",
+            "how to",
+            "how does",
+            "tell me",
+            "can you explain",
+            "please explain",
+            "explain",
+            "define",
+            "difference between",
+            "compare",
+            "python pathi",
+            "java pathi",
+            "ai pathi",
+            "machine learning pathi",
+            "deep learning pathi",
+            "enna",
+            "epdi",
+            "yen",
         )
 
-        if match:
+        if any(
+            pattern in text
+            for pattern in question_patterns
+        ):
+            return "ai_chat"
 
-            value = int(
-                match.group(1)
+        # ------------------------------------------------------
+        # AI keyword fallback
+        # ------------------------------------------------------
+
+        words = set(text.split())
+
+        if words.intersection(
+            self.ai_keywords
+        ):
+            return "ai_chat"
+
+        return None
+
+    # ==========================================================
+    # FUZZY INTENT
+    # ==========================================================
+
+    def _detect_fuzzy_intent(
+        self,
+        text: str,
+    ) -> Optional[str]:
+
+        if not text:
+            return None
+
+        # Exact complete command first.
+        if text in self.intent_keywords:
+            return self.intent_keywords[text]
+
+        # Word-level exact match.
+        for word in text.split():
+
+            if word in self.intent_keywords:
+                return self.intent_keywords[word]
+
+        # Full text fuzzy match.
+        result = process.extractOne(
+            text,
+            self.intent_keywords.keys(),
+            scorer=fuzz.ratio,
+        )
+
+        if result:
+
+            keyword, score, _ = result
+
+            if score >= 92:
+
+                print(
+                    "Intent Fuzzy Match : "
+                    f"{keyword} ({score:.1f}%)"
+                )
+
+                return self.intent_keywords[
+                    keyword
+                ]
+
+        return None
+
+    # ==========================================================
+    # GEMINI SEMANTIC INTENT
+    # ==========================================================
+
+    def _build_gemini_intent_prompt(
+        self,
+        original_text: str,
+        normalized_text: str,
+    ) -> str:
+        """
+        Build a strict machine-readable semantic classification
+        prompt.
+
+        Gemini receives the supported intent list and is forbidden
+        from inventing new intent names.
+        """
+
+        supported = sorted(
+            self.supported_intents
+        )
+
+        intent_list = ", ".join(
+            supported
+        )
+
+        return f"""
+You are the semantic intent classifier for ASTRA-AI.
+
+Your job is ONLY to identify what desktop action or
+conversation intent the user means.
+
+Do NOT execute anything.
+
+Do NOT explain anything.
+
+Do NOT generate an action plan.
+
+Return ONLY valid JSON.
+
+Required JSON format:
+
+{{
+  "intent": "supported_intent_name",
+  "confidence": 0.0,
+  "reason": "very short reason"
+}}
+
+==================================================
+SUPPORTED INTENTS
+==================================================
+
+{intent_list}
+
+==================================================
+IMPORTANT RULES
+==================================================
+
+1. You MUST return exactly one intent from the supported
+   intent list.
+
+2. NEVER invent a new intent.
+
+3. If the user is asking a normal question, explanation,
+   knowledge request or conversation, return:
+
+   "ai_chat"
+
+4. If the user clearly wants ASTRA-AI to perform an action,
+   identify the closest supported executable intent.
+
+5. Understand natural language, Tanglish and casual speech.
+
+6. Understand common speech-to-text mistakes.
+
+7. Do NOT confuse:
+   - asking about an action
+   with
+   - requesting the action.
+
+Example:
+
+"Why should I open Chrome?"
+=> ai_chat
+
+"Open Chrome"
+=> launch_application
+
+8. Word formatting commands should be mapped to Word intents
+   even if the user does not say "Word", when the sentence
+   clearly describes an active document operation.
+
+Examples:
+
+"make this bold"
+=> bold
+
+"make this italic"
+=> italic
+
+"underline this"
+=> underline
+
+"change the font size to 18"
+=> font_size
+
+9. Do not return an intent merely because a word appears
+   inside a question.
+
+10. If confidence is below 0.55, return ai_chat.
+
+==================================================
+USER INPUT
+==================================================
+
+Original speech:
+
+{original_text}
+
+Normalized speech:
+
+{normalized_text}
+"""
+
+    @staticmethod
+    def _extract_json_from_response(
+        response_text: str,
+    ) -> Optional[dict]:
+        """
+        Safely extract JSON from Gemini output.
+
+        Handles accidental markdown fences as well.
+        """
+
+        if not response_text:
+            return None
+
+        text = str(
+            response_text
+        ).strip()
+
+        # Remove markdown JSON fences.
+        text = re.sub(
+            r"^```(?:json)?",
+            "",
+            text,
+            flags=re.IGNORECASE,
+        )
+
+        text = re.sub(
+            r"```$",
+            "",
+            text,
+        )
+
+        text = text.strip()
+
+        try:
+            data = json.loads(text)
+
+            if isinstance(data, dict):
+                return data
+
+        except Exception:
+            pass
+
+        # Try extracting first JSON object.
+        match = re.search(
+            r"\{.*\}",
+            text,
+            flags=re.DOTALL,
+        )
+
+        if not match:
+            return None
+
+        try:
+            data = json.loads(
+                match.group(0)
             )
 
-            if 0 <= value <= 100:
+            if isinstance(data, dict):
+                return data
 
-                return value
-
+        except Exception:
             return None
 
         return None
 
-
-    # --------------------------------------------------
-    # Word V1 Entity Extraction
-    # --------------------------------------------------
-
-    def extract_word_text(self, text):
-        """Extract text/content for a Word command.
-
-        Quoted text is preferred so commands such as
-        ``type text "Hello World"`` preserve the complete value.
-        Common command/filler words are removed only when they occur
-        as a command prefix.
+    def _validate_gemini_intent(
+        self,
+        data: Optional[dict],
+    ) -> Optional[str]:
         """
-        if not text:
-            return None
-
-        value = str(text).strip()
-        quoted = re.findall(r'"([^"]*)"|\'([^\']*)\'', value)
-        if quoted:
-            for first, second in quoted:
-                candidate = first if first else second
-                if candidate.strip():
-                    return candidate.strip()
-
-        value = self.normalize_text(value)
-        value = re.sub(
-            r"^\s*(?:please\s+)?(?:type|write|enter|add|insert|put)\s+"
-            r"(?:text|the\s+text|a\s+text|this\s+text)?\s*",
-            "",
-            value,
-            flags=re.IGNORECASE,
-        )
-        return value.strip() or None
-
-    def extract_word_path(self, text):
-        """Extract a filesystem path from a Word command."""
-        if not text:
-            return None
-
-        value = str(text).strip()
-
-        quoted = re.findall(r'"([^"]+)"|\'([^\']+)\'', value)
-        if quoted:
-            for first, second in quoted:
-                candidate = first or second
-                if candidate.strip():
-                    return str(Path(candidate.strip()).expanduser())
-
-        # Windows paths, including paths containing spaces.
-        match = re.search(
-            r'([A-Za-z]:[\\/][^,;!?]+|\\\\[^,;!?]+)',
-            value,
-            flags=re.IGNORECASE,
-        )
-        if match:
-            return match.group(1).strip().strip('"\'').rstrip(".!?,")
-
-        value = self.normalize_text(value)
-        value = re.sub(
-            r"^\s*(?:please\s+)?(?:open|save|save\s+as|export|read|create)"
-            r"(?:\s+(?:the|a|an|this|that|word|document|docx|pdf))?"
-            r"\s*",
-            "",
-            value,
-            flags=re.IGNORECASE,
-        )
-        return value.strip() or None
-
-    def extract_word_filename(self, text):
-        """Extract a Word filename/path while preserving spaces and extension."""
-        path = self.extract_word_path(text)
-        if not path:
-            return None
-        return path
-
-    def extract_word_rows_columns(self, text):
-        """Extract table row/column counts from Word commands."""
-        if not text:
-            return None
-
-        value = self.normalize_text(str(text))
-        rows = None
-        columns = None
-
-        row_match = re.search(r'\b(?:rows?|row)\s*(?:to|:|=)?\s*(\d+)\b', value)
-        col_match = re.search(
-            r'\b(?:columns?|cols?|column)\s*(?:to|:|=)?\s*(\d+)\b',
-            value,
-        )
-
-        if row_match:
-            rows = int(row_match.group(1))
-        if col_match:
-            columns = int(col_match.group(1))
-
-        # Also support "3 by 4" / "3 x 4" table wording.
-        if rows is None or columns is None:
-            size_match = re.search(r'\b(\d+)\s*(?:by|x|×)\s*(\d+)\b', value)
-            if size_match:
-                rows = rows if rows is not None else int(size_match.group(1))
-                columns = columns if columns is not None else int(size_match.group(2))
-
-        return {
-            "rows": rows,
-            "columns": columns,
-        }
-
-    def extract_word_numeric(self, text, parameter):
-        """Extract a numeric Word parameter such as font size or spacing."""
-        if not text:
-            return None
-
-        value = self.normalize_text(str(text))
-        pattern = {
-            "font_size": r'\b(?:font\s*size|size)\s*(?:to|:|=)?\s*(\d+(?:\.\d+)?)\b',
-            "line_spacing": r'\b(?:line\s*spacing|spacing)\s*(?:to|:|=)?\s*(\d+(?:\.\d+)?)\b',
-            "paragraph_spacing": r'\b(?:paragraph\s*spacing)\s*(?:to|:|=)?\s*(\d+(?:\.\d+)?)\b',
-            "left": r'\bleft\s*(?:indent)?\s*(?:to|:|=)?\s*(-?\d+(?:\.\d+)?)\b',
-            "right": r'\bright\s*(?:indent)?\s*(?:to|:|=)?\s*(-?\d+(?:\.\d+)?)\b',
-            "first_line": r'\b(?:first\s*line|first)\s*(?:indent)?\s*(?:to|:|=)?\s*(-?\d+(?:\.\d+)?)\b',
-        }.get(parameter)
-
-        if not pattern:
-            return None
-
-        match = re.search(pattern, value, flags=re.IGNORECASE)
-        if not match:
-            return None
-
-        number = float(match.group(1))
-        return int(number) if number.is_integer() else number
-
-    def extract_word_find_replace(self, text):
-        """Extract find/replace values from a Word command."""
-        if not text:
-            return None
-
-        value = str(text).strip()
-        quoted = [
-            first or second
-            for first, second in re.findall(r'"([^"]*)"|\'([^\']*)\'', value)
-        ]
-        if len(quoted) >= 2:
-            return {
-                "find_text": quoted[0].strip(),
-                "replace_with": quoted[1].strip(),
-            }
-
-        normalized = self.normalize_text(value)
-        match = re.search(
-            r'\bfind\s+(.+?)\s+(?:with|to|as)\s+(.+)$',
-            normalized,
-            flags=re.IGNORECASE,
-        )
-        if not match:
-            return None
-
-        find_value = match.group(1).strip().strip('"\'')
-        replace_value = match.group(2).strip().strip('"\'')
-        if not find_value or not replace_value:
-            return None
-
-        return {
-            "find_text": find_value,
-            "replace_with": replace_value,
-        }
-
-    def extract_word_hyperlink(self, text):
-        """Extract URL and optional display text."""
-        if not text:
-            return None
-
-        value = str(text).strip()
-        urls = re.findall(r'https?://[^\s,;]+|www\.[^\s,;]+', value, flags=re.IGNORECASE)
-        if not urls:
-            return None
-
-        url = urls[0].rstrip(".,!?;")
-        display_text = None
-
-        quoted = [
-            first or second
-            for first, second in re.findall(r'"([^"]*)"|\'([^\']*)\'', value)
-        ]
-        if quoted:
-            display_text = quoted[-1].strip() or None
-
-        return {
-            "url": url,
-            "display_text": display_text,
-        }
-
-    def extract_word_parameters(self, action, text):
-        """Return parameters for a Word V1 action.
-
-        This method is intentionally independent of the dispatcher so the
-        future WordAgent/CommandDispatcher integration can choose its own
-        calling convention without changing existing file/folder extractors.
+        Validate Gemini result before allowing it to influence
+        command execution.
         """
-        if not action:
-            return {}
 
-        action = str(action).strip().lower()
+        if not isinstance(data, dict):
+            return None
 
-        if action in {
-            "type_text", "add_text_at_cursor", "replace_content",
-            "header", "footer",
-        }:
-            value = self.extract_word_text(text)
-            return {"text": value} if value is not None else {}
+        raw_intent = data.get(
+            "intent"
+        )
 
-        if action in {
-            "open_existing_document", "open_docx", "save_as",
-            "save_docx", "save_pdf", "create_specified_filename",
-            "read_existing_document", "image",
-        }:
-            value = self.extract_word_path(text)
-            key = "image_path" if action == "image" else "path"
-            return {key: value} if value else {}
+        if raw_intent is None:
+            return None
 
-        if action == "create_table":
-            values = self.extract_word_rows_columns(text) or {}
-            return {k: v for k, v in values.items() if v is not None}
+        intent = str(
+            raw_intent
+        ).strip().lower()
 
-        if action == "font":
-            value = self.normalize_text(text or "")
-            value = re.sub(r'^\s*(?:set\s+)?(?:the\s+)?font\s*(?:to|as)?\s*', '', value)
-            return {"name": value.strip()} if value.strip() else {}
+        confidence = data.get(
+            "confidence",
+            0.0,
+        )
 
-        if action == "font_size":
-            value = self.extract_word_numeric(text, "font_size")
-            return {"size": value} if value is not None else {}
+        try:
+            confidence = float(
+                confidence
+            )
+        except (
+            TypeError,
+            ValueError,
+        ):
+            confidence = 0.0
 
-        if action in {"line_spacing", "paragraph_spacing"}:
-            value = self.extract_word_numeric(text, action)
-            return {"value": value} if value is not None else {}
+        if intent not in self.supported_intents:
+            print(
+                "Gemini Intent Rejected : "
+                f"unsupported intent '{intent}'"
+            )
+            return None
 
-        if action == "indentation":
-            return {
-                key: value
-                for key in ("left", "right", "first_line")
-                if (value := self.extract_word_numeric(text, key)) is not None
-            }
+        if confidence < 0.55:
+            print(
+                "Gemini Intent Rejected : "
+                f"low confidence {confidence:.2f}"
+            )
+            return None
 
-        if action == "find":
-            value = self.extract_word_text(text)
-            return {"text": value} if value else {}
+        print(
+            "Gemini Semantic Intent : "
+            f"{intent} ({confidence:.2f})"
+        )
 
-        if action == "replace":
-            return self.extract_word_find_replace(text) or {}
+        return intent
 
-        if action == "hyperlink":
-            return self.extract_word_hyperlink(text) or {}
+    def _detect_gemini_intent(
+        self,
+        original_text: str,
+        normalized_text: str,
+    ) -> Optional[str]:
+        """
+        Semantic fallback.
 
-        if action in {"text_color", "highlight"}:
-            value = self.normalize_text(text or "")
-            return {"color": value} if value else {}
+        Uses the existing GeminiClient structured JSON method.
 
-        if action == "document_style":
-            value = self.normalize_text(text or "")
-            value = re.sub(r'^\s*(?:change\s+)?(?:document\s+)?style\s*(?:to|as)?\s*', '', value)
-            return {"style_name": value.strip()} if value.strip() else {}
+        Existing four-key rotation remains inside GeminiClient.
+        """
 
-        return {}
+        if not self.enable_gemini_fallback:
+            return None
 
-    # --------------------------------------------------
-    # Close
-    # --------------------------------------------------
+        client = self._get_gemini_client()
+
+        if client is None:
+            return None
+
+        prompt = self._build_gemini_intent_prompt(
+            original_text=original_text,
+            normalized_text=normalized_text,
+        )
+
+        try:
+
+            response_text = (
+                client.generate_structured_plan(
+                    prompt
+                )
+            )
+
+            if not response_text:
+                return None
+
+            data = self._extract_json_from_response(
+                response_text
+            )
+
+            return self._validate_gemini_intent(
+                data
+            )
+
+        except Exception as error:
+
+            print(
+                "Gemini semantic intent error:",
+                error,
+            )
+
+            return None
+
+    # ==========================================================
+    # MAIN DETECTOR
+    # ==========================================================
+
+    def detect_intent(
+        self,
+        text: str,
+    ) -> Optional[str]:
+        """
+        Detect user intent.
+
+        Strategy
+        --------
+        Local deterministic logic is always attempted first.
+
+        Gemini is called only when local detection cannot
+        confidently identify an intent.
+
+        Returns
+        -------
+        str | None
+        """
+
+        if text is None:
+            return None
+
+        original_text = str(
+            text
+        ).strip()
+
+        if not original_text:
+            return None
+
+        if len(
+            original_text
+        ) <= 1:
+            return None
+
+        normalized_text = self._normalize_text(
+            original_text
+        )
+
+        if not normalized_text:
+            return None
+
+        # ==================================================
+        # STEP 1
+        # Explicit conversation protection
+        # ==================================================
+
+        if not self._is_explicit_automation_command(
+            normalized_text
+        ):
+
+            if self._is_conversational_message(
+                normalized_text
+            ):
+                return "ai_chat"
+
+        # ==================================================
+        # STEP 2
+        # Local deterministic detection
+        # ==================================================
+
+        local_intent = self._detect_local_intent(
+            normalized_text
+        )
+
+        if local_intent:
+            return local_intent
+
+        # ==================================================
+        # STEP 3
+        # RapidFuzz fallback
+        # ==================================================
+
+        fuzzy_intent = self._detect_fuzzy_intent(
+            normalized_text
+        )
+
+        if fuzzy_intent:
+
+            # --------------------------------------------------
+            # Important safety:
+            #
+            # Fuzzy "open" / "close" etc. should not be enough
+            # to execute a completely unrelated command when
+            # the utterance is long and ambiguous.
+            # --------------------------------------------------
+
+            if (
+                fuzzy_intent
+                not in {
+                    "launch_application",
+                    "close_application",
+                    "type_text",
+                }
+                or len(
+                    normalized_text.split()
+                ) <= 3
+            ):
+                return fuzzy_intent
+
+        # ==================================================
+        # STEP 4
+        # Gemini semantic fallback
+        # ==================================================
+
+        gemini_intent = self._detect_gemini_intent(
+            original_text=original_text,
+            normalized_text=normalized_text,
+        )
+
+        if gemini_intent:
+
+            return gemini_intent
+
+        # ==================================================
+        # STEP 5
+        # Final AI conversation fallback
+        # ==================================================
+
+        if len(
+            normalized_text.split()
+        ) >= 2:
+            return "ai_chat"
+
+        return None
+
+    # ==========================================================
+    # DEBUG / EXPLANATION
+    # ==========================================================
+
+    def detect_with_debug(
+        self,
+        text: str,
+    ) -> dict:
+        """
+        Debug helper.
+
+        Useful during development/testing to understand which
+        layer produced the final intent.
+
+        This does not execute any action.
+        """
+
+        original_text = str(
+            text or ""
+        ).strip()
+
+        normalized_text = self._normalize_text(
+            original_text
+        )
+
+        result = {
+            "original_text": original_text,
+            "normalized_text": normalized_text,
+            "explicit_automation": (
+                self._is_explicit_automation_command(
+                    normalized_text
+                )
+                if normalized_text
+                else False
+            ),
+            "local_intent": None,
+            "fuzzy_intent": None,
+            "gemini_intent": None,
+            "intent": None,
+        }
+
+        if not normalized_text:
+            return result
+
+        result["local_intent"] = (
+            self._detect_local_intent(
+                normalized_text
+            )
+        )
+
+        if result["local_intent"]:
+            result["intent"] = result[
+                "local_intent"
+            ]
+            return result
+
+        result["fuzzy_intent"] = (
+            self._detect_fuzzy_intent(
+                normalized_text
+            )
+        )
+
+        if result["fuzzy_intent"]:
+            result["intent"] = result[
+                "fuzzy_intent"
+            ]
+            return result
+
+        result["gemini_intent"] = (
+            self._detect_gemini_intent(
+                original_text,
+                normalized_text,
+            )
+        )
+
+        if result["gemini_intent"]:
+            result["intent"] = result[
+                "gemini_intent"
+            ]
+        else:
+            result["intent"] = "ai_chat"
+
+        return result
+
+    # ==========================================================
+    # GEMINI STATUS
+    # ==========================================================
+
+    def gemini_enabled(self) -> bool:
+        """
+        Return whether semantic Gemini fallback is enabled.
+        """
+
+        return bool(
+            self.enable_gemini_fallback
+        )
+
+    def has_gemini_client(self) -> bool:
+        """
+        Return whether a Gemini client is currently available.
+        """
+
+        return self.gemini_client is not None
+
+    # ==========================================================
+    # CLEANUP
+    # ==========================================================
 
     def close(self):
         """
-        Close database connection.
+        Release the detector's Gemini reference.
+
+        If the Gemini client is shared with the application,
+        this method does NOT close the shared client.
         """
 
-        self.database.close()   
+        self.gemini_client = None
+        self._gemini_initialized = False
+# ==============================================================
+# ASTRA-AI ENTITY EXTRACTOR
+# ==============================================================
+#
+# NOTE:
+# The original 3,417-line IntentDetector implementation above is
+# intentionally preserved. The current project imports
+# EntityExtractor from this module, so the V1 entity-extraction
+# implementation is provided below without deleting or rewriting
+# the existing detector.
+# ==============================================================
+
+class EntityExtractor:
+    """
+    Extract command entities required by ASTRA-AI V1.
+
+    IntentDetector decides WHAT action is requested.
+    EntityExtractor decides the VALUE/OBJECT used by that action.
+
+    This class intentionally has no dependency on the IntentDetector
+    implementation above.
+    """
+
+    def __init__(self):
+        self.application_aliases = {
+            "chrome": "chrome",
+            "google chrome": "chrome",
+            "edge": "msedge",
+            "microsoft edge": "msedge",
+            "ms edge": "msedge",
+            "firefox": "firefox",
+            "notepad": "notepad",
+            "note pad": "notepad",
+            "node pad": "notepad",
+            "paint": "mspaint",
+            "calculator": "calc",
+            "calc": "calc",
+            "cmd": "cmd",
+            "command prompt": "cmd",
+            "powershell": "powershell",
+            "power shell": "powershell",
+            "explorer": "explorer",
+            "file explorer": "explorer",
+            "word": "winword",
+            "ms word": "winword",
+            "microsoft word": "winword",
+            "excel": "excel",
+            "ms excel": "excel",
+            "microsoft excel": "excel",
+            "powerpoint": "powerpnt",
+            "power point": "powerpnt",
+            "ppt": "powerpnt",
+            "vscode": "code",
+            "vs code": "code",
+            "visual studio code": "code",
+            "pycharm": "pycharm64",
+        }
+
+        self.browser_aliases = {
+            "chrome": "chrome",
+            "google chrome": "chrome",
+            "edge": "edge",
+            "microsoft edge": "edge",
+            "ms edge": "edge",
+            "firefox": "firefox",
+        }
+
+        self.website_aliases = {
+            "google": "google.com",
+            "youtube": "youtube.com",
+            "gmail": "gmail.com",
+            "github": "github.com",
+            "stackoverflow": "stackoverflow.com",
+            "stack overflow": "stackoverflow.com",
+            "chatgpt": "chatgpt.com",
+            "wikipedia": "wikipedia.org",
+            "amazon": "amazon.in",
+            "flipkart": "flipkart.com",
+            "linkedin": "linkedin.com",
+            "instagram": "instagram.com",
+            "facebook": "facebook.com",
+            "twitter": "x.com",
+        }
+
+        self.folder_aliases = {
+            "desktop": "Desktop",
+            "documents": "Documents",
+            "downloads": "Downloads",
+            "pictures": "Pictures",
+            "photos": "Pictures",
+            "videos": "Videos",
+            "music": "Music",
+            "this pc": "This PC",
+            "my computer": "This PC",
+            "computer": "This PC",
+            "recycle bin": "Recycle Bin",
+            "trash": "Recycle Bin",
+            "c drive": "C:",
+            "d drive": "D:",
+            "e drive": "E:",
+        }
+
+        self.extension_aliases = {
+            "pdf": ".pdf",
+            "doc": ".doc",
+            "docx": ".docx",
+            "word": ".docx",
+            "txt": ".txt",
+            "text": ".txt",
+            "ppt": ".ppt",
+            "pptx": ".pptx",
+            "powerpoint": ".pptx",
+            "xls": ".xls",
+            "xlsx": ".xlsx",
+            "excel": ".xlsx",
+            "csv": ".csv",
+            "jpg": ".jpg",
+            "jpeg": ".jpeg",
+            "png": ".png",
+            "gif": ".gif",
+            "mp3": ".mp3",
+            "wav": ".wav",
+            "mp4": ".mp4",
+            "mkv": ".mkv",
+            "avi": ".avi",
+            "zip": ".zip",
+        }
+
+    # ==========================================================
+    # NORMALIZATION
+    # ==========================================================
+
+    @staticmethod
+    def _normalize(text: str) -> str:
+        if text is None:
+            return ""
+
+        value = str(text).lower().strip()
+
+        if not value:
+            return ""
+
+        value = re.sub(r"[,\.;:!?]+", " ", value)
+        value = re.sub(r"\s+", " ", value).strip()
+
+        replacements = (
+            ("you tube", "youtube"),
+            ("you to", "youtube"),
+            ("u tube", "youtube"),
+            ("g mail", "gmail"),
+            ("power point", "powerpoint"),
+            ("note pad", "notepad"),
+            ("node pad", "notepad"),
+            ("fire fox", "firefox"),
+            ("visual studio code", "vscode"),
+            ("vs code", "vscode"),
+            ("command promt", "command prompt"),
+            ("power shell", "powershell"),
+            ("microsoft word", "word"),
+            ("ms word", "word"),
+            ("m s word", "word"),
+        )
+
+        for old, new in replacements:
+            value = value.replace(old, new)
+
+        tanglish = (
+            ("thorakka", "open"),
+            ("thorak", "open"),
+            ("thirakka", "open"),
+            ("thirak", "open"),
+            ("moodu", "close"),
+            ("mudu", "close"),
+            ("theda", "search"),
+            ("thedu", "search"),
+            ("thedi", "search"),
+            ("uruvakku", "create"),
+            ("uruvaku", "create"),
+            ("azhichidu", "delete"),
+            ("azhichu", "delete"),
+            ("maathu", "rename"),
+            ("mathu", "rename"),
+            ("nagarthu", "move"),
+            ("kaatu", "show"),
+            ("podu", "play"),
+        )
+
+        for old, new in sorted(
+            tanglish,
+            key=lambda item: len(item[0]),
+            reverse=True,
+        ):
+            value = value.replace(old, new)
+
+        return re.sub(r"\s+", " ", value).strip()
+
+    # ==========================================================
+    # GENERIC CLEANUP
+    # ==========================================================
+
+    @staticmethod
+    def _remove_prefixes(text: str, prefixes) -> str:
+        value = text.strip()
+
+        changed = True
+        while changed:
+            changed = False
+
+            for prefix in sorted(
+                prefixes,
+                key=len,
+                reverse=True,
+            ):
+                if value.startswith(prefix):
+                    value = value[len(prefix):].strip()
+                    changed = True
+                    break
+
+        return value
+
+    @staticmethod
+    def _clean_entity(value: Optional[str]):
+        if value is None:
+            return None
+
+        value = str(value).strip()
+
+        value = value.strip(
+            "\"'.,;:!? "
+        )
+
+        return value or None
+
+    # ==========================================================
+    # PERCENTAGE
+    # ==========================================================
+
+    def extract_percentage(
+        self,
+        text: str,
+    ) -> Optional[int]:
+
+        value = self._normalize(text)
+
+        if not value:
+            return None
+
+        match = re.search(
+            r"\b(\d{1,3})\s*%",
+            value,
+        )
+
+        if not match:
+            match = re.search(
+                r"\b(\d{1,3})\s*percent\b",
+                value,
+            )
+
+        if not match:
+            match = re.search(
+                r"\b(?:to|at|level)\s+(\d{1,3})\b",
+                value,
+            )
+
+        if not match:
+            numbers = re.findall(
+                r"\b\d{1,3}\b",
+                value,
+            )
+            if numbers:
+                number = int(numbers[-1])
+            else:
+                return None
+        else:
+            number = int(match.group(1))
+
+        return max(
+            0,
+            min(100, number),
+        )
+
+    # ==========================================================
+    # APPLICATION
+    # ==========================================================
+
+    def extract_application(
+        self,
+        text: str,
+    ) -> Optional[str]:
+
+        value = self._normalize(text)
+
+        if not value:
+            return None
+
+        aliases = sorted(
+            self.application_aliases.items(),
+            key=lambda item: len(item[0]),
+            reverse=True,
+        )
+
+        for name, executable in aliases:
+            if re.search(
+                rf"\b{re.escape(name)}\b",
+                value,
+            ):
+                return executable
+
+        # Remove common action words and try the remaining phrase.
+        candidate = self._remove_prefixes(
+            value,
+            (
+                "open ",
+                "launch ",
+                "start ",
+                "run ",
+                "execute ",
+                "close ",
+                "exit ",
+                "quit ",
+            ),
+        )
+
+        for name, executable in aliases:
+            if candidate == name:
+                return executable
+
+        # Fuzzy application fallback.
+        names = list(
+            self.application_aliases.keys()
+        )
+
+        result = process.extractOne(
+            candidate,
+            names,
+            scorer=fuzz.ratio,
+        )
+
+        if result:
+            name, score, _ = result
+
+            if score >= 88:
+                return self.application_aliases[name]
+
+        return None
+
+    # ==========================================================
+    # FILE QUERY
+    # ==========================================================
+
+    def extract_file_query(
+        self,
+        text: str,
+    ) -> Optional[str]:
+
+        value = self._normalize(text)
+
+        if not value:
+            return None
+
+        # Preserve actual Windows-style paths and filenames.
+        patterns = (
+            r"^(?:open|create|make|new|delete|remove)\s+"
+            r"(?:the\s+)?file\s+(.+)$",
+
+            r"^(?:open|create|make|new|delete|remove)\s+"
+            r"(.+\.[a-z0-9]{1,8})$",
+
+            r"^(?:open|create|make|new|delete|remove)\s+"
+            r"(.+)$",
+        )
+
+        for pattern in patterns:
+            match = re.search(
+                pattern,
+                value,
+                re.IGNORECASE,
+            )
+
+            if match:
+                entity = self._clean_entity(
+                    match.group(1)
+                )
+
+                if entity:
+                    return entity
+
+        return self._clean_entity(value)
+
+    # ==========================================================
+    # COMPRESS FILE
+    # ==========================================================
+
+    def extract_compress_file(
+        self,
+        text: str,
+    ) -> Optional[str]:
+
+        value = self._normalize(text)
+
+        if not value:
+            return None
+
+        patterns = (
+            r"^(?:compress|zip|archive)\s+"
+            r"(?:the\s+)?(?:file\s+)?(.+)$",
+
+            r"^(?:create|make)\s+(?:a\s+)?zip\s+"
+            r"(?:of\s+)?(.+)$",
+        )
+
+        for pattern in patterns:
+            match = re.search(
+                pattern,
+                value,
+                re.IGNORECASE,
+            )
+
+            if match:
+                entity = self._clean_entity(
+                    match.group(1)
+                )
+
+                if entity:
+                    return entity
+
+        return self.extract_file_query(value)
+
+    # ==========================================================
+    # EXTRACT ZIP
+    # ==========================================================
+
+    def extract_extract_zip(
+        self,
+        text: str,
+    ) -> Optional[str]:
+
+        value = self._normalize(text)
+
+        if not value:
+            return None
+
+        patterns = (
+            r"^(?:extract|unzip)\s+"
+            r"(?:the\s+)?(.+)$",
+
+            r"^open\s+zip\s+(.+)$",
+
+            r"^open\s+(.+\.zip)$",
+        )
+
+        for pattern in patterns:
+            match = re.search(
+                pattern,
+                value,
+                re.IGNORECASE,
+            )
+
+            if match:
+                entity = self._clean_entity(
+                    match.group(1)
+                )
+
+                if entity:
+                    return entity
+
+        match = re.search(
+            r"\b[\w ._-]+\.zip\b",
+            value,
+            re.IGNORECASE,
+        )
+
+        if match:
+            return self._clean_entity(
+                match.group(0)
+            )
+
+        return None
+
+    # ==========================================================
+    # TRANSFER ENTITY
+    # ==========================================================
+
+    def _extract_transfer(
+        self,
+        text: str,
+        operation: str,
+        item_word: str,
+    ):
+
+        value = self._normalize(text)
+
+        if not value:
+            return None
+
+        value = re.sub(
+            rf"^{re.escape(operation)}\s+",
+            "",
+            value,
+            count=1,
+        ).strip()
+
+        value = re.sub(
+            rf"^(?:the\s+)?{re.escape(item_word)}\s+",
+            "",
+            value,
+            count=1,
+        ).strip()
+
+        connector = re.search(
+            r"\s+(?:to|into|2|ku|kku|as)\s+",
+            value,
+            re.IGNORECASE,
+        )
+
+        if connector:
+            source = self._clean_entity(
+                value[:connector.start()]
+            )
+            destination = self._clean_entity(
+                value[connector.end():]
+            )
+
+            if source and destination:
+                return {
+                    "source": source,
+                    "destination": destination,
+                }
+
+        return self._clean_entity(value)
+
+    # ==========================================================
+    # RENAME FILE
+    # ==========================================================
+
+    def extract_rename_file(
+        self,
+        text: str,
+    ):
+
+        return self._extract_transfer(
+            text,
+            "rename",
+            "file",
+        )
+
+    # ==========================================================
+    # COPY FILE
+    # ==========================================================
+
+    def extract_copy_file(
+        self,
+        text: str,
+    ):
+
+        return self._extract_transfer(
+            text,
+            "copy",
+            "file",
+        )
+
+    # ==========================================================
+    # MOVE FILE
+    # ==========================================================
+
+    def extract_move_file(
+        self,
+        text: str,
+    ):
+
+        return self._extract_transfer(
+            text,
+            "move",
+            "file",
+        )
+
+    # ==========================================================
+    # SEARCH EXTENSION
+    # ==========================================================
+
+    def extract_search_extension(
+        self,
+        text: str,
+    ) -> Optional[str]:
+
+        value = self._normalize(text)
+
+        if not value:
+            return None
+
+        match = re.search(
+            r"\.([a-z0-9]{1,8})\b",
+            value,
+            re.IGNORECASE,
+        )
+
+        if match:
+            return "." + match.group(1).lower()
+
+        for alias, extension in sorted(
+            self.extension_aliases.items(),
+            key=lambda item: len(item[0]),
+            reverse=True,
+        ):
+            if re.search(
+                rf"\b{re.escape(alias)}\b",
+                value,
+            ):
+                return extension
+
+        return None
+
+    # ==========================================================
+    # SEARCH SIZE
+    # ==========================================================
+
+    def extract_search_size(
+        self,
+        text: str,
+    ):
+
+        value = self._normalize(text)
+
+        if not value:
+            return None
+
+        operator = None
+
+        if any(
+            phrase in value
+            for phrase in (
+                "larger than",
+                "bigger than",
+                "greater than",
+                "above",
+                "over",
+            )
+        ):
+            operator = "greater_than"
+
+        elif any(
+            phrase in value
+            for phrase in (
+                "smaller than",
+                "less than",
+                "under",
+                "below",
+            )
+        ):
+            operator = "less_than"
+
+        elif any(
+            phrase in value
+            for phrase in (
+                "equal to",
+                "exactly",
+            )
+        ):
+            operator = "equal"
+
+        match = re.search(
+            r"\b(\d+(?:\.\d+)?)\s*"
+            r"(bytes?|kb|kib|mb|mib|gb|gib|tb|tib)\b",
+            value,
+            re.IGNORECASE,
+        )
+
+        if not match:
+            return None
+
+        number = float(
+            match.group(1)
+        )
+
+        if number.is_integer():
+            number = int(number)
+
+        return {
+            "operator": operator or "greater_than",
+            "value": number,
+            "unit": match.group(2).upper(),
+        }
+
+    # ==========================================================
+    # SEARCH DATE
+    # ==========================================================
+
+    def extract_search_date(
+        self,
+        text: str,
+    ):
+
+        value = self._normalize(text)
+
+        if not value:
+            return None
+
+        periods = (
+            "today",
+            "yesterday",
+            "tomorrow",
+            "last week",
+            "last month",
+            "this week",
+            "this month",
+            "recent",
+            "recently",
+        )
+
+        for period in periods:
+            if period in value:
+                return {
+                    "period": period,
+                }
+
+        match = re.search(
+            r"\b\d{4}-\d{2}-\d{2}\b",
+            value,
+        )
+
+        if match:
+            return {
+                "date": match.group(0),
+            }
+
+        return None
+
+    # ==========================================================
+    # WEBSITE
+    # ==========================================================
+
+    def extract_website(
+        self,
+        text: str,
+    ) -> Optional[str]:
+
+        value = self._normalize(text)
+
+        if not value:
+            return None
+
+        url = re.search(
+            r"(?:https?://|www\.)[^\s]+",
+            value,
+            re.IGNORECASE,
+        )
+
+        if url:
+            return self._clean_entity(
+                url.group(0)
+            )
+
+        domain = re.search(
+            r"\b[a-z0-9-]+(?:\.[a-z0-9-]+)+"
+            r"\.(?:com|in|org|net|io|ai|dev|co)\b",
+            value,
+            re.IGNORECASE,
+        )
+
+        if domain:
+            return domain.group(0)
+
+        for name, site in sorted(
+            self.website_aliases.items(),
+            key=lambda item: len(item[0]),
+            reverse=True,
+        ):
+            if re.search(
+                rf"\b{re.escape(name)}\b",
+                value,
+            ):
+                return site
+
+        return None
+
+    # ==========================================================
+    # GOOGLE SEARCH
+    # ==========================================================
+
+    def extract_search_query(
+        self,
+        text: str,
+    ) -> Optional[str]:
+
+        value = self._normalize(text)
+
+        if not value:
+            return None
+
+        patterns = (
+            r"^(?:google\s+search)\s+(.+)$",
+            r"^(?:search\s+google)\s+(.+)$",
+            r"^(?:search)\s+(.+)$",
+            r"^(?:google)\s+(.+)$",
+        )
+
+        for pattern in patterns:
+            match = re.search(
+                pattern,
+                value,
+                re.IGNORECASE,
+            )
+
+            if match:
+                query = self._clean_entity(
+                    match.group(1)
+                )
+
+                if query:
+                    return query
+
+        return None
+
+    # ==========================================================
+    # YOUTUBE QUERY
+    # ==========================================================
+
+    def extract_youtube_query(
+        self,
+        text: str,
+    ) -> Optional[str]:
+
+        value = self._normalize(text)
+
+        if not value:
+            return None
+
+        patterns = (
+            r"^youtube\s+search\s+(.+)$",
+            r"^search\s+youtube\s+(.+)$",
+            r"^play\s+song\s+(.+)$",
+            r"^play\s+music\s+(.+)$",
+            r"^play\s+video\s+(.+)$",
+            r"^play\s+(.+)$",
+            r"^youtube\s+(.+)$",
+        )
+
+        for pattern in patterns:
+            match = re.search(
+                pattern,
+                value,
+                re.IGNORECASE,
+            )
+
+            if match:
+                query = self._clean_entity(
+                    match.group(1)
+                )
+
+                if query:
+                    return query
+
+        return None
+
+    # ==========================================================
+    # FOLDER
+    # ==========================================================
+
+    def extract_folder(
+        self,
+        text: str,
+    ) -> Optional[str]:
+
+        value = self._normalize(text)
+
+        if not value:
+            return None
+
+        for alias, folder in sorted(
+            self.folder_aliases.items(),
+            key=lambda item: len(item[0]),
+            reverse=True,
+        ):
+            if re.search(
+                rf"\b{re.escape(alias)}\b",
+                value,
+            ):
+                return folder
+
+        patterns = (
+            r"^(?:open|create|make|new|delete|remove)\s+"
+            r"(?:the\s+)?folder\s+(.+)$",
+
+            r"^(?:open|create|make|new|delete|remove)\s+"
+            r"(.+?)\s+folder$",
+
+            r"^folder\s+(.+)$",
+        )
+
+        for pattern in patterns:
+            match = re.search(
+                pattern,
+                value,
+                re.IGNORECASE,
+            )
+
+            if match:
+                entity = self._clean_entity(
+                    match.group(1)
+                )
+
+                if entity:
+                    return entity
+
+        return self._clean_entity(value)
+
+    # ==========================================================
+    # RENAME FOLDER
+    # ==========================================================
+
+    def extract_rename_folder(
+        self,
+        text: str,
+    ):
+
+        return self._extract_transfer(
+            text,
+            "rename",
+            "folder",
+        )
+
+    # ==========================================================
+    # COPY FOLDER
+    # ==========================================================
+
+    def extract_copy_folder(
+        self,
+        text: str,
+    ):
+
+        return self._extract_transfer(
+            text,
+            "copy",
+            "folder",
+        )
+
+    # ==========================================================
+    # MOVE FOLDER
+    # ==========================================================
+
+    def extract_move_folder(
+        self,
+        text: str,
+    ):
+
+        return self._extract_transfer(
+            text,
+            "move",
+            "folder",
+        )
+
+    # ==========================================================
+    # BROWSER
+    # ==========================================================
+
+    def extract_browser(
+        self,
+        text: str,
+    ) -> Optional[str]:
+
+        value = self._normalize(text)
+
+        if not value:
+            return None
+
+        for alias, browser in sorted(
+            self.browser_aliases.items(),
+            key=lambda item: len(item[0]),
+            reverse=True,
+        ):
+            if re.search(
+                rf"\b{re.escape(alias)}\b",
+                value,
+            ):
+                return browser
+
+        # ASTRA-AI browser commands default to Chrome
+        # when a website is being opened.
+        if self.extract_website(value):
+            return "chrome"
+
+        return None
+
+    # ==========================================================
+    # PROFILE
+    # ==========================================================
+
+    def extract_profile(
+        self,
+        text: str,
+    ) -> Optional[str]:
+
+        value = self._normalize(text)
+
+        if not value:
+            return None
+
+        match = re.search(
+            r"\bprofile\s+(\d+)\b",
+            value,
+            re.IGNORECASE,
+        )
+
+        if match:
+            return f"Profile {match.group(1)}"
+
+        # "default profile"
+        if "default profile" in value:
+            return "Default"
+
+        # "guest profile"
+        if "guest profile" in value:
+            return "Guest Profile"
+
+        # Preserve a named profile after "profile".
+        match = re.search(
+            r"\bprofile\s+([a-z0-9 _-]+)$",
+            value,
+            re.IGNORECASE,
+        )
+
+        if match:
+            name = self._clean_entity(
+                match.group(1)
+            )
+
+            if name:
+                return name
+
+        return None
+
+    # ==========================================================
+    # DEBUG
+    # ==========================================================
+
+    def extract_all(
+        self,
+        text: str,
+    ) -> dict:
+
+        return {
+            "original_text": text,
+            "normalized_text": self._normalize(text),
+            "percentage": self.extract_percentage(text),
+            "application": self.extract_application(text),
+            "file_query": self.extract_file_query(text),
+            "compress_file": self.extract_compress_file(text),
+            "extract_zip": self.extract_extract_zip(text),
+            "rename_file": self.extract_rename_file(text),
+            "copy_file": self.extract_copy_file(text),
+            "move_file": self.extract_move_file(text),
+            "search_extension": self.extract_search_extension(text),
+            "search_size": self.extract_search_size(text),
+            "search_date": self.extract_search_date(text),
+            "website": self.extract_website(text),
+            "search_query": self.extract_search_query(text),
+            "youtube_query": self.extract_youtube_query(text),
+            "folder": self.extract_folder(text),
+            "rename_folder": self.extract_rename_folder(text),
+            "copy_folder": self.extract_copy_folder(text),
+            "move_folder": self.extract_move_folder(text),
+            "browser": self.extract_browser(text),
+            "profile": self.extract_profile(text),
+        }

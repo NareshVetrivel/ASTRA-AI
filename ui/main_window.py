@@ -485,6 +485,9 @@ class MainWindow(QMainWindow):
 
         self.gemini = None
 
+        self._backend_ready = False
+        self._backend_initialization_started = False
+
         # ----------------------------------
         # Groq Speech-to-Text Configuration
         # ----------------------------------
@@ -1215,9 +1218,13 @@ class MainWindow(QMainWindow):
     # --------------------------------------------------
 
     def create_backend(self):
-        """
-        Create all backend modules.
-        """
+        """Create all backend modules once and return whether startup succeeded."""
+
+        if self._backend_ready:
+            return True
+
+        if self._closing:
+            return False
 
         print("\n========== BACKEND ==========")
 
@@ -1367,6 +1374,9 @@ class MainWindow(QMainWindow):
         print("Backend Ready.")
 
         print("=============================\n")
+
+        self._backend_ready = True
+        return True
 
     # --------------------------------------------------
     # Speech Completion / Non-Blocking UI Helpers
@@ -3090,11 +3100,13 @@ class MainWindow(QMainWindow):
                 and entity
             ):
 
-                self.last_application = entity
+                self.last_application = self._entity_text(entity)
+
+                entity_name = self._entity_text(entity).lower()
 
                 if (
-                    "notepad" in entity.lower()
-                    or "word" in entity.lower()
+                    "notepad" in entity_name
+                    or "word" in entity_name
                 ):
                     self.typing_mode = True
 
@@ -3198,6 +3210,80 @@ class MainWindow(QMainWindow):
                 "Silent"
             )
         )
+
+    # --------------------------------------------------
+    # Intent Routing Helpers
+    # --------------------------------------------------
+
+    def _is_word_command_context(self, text):
+        """Detect explicit or active Microsoft Word command context."""
+        cleaned = str(text or "").strip().lower()
+        if not cleaned:
+            return False
+
+        word_terms = (
+            "word", "ms word", "microsoft word", "document", "docx",
+            "paragraph", "font", "font size", "text size", "bold",
+            "italic", "underline", "strikethrough", "highlight",
+            "heading", "bullet", "numbered list", "table", "rows",
+            "columns", "align left", "align center", "align right",
+            "justify", "page break", "header", "footer", "page number",
+        )
+
+        if any(term in cleaned for term in word_terms):
+            return True
+
+        return "word" in str(self.last_application or "").lower()
+
+    def _detect_intent_with_context(self, text):
+        """Detect intent while preserving Word context omitted by speech."""
+        detector = self.intent_detector
+        cleaned = str(text or "").strip()
+        if detector is None or not cleaned:
+            return None
+
+        if self._is_word_command_context(cleaned):
+            word_text = cleaned.lower()
+            if not any(token in word_text for token in ("word", "document", "docx")):
+                word_text = "word " + word_text
+
+            try:
+                intent = detector.detect_intent(word_text)
+                word_intents = {
+                    "open_word", "close_word", "create_blank_document",
+                    "open_existing_document", "save", "save_as", "save_docx",
+                    "save_pdf", "close_current_document", "create_specified_filename",
+                    "read_existing_document", "add_text_at_cursor", "replace_content",
+                    "read_document", "clear_document", "select_all", "copy", "cut",
+                    "paste", "type_text", "strikethrough", "underline", "italic",
+                    "bold", "font_size", "font", "text_color", "highlight",
+                    "align_left", "align_center", "align_right", "justify",
+                    "line_spacing", "paragraph_spacing", "indentation", "bullets",
+                    "numbering", "title", "heading_1", "normal", "document_style",
+                    "read_table_data", "create_table", "replace", "find", "image",
+                    "hyperlink", "page_break", "new_page", "header", "footer",
+                    "page_number",
+                }
+                if intent in word_intents:
+                    return intent
+            except Exception as error:
+                print(f"Word Intent Detection Error : {error}")
+
+        try:
+            return detector.detect_intent(cleaned)
+        except Exception as error:
+            print(f"Intent Detection Error : {error}")
+            return None
+
+    @staticmethod
+    def _entity_text(entity):
+        """Return a safe display name from scalar or structured entities."""
+        if isinstance(entity, dict):
+            for key in ("application", "app", "name", "entity", "target", "value"):
+                if entity.get(key):
+                    return str(entity[key])
+            return ""
+        return str(entity or "")
 
     # --------------------------------------------------
     # Process Command
@@ -3694,7 +3780,7 @@ class MainWindow(QMainWindow):
         # Detect Intent
         # ------------------------------------------
 
-        intent = self.intent_detector.detect_intent(
+        intent = self._detect_intent_with_context(
             text
         )
 
@@ -4278,39 +4364,23 @@ class MainWindow(QMainWindow):
             print("===========================\n")
 
         # ---------------------------------
-        # Compound Command Detection
+        # Future Compound Commands
         # ---------------------------------
 
-        is_compound_command = (
+        if (
 
             intent == "launch_application"
 
             and
 
-            bool(typed_text)
+            typed_text
 
-        )
-
-        if is_compound_command:
+        ):
 
             print(
-                "\n========== COMPOUND COMMAND =========="
-            )
 
-            print(
-                f"Application : {entity}"
-            )
+                "Compound Command Detected."
 
-            print(
-                f"Typed Text  : {typed_text}"
-            )
-
-            print(
-                f"User Text   : {text}"
-            )
-
-            print(
-                "=======================================\n"
             )
 
         self.status_label.setText(
@@ -4356,12 +4426,9 @@ class MainWindow(QMainWindow):
 
             profile=profile,
 
-            user_text=text,
-
-            multi_command=is_compound_command
+            user_text=text
 
         )
-        
         # ---------------------------------
         # Handle Dispatcher Result
         # ---------------------------------
@@ -4875,9 +4942,15 @@ class MainWindow(QMainWindow):
     # --------------------------------------------------
 
     def start_initialization(self):
-        """
-        Start background initialization.
-        """
+        """Start background initialization after backend readiness."""
+
+        if self._closing or not self._backend_ready:
+            return
+
+        if self._backend_initialization_started:
+            return
+
+        self._backend_initialization_started = True
 
         self.status_label.setText(
             "Status : Initializing..."
@@ -8247,11 +8320,8 @@ class MainWindow(QMainWindow):
 
         try:
 
-            intent = (
-                self.intent_detector
-                .detect_intent(
-                    normalized_text
-                )
+            intent = self._detect_intent_with_context(
+                normalized_text
             )
 
         except Exception as error:
@@ -9442,11 +9512,13 @@ class MainWindow(QMainWindow):
                 and entity
             ):
 
-                self.last_application = entity
+                self.last_application = self._entity_text(entity)
+
+                entity_name = self._entity_text(entity).lower()
 
                 if (
-                    "notepad" in str(entity).lower()
-                    or "word" in str(entity).lower()
+                    "notepad" in entity_name
+                    or "word" in entity_name
                 ):
 
                     self.typing_mode = True
@@ -10880,15 +10952,26 @@ class MainWindow(QMainWindow):
 
         self.enable_premium_background()
 
+        # Chain backend creation -> InitializationWorker startup so the two
+        # independent startup timers can never race each other.
         QTimer.singleShot(
             50,
-            self.create_backend
+            self._create_backend_then_initialize
         )
 
-        QTimer.singleShot(
-            100,
-            self.start_initialization
-        )
+    def _create_backend_then_initialize(self):
+        """Create backend first, then start the background initializer."""
+
+        if self._closing or self._backend_initialization_started:
+            return
+
+        if not self.create_backend():
+            self.initialization_failed(
+                "Backend initialization failed. Check the ASTRA-AI console for details."
+            )
+            return
+
+        self.start_initialization()
 
     # --------------------------------------------------
     # Okii, byee! See youu soon 🫶 Shutdown
